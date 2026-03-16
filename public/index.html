@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TCC CACFP Management Suite</title>
+<link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --navy: #0f2340;
+  --navy2: #1a3558;
+  --mid: #2557a7;
+  --sky: #3b82f6;
+  --light: #e8f0fb;
+  --border: #dce5f0;
+  --gold: #c9a84c;
+  --gold2: #f0d080;
+  --green: #166534;
+  --green-bg: #dcfce7;
+  --red: #991b1b;
+  --red-bg: #fee2e2;
+  --warn: #92400e;
+  --warn-bg: #fef3c7;
+  --white: #ffffff;
+  --gray: #f8fafc;
+  --gray2: #f1f5f9;
+  --text: #0f2340;
+  --muted: #64748b;
+  --shadow: 0 2px 16px rgba(15,35,64,0.10);
+  --shadow-lg: 0 8px 40px rgba(15,35,64,0.15);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', sans-serif; background: var(--gray); color: var(--text); min-height: 100vh; }
+
+/* ── SHELL ── */
+.shell { display: flex; min-height: 100vh; }
+
+/* ── SIDEBAR ── */
+.sidebar {
+  width: 260px; min-height: 100vh; background: var(--navy);
+  display: flex; flex-direction: column;
+  position: fixed; top: 0; left: 0; z-index: 100;
+  box-shadow: 4px 0 20px rgba(0,0,0,0.2);
+  transition: transform 0.3s;
+}
+.sidebar-logo {
+  padding: 28px 24px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.sidebar-logo .logo-title {
+  font-family: 'Libre Baskerville', serif;
+  font-size: 1.05rem; color: white; font-weight: 700;
+  line-height: 1.3; margin-bottom: 4px;
+}
+.sidebar-logo .logo-sub {
+  font-size: 0.72rem; color: rgba(255,255,255,0.5);
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.sidebar-logo .fy-pill {
+  display: inline-block; margin-top: 10px;
+  background: var(--gold); color: var(--navy);
+  font-size: 0.72rem; font-weight: 700;
+  padding: 3px 10px; border-radius: 12px;
+  letter-spacing: 0.05em;
+}
+
+.nav-section { padding: 16px 12px 4px; }
+.nav-section-label {
+  font-size: 0.65rem; font-weight: 700; color: rgba(255,255,255,0.35);
+  text-transform: uppercase; letter-spacing: 0.1em;
+  padding: 0 12px; margin-bottom: 6px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 8px;
+  color: rgba(255,255,255,0.65); font-size: 0.875rem; font-weight: 500;
+  cursor: pointer; transition: all 0.2s; margin-bottom: 2px;
+  border: none; background: none; width: 100%; text-align: left;
+}
+.nav-item:hover { background: rgba(255,255,255,0.08); color: white; }
+.nav-item.active { background: var(--mid); color: white; }
+.nav-item .nav-icon { font-size: 1rem; width: 20px; text-align: center; }
+.nav-item .nav-badge {
+  margin-left: auto; background: var(--gold); color: var(--navy);
+  font-size: 0.65rem; font-weight: 700; padding: 2px 7px; border-radius: 10px;
+}
+.nav-item .nav-dot {
+  margin-left: auto; width: 8px; height: 8px; border-radius: 50%;
+  background: #ef4444;
+}
+
+.sidebar-footer {
+  margin-top: auto; padding: 16px 24px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  font-size: 0.75rem; color: rgba(255,255,255,0.35);
+}
+
+/* ── MAIN ── */
+.main { margin-left: 260px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
+
+.topbar {
+  background: white; border-bottom: 1px solid var(--border);
+  padding: 0 32px; height: 60px;
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 90;
+  box-shadow: 0 1px 8px rgba(15,35,64,0.06);
+}
+.topbar-title { font-family: 'Libre Baskerville', serif; font-size: 1.15rem; color: var(--navy); font-weight: 700; }
+.topbar-right { display: flex; align-items: center; gap: 16px; }
+.deadline-chip {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--warn-bg); color: var(--warn);
+  font-size: 0.78rem; font-weight: 600; padding: 5px 12px; border-radius: 20px;
+}
+.deadline-chip.ok { background: var(--green-bg); color: var(--green); }
+
+.content { padding: 32px; flex: 1; }
+
+/* ── PAGES ── */
+.page { display: none; }
+.page.active { display: block; }
+
+/* ── DASHBOARD ── */
+.welcome-banner {
+  background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 50%, var(--mid) 100%);
+  border-radius: 16px; padding: 32px 36px; margin-bottom: 28px;
+  color: white; position: relative; overflow: hidden;
+}
+.welcome-banner::before {
+  content: ''; position: absolute; top: -40px; right: -40px;
+  width: 200px; height: 200px; border-radius: 50%;
+  background: rgba(255,255,255,0.04);
+}
+.welcome-banner h1 { font-family: 'Libre Baskerville', serif; font-size: 1.6rem; margin-bottom: 8px; }
+.welcome-banner p { opacity: 0.75; font-size: 0.92rem; max-width: 500px; }
+
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 28px; }
+.stat-card {
+  background: white; border-radius: 12px; padding: 20px 22px;
+  box-shadow: var(--shadow); border-left: 4px solid var(--border);
+}
+.stat-card.blue { border-left-color: var(--mid); }
+.stat-card.gold { border-left-color: var(--gold); }
+.stat-card.green { border-left-color: #16a34a; }
+.stat-card.red { border-left-color: #dc2626; }
+.stat-label { font-size: 0.75rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+.stat-value { font-size: 1.5rem; font-weight: 700; color: var(--navy); font-family: 'Libre Baskerville', serif; }
+.stat-sub { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+
+.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+.card { background: white; border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; margin-bottom: 20px; }
+.card-header {
+  padding: 16px 22px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+}
+.card-header h3 { font-size: 0.95rem; font-weight: 700; color: var(--navy); }
+.card-header .badge {
+  margin-left: auto; font-size: 0.72rem; font-weight: 600;
+  padding: 3px 10px; border-radius: 12px;
+  background: var(--light); color: var(--mid);
+}
+.card-body { padding: 22px; }
+
+.quick-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.quick-action {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; border-radius: 10px;
+  border: 2px solid var(--border); cursor: pointer;
+  transition: all 0.2s; background: white;
+}
+.quick-action:hover { border-color: var(--mid); background: var(--light); }
+.quick-action .qa-icon { font-size: 1.4rem; }
+.quick-action .qa-label { font-size: 0.85rem; font-weight: 600; color: var(--navy); }
+.quick-action .qa-sub { font-size: 0.75rem; color: var(--muted); }
+
+/* ── MONTHLY ── */
+.month-selector {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 24px;
+}
+.month-btn {
+  padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 600;
+  border: 2px solid var(--border); background: white; cursor: pointer;
+  transition: all 0.2s; color: var(--muted);
+}
+.month-btn:hover { border-color: var(--mid); color: var(--mid); }
+.month-btn.active { background: var(--mid); border-color: var(--mid); color: white; }
+.month-btn.has-data { border-color: #16a34a; color: var(--green); }
+.month-btn.has-data.active { background: var(--green); border-color: var(--green); color: white; }
+
+.month-panel { display: none; }
+.month-panel.active { display: block; }
+
+.section-tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
+.stab {
+  padding: 9px 18px; font-size: 0.85rem; font-weight: 600;
+  color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent;
+  margin-bottom: -2px; transition: all 0.2s; border-radius: 6px 6px 0 0;
+}
+.stab:hover { color: var(--mid); }
+.stab.active { color: var(--mid); border-bottom-color: var(--mid); }
+.stab-panel { display: none; }
+.stab-panel.active { display: block; }
+
+/* ── FORMS ── */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.fg { display: flex; flex-direction: column; gap: 5px; }
+.fg label { font-size: 0.82rem; font-weight: 600; color: var(--navy); }
+.fg input, .fg select {
+  padding: 9px 13px; border: 2px solid var(--border); border-radius: 8px;
+  font-size: 0.9rem; font-family: 'Inter', sans-serif; color: var(--text); transition: border-color 0.2s;
+}
+.fg input:focus, .fg select:focus { outline: none; border-color: var(--mid); }
+.fg input.auto { background: var(--light); color: var(--mid); font-weight: 700; border-color: var(--light); }
+.fg .hint { font-size: 0.75rem; color: var(--muted); }
+.full { grid-column: 1 / -1; }
+
+/* ── MEAL TABLE ── */
+.meal-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.meal-table th { background: var(--navy); color: white; padding: 9px 12px; font-size: 0.8rem; text-align: center; font-weight: 600; }
+.meal-table th:first-child { text-align: left; }
+.meal-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 0.88rem; text-align: center; }
+.meal-table td:first-child { text-align: left; font-weight: 600; }
+.meal-table input { width: 90px; border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font-size: 0.88rem; text-align: center; font-family: 'Inter', sans-serif; }
+.meal-table input:focus { outline: none; border-color: var(--mid); }
+.meal-table tr:hover td { background: var(--gray); }
+.cat-a { color: var(--green); font-weight: 700; font-size: 0.78rem; }
+.cat-b { color: var(--warn); font-weight: 700; font-size: 0.78rem; }
+.cat-c { color: var(--red); font-weight: 700; font-size: 0.78rem; }
+
+/* ── SALARY TABLE ── */
+.sal-table { width: 100%; border-collapse: collapse; }
+.sal-table th { background: var(--navy); color: white; padding: 9px 14px; font-size: 0.8rem; text-align: left; font-weight: 600; }
+.sal-table td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+.sal-table tr:hover td { background: var(--gray); }
+.sal-table input { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 0.88rem; font-family: 'Inter', sans-serif; }
+.sal-table input:focus { outline: none; border-color: var(--mid); }
+.sal-table tfoot td { background: var(--navy); color: white; font-weight: 700; padding: 10px 14px; }
+
+/* ── UPLOAD ── */
+.upload-zone {
+  border: 2px dashed var(--border); border-radius: 10px;
+  padding: 22px; text-align: center; cursor: pointer;
+  transition: all 0.2s; position: relative; margin-top: 8px;
+}
+.upload-zone:hover { border-color: var(--mid); background: var(--light); }
+.upload-zone.done { border-style: solid; border-color: #16a34a; background: var(--green-bg); }
+.upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.upload-zone .uz-icon { font-size: 1.8rem; margin-bottom: 6px; }
+.upload-zone p { font-size: 0.82rem; color: var(--muted); }
+.upload-zone .uz-name { color: var(--green); font-weight: 600; font-size: 0.85rem; }
+
+.upload-tip {
+  background: var(--light); border-left: 4px solid var(--mid);
+  padding: 12px 14px; border-radius: 0 8px 8px 0;
+  font-size: 0.82rem; line-height: 1.6; margin-bottom: 12px;
+}
+.upload-tip strong { color: var(--mid); }
+
+/* ── BUTTONS ── */
+.btn { padding: 9px 20px; border-radius: 8px; font-size: 0.875rem; font-weight: 600; font-family: 'Inter', sans-serif; cursor: pointer; border: none; transition: all 0.2s; display: inline-flex; align-items: center; gap: 7px; }
+.btn-primary { background: var(--mid); color: white; }
+.btn-primary:hover { background: var(--navy); }
+.btn-gold { background: var(--gold); color: var(--navy); }
+.btn-gold:hover { background: #b8952e; }
+.btn-outline { background: white; color: var(--mid); border: 2px solid var(--mid); }
+.btn-outline:hover { background: var(--light); }
+.btn-sm { padding: 6px 14px; font-size: 0.8rem; }
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+
+/* ── STATUS ── */
+.status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
+.st-ok { background: var(--green-bg); color: var(--green); }
+.st-warn { background: var(--warn-bg); color: var(--warn); }
+.st-miss { background: var(--red-bg); color: var(--red); }
+.st-pend { background: var(--light); color: var(--mid); }
+
+/* ── PROGRESS ── */
+.prog-bar { height: 8px; background: var(--border); border-radius: 8px; overflow: hidden; margin: 8px 0; }
+.prog-fill { height: 100%; background: linear-gradient(90deg, var(--mid), var(--gold)); border-radius: 8px; transition: width 0.5s; }
+
+/* ── YER ── */
+.yer-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+.yer-box { background: var(--gray2); border-radius: 10px; padding: 18px; border: 1px solid var(--border); }
+.yer-box h4 { font-size: 0.75rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+.yer-line { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
+.yer-line:last-child { border: none; font-weight: 700; color: var(--mid); font-size: 0.95rem; }
+.fund-mod-banner {
+  background: linear-gradient(135deg, var(--navy), var(--mid));
+  color: white; border-radius: 12px; padding: 22px 26px;
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 20px;
+}
+.fm-label { font-size: 0.85rem; opacity: 0.75; margin-bottom: 4px; }
+.fm-val { font-family: 'Libre Baskerville', serif; font-size: 1.8rem; font-weight: 700; }
+.fm-sub { font-size: 0.75rem; opacity: 0.6; }
+
+.checklist { display: flex; flex-direction: column; gap: 8px; }
+.cl-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-radius: 8px;
+  background: var(--gray2); border: 1px solid var(--border);
+}
+.cl-item.done { background: var(--green-bg); border-color: #a7f3d0; }
+.cl-item .cl-icon { font-size: 1rem; }
+.cl-item .cl-text { flex: 1; font-size: 0.875rem; font-weight: 500; }
+.cl-item .cl-status { font-size: 0.75rem; color: var(--muted); }
+
+/* ── MONITORING ── */
+.monitoring-placeholder {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 400px; text-align: center;
+  background: white; border-radius: 16px; border: 2px dashed var(--border);
+  padding: 40px;
+}
+.monitoring-placeholder .mp-icon { font-size: 4rem; margin-bottom: 20px; opacity: 0.4; }
+.monitoring-placeholder h2 { font-family: 'Libre Baskerville', serif; font-size: 1.4rem; color: var(--navy); margin-bottom: 10px; }
+.monitoring-placeholder p { color: var(--muted); max-width: 440px; font-size: 0.9rem; line-height: 1.7; }
+.monitoring-placeholder .coming-soon {
+  margin-top: 20px; background: var(--light); color: var(--mid);
+  font-size: 0.8rem; font-weight: 700; padding: 6px 16px; border-radius: 20px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.monitor-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+.monitor-card {
+  background: white; border-radius: 12px; padding: 20px;
+  border: 2px dashed var(--border); text-align: center; opacity: 0.5;
+}
+.monitor-card .mc-icon { font-size: 2rem; margin-bottom: 10px; }
+.monitor-card .mc-title { font-weight: 700; font-size: 0.9rem; color: var(--navy); margin-bottom: 4px; }
+.monitor-card .mc-sub { font-size: 0.78rem; color: var(--muted); }
+
+/* ── MODAL ── */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 200; overflow: auto; }
+.modal-overlay.open { display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; }
+.modal { background: white; border-radius: 16px; width: 100%; max-width: 680px; overflow: hidden; box-shadow: var(--shadow-lg); }
+.modal-header { background: linear-gradient(135deg, var(--navy), var(--mid)); color: white; padding: 22px 26px; display: flex; justify-content: space-between; align-items: center; }
+.modal-header h2 { font-family: 'Libre Baskerville', serif; font-size: 1.2rem; }
+.modal-close { background: rgba(255,255,255,0.15); border: none; color: white; width: 32px; height: 32px; border-radius: 50%; cursor: pointer; font-size: 1rem; }
+.modal-body { padding: 26px; }
+.modal-footer { padding: 16px 26px; background: var(--gray2); display: flex; gap: 10px; }
+
+/* ── TOAST ── */
+.toast { position: fixed; bottom: 24px; right: 24px; background: var(--navy); color: white; padding: 12px 18px; border-radius: 10px; font-size: 0.875rem; font-weight: 500; transform: translateY(80px); opacity: 0; transition: all 0.3s; z-index: 999; box-shadow: var(--shadow-lg); }
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.ok { background: var(--green); }
+.toast.err { background: var(--red); }
+
+@media (max-width: 900px) {
+  .sidebar { transform: translateX(-260px); }
+  .main { margin-left: 0; }
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .dash-grid, .yer-summary { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- ── SIDEBAR ── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-title">The Children's Center</div>
+    <div class="logo-sub">CACFP Management Suite</div>
+    <div class="fy-pill" id="sidebarFY">FY2026</div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Main</div>
+    <button class="nav-item active" onclick="navigate('dashboard')">
+      <span class="nav-icon">🏠</span> Dashboard
+    </button>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Program</div>
+    <button class="nav-item" onclick="navigate('monthly')">
+      <span class="nav-icon">📅</span> Monthly Reporting
+      <span class="nav-badge" id="navMonthlyBadge">0/12</span>
+    </button>
+    <button class="nav-item" onclick="navigate('monitoring')">
+      <span class="nav-icon">🔍</span> Monitoring
+      <span class="nav-badge" style="background:rgba(255,255,255,0.15); color:rgba(255,255,255,0.6);">Soon</span>
+    </button>
+    <button class="nav-item" onclick="navigate('yer')">
+      <span class="nav-icon">📋</span> Year End Report
+      <span class="nav-dot" id="navYERDot" style="display:none;"></span>
+    </button>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Settings</div>
+    <button class="nav-item" onclick="navigate('settings')">
+      <span class="nav-icon">⚙️</span> Settings
+    </button>
+  </div>
+
+  <div class="sidebar-footer">
+    Sponsor ID: <strong id="sidebarSponsor">990004457</strong><br>
+    210 E Main St, Niles MI
+  </div>
+</aside>
+
+<!-- ── MAIN ── -->
+<div class="main">
+  <div class="topbar">
+    <div class="topbar-title" id="topbarTitle">Dashboard</div>
+    <div class="topbar-right">
+      <div class="deadline-chip" id="deadlineChip">
+        <span>⏰</span> <span id="deadlineLabel">Dec 1 Deadline</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- ═══ DASHBOARD ═══ -->
+    <div class="page active" id="page-dashboard">
+      <div class="welcome-banner">
+        <h1>Good morning, Mary 👋</h1>
+        <p>Your CACFP program dashboard — track monthly reporting, monitor compliance, and prepare your Year End Report all in one place.</p>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card blue">
+          <div class="stat-label">CACFP Reimbursement YTD</div>
+          <div class="stat-value" id="dash-cacfp">$0.00</div>
+          <div class="stat-sub">From monthly claims entered</div>
+        </div>
+        <div class="stat-card gold">
+          <div class="stat-label">Food Service Salaries YTD</div>
+          <div class="stat-value" id="dash-sal">$0.00</div>
+          <div class="stat-sub">Auto-flows to Year End Report</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-label">Months Reported</div>
+          <div class="stat-value" id="dash-months">0 / 12</div>
+          <div class="stat-sub">Monthly salary data entered</div>
+        </div>
+        <div class="stat-card red">
+          <div class="stat-label">Est. Fund Modification</div>
+          <div class="stat-value" id="dash-fundmod">$0.00</div>
+          <div class="stat-sub">Based on data entered so far</div>
+        </div>
+      </div>
+
+      <div class="dash-grid">
+        <div>
+          <div class="card">
+            <div class="card-header"><span>⚡</span><h3>Quick Actions</h3></div>
+            <div class="card-body">
+              <div class="quick-action-grid">
+                <div class="quick-action" onclick="navigate('monthly')">
+                  <div class="qa-icon">📅</div>
+                  <div><div class="qa-label">Enter Monthly Data</div><div class="qa-sub">Salaries, claims, meal counts</div></div>
+                </div>
+                <div class="quick-action" onclick="navigate('yer')">
+                  <div class="qa-icon">📋</div>
+                  <div><div class="qa-label">Year End Report</div><div class="qa-sub">Review & generate documents</div></div>
+                </div>
+                <div class="quick-action" onclick="navigate('monitoring')">
+                  <div class="qa-icon">🔍</div>
+                  <div><div class="qa-label">Monitoring</div><div class="qa-sub">Compliance & observations</div></div>
+                </div>
+                <div class="quick-action" onclick="navigate('settings')">
+                  <div class="qa-icon">⚙️</div>
+                  <div><div class="qa-label">Settings</div><div class="qa-sub">Fiscal year & sponsor info</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><span>📊</span><h3>Monthly Progress</h3><span class="badge" id="dash-prog-badge">0 of 12 months</span></div>
+            <div class="card-body">
+              <div class="prog-bar"><div class="prog-fill" id="dash-prog-fill" style="width:0%"></div></div>
+              <div id="dash-month-pills" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:12px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="card">
+            <div class="card-header"><span>✅</span><h3>December 1 Checklist</h3><span class="badge" id="dash-check-badge">0 / 6</span></div>
+            <div class="card-body">
+              <div class="checklist" id="dash-checklist"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ MONTHLY REPORTING ═══ -->
+    <div class="page" id="page-monthly">
+      <div style="margin-bottom:20px;">
+        <h2 style="font-family:'Libre Baskerville',serif; font-size:1.25rem; color:var(--navy); margin-bottom:6px;">Monthly Reporting</h2>
+        <p style="color:var(--muted); font-size:0.875rem;">Select a month to enter salary data, meal counts, CACFP claim amounts, and upload documents.</p>
+      </div>
+
+      <div class="month-selector" id="monthSelector"></div>
+
+      <div id="monthPanels"></div>
+    </div>
+
+    <!-- ═══ MONITORING ═══ -->
+    <div class="page" id="page-monitoring">
+      <div style="margin-bottom:24px;">
+        <h2 style="font-family:'Libre Baskerville',serif; font-size:1.25rem; color:var(--navy); margin-bottom:6px;">Monitoring</h2>
+        <p style="color:var(--muted); font-size:0.875rem;">Classroom observation, compliance forms, and program monitoring tools.</p>
+      </div>
+
+      <div class="monitor-cards">
+        <div class="monitor-card">
+          <div class="mc-icon">🏫</div>
+          <div class="mc-title">Classroom Observations</div>
+          <div class="mc-sub">QIF observation tool with domain scoring</div>
+        </div>
+        <div class="monitor-card">
+          <div class="mc-icon">📝</div>
+          <div class="mc-title">Compliance Forms</div>
+          <div class="mc-sub">CACFP compliance checklists by site</div>
+        </div>
+        <div class="monitor-card">
+          <div class="mc-icon">📈</div>
+          <div class="mc-title">Program Reports</div>
+          <div class="mc-sub">Monitoring visit summaries & findings</div>
+        </div>
+      </div>
+
+      <div class="monitoring-placeholder">
+        <div class="mp-icon">🔍</div>
+        <h2>Monitoring Module</h2>
+        <p>This section will include classroom observation tools, CACFP compliance checklists, site visit scheduling, corrective action tracking, and detailed monitoring reports for all three TCC centers.</p>
+        <div class="coming-soon">Coming Soon</div>
+      </div>
+    </div>
+
+    <!-- ═══ YEAR END REPORT ═══ -->
+    <div class="page" id="page-yer">
+      <div style="margin-bottom:20px;">
+        <h2 style="font-family:'Libre Baskerville',serif; font-size:1.25rem; color:var(--navy); margin-bottom:6px;">Year End Report (CNP-YER)</h2>
+        <p style="color:var(--muted); font-size:0.875rem;">All salary and claim data flows automatically from Monthly Reporting. Enter the final figures below and generate your documents.</p>
+      </div>
+
+      <!-- Live fund mod banner -->
+      <div class="fund-mod-banner">
+        <div>
+          <div class="fm-label">Required Fund Modification (Line 10)</div>
+          <div class="fm-val" id="yer-fundmod">$0.00</div>
+          <div class="fm-sub">Transfer from tuition / subsidy / GSRP funds</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="fm-label">Total Expenditures</div>
+          <div style="font-size:1.1rem; font-weight:700;" id="yer-totalexp">$0.00</div>
+          <div class="fm-sub">Salaries + Benefits + Food Cost</div>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px;">
+        <div class="card">
+          <div class="card-header"><span>📥</span><h3>Annual Figures — Enter Here</h3></div>
+          <div class="card-body">
+            <div class="form-grid">
+              <div class="fg">
+                <label>CACFP Reimbursement — MIND Line 3a</label>
+                <input type="number" id="yer-cacfp-input" placeholder="e.g. 91727.69" step="0.01" oninput="yerUpdate()">
+                <span class="hint">Pre-populated by MDE in MIND system</span>
+              </div>
+              <div class="fg">
+                <label>Food Cost — QuickBooks Acct 64100</label>
+                <input type="number" id="yer-food-input" placeholder="e.g. 205337.56" step="0.01" oninput="yerUpdate()">
+                <span class="hint">From P&L report, Food & Supplies line</span>
+              </div>
+              <div class="fg">
+                <label>Food Service Salaries (auto from monthly)</label>
+                <input type="number" id="yer-sal-display" class="auto" readonly>
+                <span class="hint">Auto-calculated from Monthly Reporting</span>
+              </div>
+              <div class="fg">
+                <label>Employee Benefits (7.65% of salaries)</label>
+                <input type="number" id="yer-ben-display" class="auto" readonly>
+                <span class="hint">Employer SS 6.2% + Medicare 1.45%</span>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary btn-sm" onclick="saveYERInputs()">💾 Save</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span>📁</span><h3>Annual Documents</h3></div>
+          <div class="card-body">
+            <div style="margin-bottom:14px;">
+              <div class="upload-tip"><strong>QuickBooks P&L:</strong> Run for Oct 1 – Sep 30. Export as PDF. Needed for food cost (Account 64100).</div>
+              <div class="upload-zone" id="uz-pl" onclick="document.getElementById('uf-pl').click()">
+                <input type="file" id="uf-pl" accept=".pdf,.xlsx" onchange="handleDocUpload('pl',this)">
+                <div class="uz-icon">📊</div>
+                <p>Click to upload P&L Report</p>
+                <div class="uz-name" id="un-pl"></div>
+              </div>
+            </div>
+            <div>
+              <div class="upload-tip"><strong>Benefits/Payroll Tax:</strong> QuickBooks Payroll Summary filtered to food service staff.</div>
+              <div class="upload-zone" id="uz-benefits" onclick="document.getElementById('uf-benefits').click()">
+                <input type="file" id="uf-benefits" accept=".pdf,.xlsx" onchange="handleDocUpload('benefits',this)">
+                <div class="uz-icon">💰</div>
+                <p>Click to upload Benefits Report</p>
+                <div class="uz-name" id="un-benefits"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="yer-summary">
+        <div class="yer-box">
+          <h4>Revenue Worksheet — Enter in MIND</h4>
+          <div class="yer-line"><span>Line 3a — CACFP Reimbursement</span><span id="ys-cacfp">$0.00</span></div>
+          <div class="yer-line"><span>Line 10 — Fund Modification</span><span id="ys-fm" style="color:var(--mid);">$0.00</span></div>
+          <div class="yer-line"><span>Line 11 — Total Revenue</span><span id="ys-tr">$0.00</span></div>
+        </div>
+        <div class="yer-box">
+          <h4>Expenditure Worksheet — Enter in MIND</h4>
+          <div class="yer-line"><span>Line 1 — Salaries</span><span id="ys-sal">$0.00</span></div>
+          <div class="yer-line"><span>Line 2 — Benefits (7.65%)</span><span id="ys-ben">$0.00</span></div>
+          <div class="yer-line"><span>Line 10 — Food Cost</span><span id="ys-food">$0.00</span></div>
+          <div class="yer-line"><span>Line 11 — Total Expenditures</span><span id="ys-te">$0.00</span></div>
+        </div>
+        <div class="yer-box">
+          <h4>Balance Sheet — Verify in MIND</h4>
+          <div class="yer-line"><span>Line 1 — Beginning Balance</span><span>$0.00</span></div>
+          <div class="yer-line"><span>Line 2 — Year End Revenue</span><span id="ys-yr">$0.00</span></div>
+          <div class="yer-line"><span>Line 3 — Expenditure Total</span><span id="ys-ye">$0.00</span></div>
+          <div class="yer-line"><span>Line 6 — Ending Fund Balance</span><span style="color:var(--green);">$0.00</span></div>
+        </div>
+        <div class="yer-box">
+          <h4>Readiness Checklist</h4>
+          <div class="checklist" id="yer-checklist"></div>
+        </div>
+      </div>
+
+      <div style="background:linear-gradient(135deg,var(--navy),var(--mid)); border-radius:14px; padding:28px; text-align:center; color:white;">
+        <h2 style="font-family:'Libre Baskerville',serif; font-size:1.4rem; margin-bottom:8px;">Generate Final Documents</h2>
+        <p style="opacity:0.75; margin-bottom:22px; font-size:0.9rem;">Your NFSA General Ledger and CNP-YER Summary will be generated from all data entered.</p>
+        <div style="display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
+          <button class="btn btn-gold" onclick="generateGL()" style="font-size:0.95rem; padding:12px 24px;">📄 Download General Ledger (.docx)</button>
+          <button class="btn btn-outline" style="color:white; border-color:rgba(255,255,255,0.4); font-size:0.95rem; padding:12px 24px;" onclick="showYERModal()">📋 View CNP-YER Summary</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ SETTINGS ═══ -->
+    <div class="page" id="page-settings">
+      <div style="margin-bottom:20px;">
+        <h2 style="font-family:'Libre Baskerville',serif; font-size:1.25rem; color:var(--navy); margin-bottom:6px;">Settings</h2>
+        <p style="color:var(--muted); font-size:0.875rem;">Configure your fiscal year, sponsor information, and program details.</p>
+      </div>
+      <div class="card">
+        <div class="card-header"><span>⚙️</span><h3>Program Settings</h3></div>
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="fg">
+              <label>Fiscal Year</label>
+              <select id="set-fy" onchange="onSettingsChange()">
+                <option value="FY2026">FY2026 (Oct 2025 – Sep 2026)</option>
+                <option value="FY2027">FY2027 (Oct 2026 – Sep 2027)</option>
+                <option value="FY2028">FY2028 (Oct 2027 – Sep 2028)</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>CACFP Sponsor ID</label>
+              <input type="text" id="set-sponsor" value="990004457" onchange="onSettingsChange()">
+            </div>
+            <div class="fg">
+              <label>Organization Name</label>
+              <input type="text" id="set-org" value="The Children's Center" onchange="onSettingsChange()">
+            </div>
+            <div class="fg">
+              <label>Contact Name</label>
+              <input type="text" id="set-contact" value="Mary Wardlaw" onchange="onSettingsChange()">
+            </div>
+            <div class="fg">
+              <label>Contact Email</label>
+              <input type="email" id="set-email" value="mewardlaw@sbcglobal.net" onchange="onSettingsChange()">
+            </div>
+            <div class="fg">
+              <label>Contact Phone</label>
+              <input type="text" id="set-phone" value="(269) 240-0557" onchange="onSettingsChange()">
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+</div><!-- /shell -->
+
+<!-- YER Summary Modal -->
+<div class="modal-overlay" id="yerModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>CNP-YER Summary Sheet</h2>
+      <button class="modal-close" onclick="document.getElementById('yerModal').classList.remove('open')">✕</button>
+    </div>
+    <div class="modal-body" id="yerModalBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary btn-sm" onclick="window.print()">🖨️ Print</button>
+      <button class="btn btn-outline btn-sm" onclick="document.getElementById('yerModal').classList.remove('open')">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════
+const MONTHS_LIST = ['October','November','December','January','February','March','April','May','June','July','August','September'];
+
+let S = {
+  fiscalYear: 'FY2026',
+  sponsorId: '990004457',
+  orgName: "The Children's Center",
+  contactName: 'Mary Wardlaw',
+  contactEmail: 'mewardlaw@sbcglobal.net',
+  contactPhone: '(269) 240-0557',
+  cacfpReimbursement: 0,
+  foodCost: 0,
+  monthlySalaries: {},
+  monthlyClaims: {},
+  monthlyMeals: {},
+  docNames: {}
+};
+
+// ═══════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════
+window.onload = () => {
+  loadState();
+  buildMonthlyUI();
+  updateAll();
+  checkDeadline();
+};
+
+function getFYYearNum() { return parseInt(S.fiscalYear.replace('FY','')); }
+
+function getMonthKeys() {
+  const yr = getFYYearNum();
+  return MONTHS_LIST.map(m => {
+    const y = ['October','November','December'].includes(m) ? yr - 1 : yr;
+    return { label: `${m} ${y}`, key: `${m}_${y}`, month: m, year: y };
+  });
+}
+
+// ═══════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════
+const PAGE_TITLES = { dashboard: 'Dashboard', monthly: 'Monthly Reporting', monitoring: 'Monitoring', yer: 'Year End Report', settings: 'Settings' };
+
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  document.querySelector(`.nav-item[onclick="navigate('${page}')"]`).classList.add('active');
+  document.getElementById('topbarTitle').textContent = PAGE_TITLES[page];
+  if (page === 'yer') syncYERFromMonthly();
+  if (page === 'dashboard') updateDashboard();
+}
+
+// ═══════════════════════════════════════
+// BUILD MONTHLY UI
+// ═══════════════════════════════════════
+function buildMonthlyUI() {
+  const keys = getMonthKeys();
+  const selector = document.getElementById('monthSelector');
+  const panels = document.getElementById('monthPanels');
+  selector.innerHTML = '';
+  panels.innerHTML = '';
+
+  keys.forEach(({ label, key, month, year }, idx) => {
+    const hasSal = parseFloat(S.monthlySalaries[key] || 0) > 0;
+    const hasClaim = parseFloat(S.monthlyClaims[key] || 0) > 0;
+    const hasData = hasSal || hasClaim;
+
+    // Month button
+    const btn = document.createElement('button');
+    btn.className = 'month-btn' + (hasData ? ' has-data' : '') + (idx === 0 ? ' active' : '');
+    btn.textContent = month.substring(0,3) + ' ' + year;
+    btn.onclick = () => selectMonth(key);
+    btn.id = 'mbtn-' + key;
+    selector.appendChild(btn);
+
+    // Panel
+    const meals = S.monthlyMeals[key] || {};
+    const salDoc = S.docNames['sal_' + key];
+    const claimDoc = S.docNames['claim_' + key];
+
+    panels.innerHTML += `
+    <div class="month-panel ${idx === 0 ? 'active' : ''}" id="mp-${key}">
+      <div class="section-tabs">
+        <div class="stab active" onclick="switchStab('${key}','salaries')">👥 Salaries</div>
+        <div class="stab" onclick="switchStab('${key}','claims')">📋 CACFP Claim</div>
+        <div class="stab" onclick="switchStab('${key}','meals')">🍽️ Meal Counts</div>
+        <div class="stab" onclick="switchStab('${key}','docs')">📁 Documents</div>
+      </div>
+
+      <!-- SALARIES -->
+      <div class="stab-panel active" id="st-${key}-salaries">
+        <div class="card">
+          <div class="card-header"><span>👥</span><h3>Food Service Staff Salaries — ${label}</h3></div>
+          <div class="card-body">
+            <div class="upload-tip">
+              <strong>Instructions:</strong> Enter the monthly total from Jared's food service staff cost spreadsheet (hours × rate for all food service staff). Upload the PDF document below for records.
+            </div>
+            <div class="form-grid" style="margin-bottom:16px;">
+              <div class="fg">
+                <label>Monthly Salary Total ($)</label>
+                <input type="number" step="0.01" placeholder="0.00"
+                  value="${S.monthlySalaries[key] || ''}"
+                  oninput="updateMonthlySalary('${key}', this.value)"
+                  id="sal-input-${key}">
+              </div>
+              <div class="fg">
+                <label>Status</label>
+                <div style="padding:10px 0;">
+                  <span class="status ${hasSal ? 'st-ok' : 'st-pend'}" id="sal-status-${key}">
+                    ${hasSal ? '✓ Entered' : '⏳ Pending'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div class="upload-tip">
+              <strong>Upload Staff Cost PDF</strong> — Same format as the monthly staff cost spreadsheet Jared prepares (staff name, hourly rate, hours, total).
+            </div>
+            <div class="upload-zone ${salDoc ? 'done' : ''}" id="uz-sal-${key}">
+              <input type="file" accept=".pdf,.xlsx,.xls" onchange="handleMonthlyDoc('sal','${key}',this)">
+              <div class="uz-icon">${salDoc ? '✅' : '📎'}</div>
+              <p>${salDoc ? 'Uploaded: ' : 'Click to upload staff cost PDF'}</p>
+              <div class="uz-name">${salDoc || ''}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CLAIMS -->
+      <div class="stab-panel" id="st-${key}-claims">
+        <div class="card">
+          <div class="card-header"><span>📋</span><h3>CACFP Claim — ${label}</h3></div>
+          <div class="card-body">
+            <div class="upload-tip">
+              <strong>Instructions:</strong> After filing your monthly CACFP claim in MIND, click the Report button, save/screenshot the claim report, and upload it here. Enter the total reimbursement amount.
+            </div>
+            <div class="form-grid" style="margin-bottom:16px;">
+              <div class="fg">
+                <label>Claim Reimbursement Total ($)</label>
+                <input type="number" step="0.01" placeholder="0.00"
+                  value="${S.monthlyClaims[key] || ''}"
+                  oninput="updateMonthlyClaim('${key}', this.value)"
+                  id="claim-input-${key}">
+              </div>
+              <div class="fg">
+                <label>Status</label>
+                <div style="padding:10px 0;">
+                  <span class="status ${hasClaim ? 'st-ok' : 'st-pend'}" id="claim-status-${key}">
+                    ${hasClaim ? '✓ Entered' : '⏳ Pending'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div class="upload-zone ${claimDoc ? 'done' : ''}" id="uz-claim-${key}">
+              <input type="file" accept=".pdf,.png,.jpg" onchange="handleMonthlyDoc('claim','${key}',this)">
+              <div class="uz-icon">${claimDoc ? '✅' : '📎'}</div>
+              <p>${claimDoc ? 'Uploaded: ' : 'Click to upload claim report screenshot or PDF'}</p>
+              <div class="uz-name">${claimDoc || ''}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MEAL COUNTS -->
+      <div class="stab-panel" id="st-${key}-meals">
+        <div class="card">
+          <div class="card-header"><span>🍽️</span><h3>Meal Counts by Category — ${label}</h3></div>
+          <div class="card-body">
+            <div class="upload-tip">
+              <strong>Instructions:</strong> Enter meal counts by eligibility category from your CACFP claim. Category A = Free, B = Reduced, C = Paid. These totals support your fund modification documentation.
+            </div>
+            <table class="meal-table">
+              <thead>
+                <tr>
+                  <th>Meal Type</th>
+                  <th><span class="cat-a">A — Free</span></th>
+                  <th><span class="cat-b">B — Reduced</span></th>
+                  <th><span class="cat-c">C — Paid</span></th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${['Breakfast','Lunch','Snack'].map(mt => `
+                <tr>
+                  <td>${mt}</td>
+                  ${['A','B','C'].map(cat => `
+                  <td><input type="number" min="0" placeholder="0"
+                    value="${(meals[mt] && meals[mt][cat]) || ''}"
+                    oninput="updateMeal('${key}','${mt}','${cat}',this.value)"
+                    id="meal-${key}-${mt}-${cat}"></td>`).join('')}
+                  <td id="meal-total-${key}-${mt}" style="font-weight:700;">0</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+            <div class="btn-row">
+              <button class="btn btn-primary btn-sm" onclick="saveMeals('${key}')">💾 Save Meal Counts</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- DOCS -->
+      <div class="stab-panel" id="st-${key}-docs">
+        <div class="card">
+          <div class="card-header"><span>📁</span><h3>Documents — ${label}</h3></div>
+          <div class="card-body">
+            <p style="color:var(--muted); font-size:0.875rem; margin-bottom:16px;">All uploaded documents for this month are stored here for reference. Staff cost PDF and claim report can also be uploaded from their respective tabs.</p>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+              <div>
+                <div class="upload-tip"><strong>Staff Cost Spreadsheet</strong></div>
+                <div class="upload-zone ${salDoc ? 'done' : ''}" id="uz-sal2-${key}">
+                  <input type="file" accept=".pdf,.xlsx,.xls" onchange="handleMonthlyDoc('sal','${key}',this)">
+                  <div class="uz-icon">${salDoc ? '✅' : '📎'}</div>
+                  <p>${salDoc ? '' : 'Upload staff cost PDF'}</p>
+                  <div class="uz-name">${salDoc || ''}</div>
+                </div>
+              </div>
+              <div>
+                <div class="upload-tip"><strong>CACFP Claim Report</strong></div>
+                <div class="upload-zone ${claimDoc ? 'done' : ''}" id="uz-claim2-${key}">
+                  <input type="file" accept=".pdf,.png,.jpg" onchange="handleMonthlyDoc('claim','${key}',this)">
+                  <div class="uz-icon">${claimDoc ? '✅' : '📎'}</div>
+                  <p>${claimDoc ? '' : 'Upload claim report'}</p>
+                  <div class="uz-name">${claimDoc || ''}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  });
+
+  updateMealTotals();
+}
+
+function selectMonth(key) {
+  document.querySelectorAll('.month-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.month-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('mbtn-' + key).classList.add('active');
+  document.getElementById('mp-' + key).classList.add('active');
+}
+
+function switchStab(key, tab) {
+  const panel = document.getElementById('mp-' + key);
+  panel.querySelectorAll('.stab').forEach(s => s.classList.remove('active'));
+  panel.querySelectorAll('.stab-panel').forEach(p => p.classList.remove('active'));
+  panel.querySelector(`.stab[onclick*="${tab}"]`).classList.add('active');
+  document.getElementById(`st-${key}-${tab}`).classList.add('active');
+}
+
+// ═══════════════════════════════════════
+// DATA UPDATES
+// ═══════════════════════════════════════
+function updateMonthlySalary(key, val) {
+  S.monthlySalaries[key] = parseFloat(val) || 0;
+  const hasSal = S.monthlySalaries[key] > 0;
+  const statusEl = document.getElementById('sal-status-' + key);
+  if (statusEl) { statusEl.className = 'status ' + (hasSal ? 'st-ok' : 'st-pend'); statusEl.textContent = hasSal ? '✓ Entered' : '⏳ Pending'; }
+  const btn = document.getElementById('mbtn-' + key);
+  if (btn) {
+    const hasClaim = parseFloat(S.monthlyClaims[key] || 0) > 0;
+    btn.className = 'month-btn' + ((hasSal || hasClaim) ? ' has-data' : '') + (btn.classList.contains('active') ? ' active' : '');
+  }
+  updateAll();
+  saveState();
+}
+
+function updateMonthlyClaim(key, val) {
+  S.monthlyClaims[key] = parseFloat(val) || 0;
+  const hasClaim = S.monthlyClaims[key] > 0;
+  const statusEl = document.getElementById('claim-status-' + key);
+  if (statusEl) { statusEl.className = 'status ' + (hasClaim ? 'st-ok' : 'st-pend'); statusEl.textContent = hasClaim ? '✓ Entered' : '⏳ Pending'; }
+  updateAll();
+  saveState();
+}
+
+function updateMeal(key, mealType, cat, val) {
+  if (!S.monthlyMeals[key]) S.monthlyMeals[key] = {};
+  if (!S.monthlyMeals[key][mealType]) S.monthlyMeals[key][mealType] = {};
+  S.monthlyMeals[key][mealType][cat] = parseInt(val) || 0;
+  updateMealTotals();
+}
+
+function saveMeals(key) { saveState(); showToast('✅ Meal counts saved!', 'ok'); }
+
+function updateMealTotals() {
+  getMonthKeys().forEach(({ key }) => {
+    ['Breakfast','Lunch','Snack'].forEach(mt => {
+      const meals = (S.monthlyMeals[key] || {})[mt] || {};
+      const total = (parseInt(meals['A'])||0) + (parseInt(meals['B'])||0) + (parseInt(meals['C'])||0);
+      const el = document.getElementById(`meal-total-${key}-${mt}`);
+      if (el) el.textContent = total.toLocaleString();
+    });
+  });
+}
+
+// ═══════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════
+function calcTotals() {
+  const salaryTotal = Object.values(S.monthlySalaries).reduce((a,b) => a + (parseFloat(b)||0), 0);
+  const benefits = salaryTotal * 0.0765;
+  const foodCost = parseFloat(S.foodCost) || 0;
+  const cacfpReimb = parseFloat(S.cacfpReimbursement) || 0;
+  const totalExp = salaryTotal + benefits + foodCost;
+  const fundMod = Math.max(0, totalExp - cacfpReimb);
+  const totalRev = cacfpReimb + fundMod;
+  const claimsTotal = Object.values(S.monthlyClaims).reduce((a,b) => a + (parseFloat(b)||0), 0);
+  const monthsEntered = Object.values(S.monthlySalaries).filter(v => parseFloat(v) > 0).length;
+  return { salaryTotal, benefits, foodCost, cacfpReimb, totalExp, fundMod, totalRev, claimsTotal, monthsEntered };
+}
+
+const fmt = n => '$' + parseFloat(n||0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// ═══════════════════════════════════════
+// UPDATE ALL UI
+// ═══════════════════════════════════════
+function updateAll() {
+  const { salaryTotal, benefits, foodCost, cacfpReimb, totalExp, fundMod, totalRev, claimsTotal, monthsEntered } = calcTotals();
+
+  updateDashboard();
+  syncYERFromMonthly();
+
+  // Nav badge
+  document.getElementById('navMonthlyBadge').textContent = `${monthsEntered}/12`;
+  document.getElementById('navYERDot').style.display = totalExp > 0 ? 'block' : 'none';
+}
+
+function updateDashboard() {
+  const { salaryTotal, cacfpReimb, fundMod, claimsTotal, monthsEntered } = calcTotals();
+  document.getElementById('dash-cacfp').textContent = fmt(claimsTotal);
+  document.getElementById('dash-sal').textContent = fmt(salaryTotal);
+  document.getElementById('dash-months').textContent = monthsEntered + ' / 12';
+  document.getElementById('dash-fundmod').textContent = fmt(fundMod);
+
+  // Progress
+  const pct = Math.round((monthsEntered / 12) * 100);
+  document.getElementById('dash-prog-fill').style.width = pct + '%';
+  document.getElementById('dash-prog-badge').textContent = `${monthsEntered} of 12 months`;
+
+  // Month pills
+  const pills = getMonthKeys().map(({ label, key, month }) => {
+    const hasSal = parseFloat(S.monthlySalaries[key] || 0) > 0;
+    const color = hasSal ? 'var(--green)' : 'var(--muted)';
+    const bg = hasSal ? 'var(--green-bg)' : 'var(--gray2)';
+    return `<span style="padding:3px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; background:${bg}; color:${color};">${month.substring(0,3)}</span>`;
+  }).join('');
+  document.getElementById('dash-month-pills').innerHTML = pills;
+
+  // Checklist
+  const checks = [
+    { label: 'Fiscal year configured in Settings', done: !!S.fiscalYear },
+    { label: 'All 12 months of salary data entered', done: monthsEntered === 12 },
+    { label: 'CACFP reimbursement entered (from MIND)', done: parseFloat(S.cacfpReimbursement) > 0 },
+    { label: 'Food cost entered (from QuickBooks P&L)', done: parseFloat(S.foodCost) > 0 },
+    { label: 'QuickBooks P&L report uploaded', done: !!S.docNames['pl'] },
+    { label: 'Monthly claim reports uploaded', done: Object.keys(S.docNames).some(k => k.startsWith('claim_')) },
+  ];
+  const done = checks.filter(c => c.done).length;
+  document.getElementById('dash-check-badge').textContent = `${done} / ${checks.length}`;
+  document.getElementById('dash-checklist').innerHTML = checks.map(c => `
+    <div class="cl-item ${c.done ? 'done' : ''}">
+      <div class="cl-icon">${c.done ? '✅' : '⬜'}</div>
+      <div class="cl-text">${c.label}</div>
+      <div class="cl-status" style="color:${c.done ? 'var(--green)' : 'var(--warn)'};">${c.done ? 'Done' : 'By Dec 1'}</div>
+    </div>`).join('');
+}
+
+function syncYERFromMonthly() {
+  const { salaryTotal, benefits, foodCost, cacfpReimb, totalExp, fundMod, totalRev, monthsEntered } = calcTotals();
+
+  // Update YER inputs with auto values
+  const salDisp = document.getElementById('yer-sal-display');
+  const benDisp = document.getElementById('yer-ben-display');
+  if (salDisp) salDisp.value = salaryTotal.toFixed(2);
+  if (benDisp) benDisp.value = benefits.toFixed(2);
+
+  // Update YER summary
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('yer-fundmod', fmt(fundMod));
+  set('yer-totalexp', fmt(totalExp));
+  set('ys-cacfp', fmt(cacfpReimb));
+  set('ys-fm', fmt(fundMod));
+  set('ys-tr', fmt(totalRev));
+  set('ys-sal', fmt(salaryTotal));
+  set('ys-ben', fmt(benefits));
+  set('ys-food', fmt(foodCost));
+  set('ys-te', fmt(totalExp));
+  set('ys-yr', fmt(totalRev));
+  set('ys-ye', fmt(totalExp));
+
+  // YER checklist
+  const checks = [
+    { label: 'Salary data: ' + monthsEntered + '/12 months entered', ok: monthsEntered === 12 },
+    { label: 'CACFP reimbursement entered', ok: cacfpReimb > 0 },
+    { label: 'Food cost entered', ok: foodCost > 0 },
+    { label: 'P&L report uploaded', ok: !!S.docNames['pl'] },
+  ];
+  const ycl = document.getElementById('yer-checklist');
+  if (ycl) ycl.innerHTML = checks.map(c => `
+    <div class="cl-item ${c.ok ? 'done' : ''}" style="padding:7px 10px;">
+      <div class="cl-icon" style="font-size:0.85rem;">${c.ok ? '✅' : '⚠️'}</div>
+      <div class="cl-text" style="font-size:0.82rem;">${c.label}</div>
+    </div>`).join('');
+}
+
+// ═══════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════
+function onSettingsChange() {
+  S.fiscalYear = document.getElementById('set-fy').value;
+  S.sponsorId = document.getElementById('set-sponsor').value;
+  S.orgName = document.getElementById('set-org').value;
+  S.contactName = document.getElementById('set-contact').value;
+  S.contactEmail = document.getElementById('set-email').value;
+  S.contactPhone = document.getElementById('set-phone').value;
+  document.getElementById('sidebarFY').textContent = S.fiscalYear;
+  document.getElementById('sidebarSponsor').textContent = S.sponsorId;
+}
+
+function saveSettings() {
+  onSettingsChange();
+  buildMonthlyUI();
+  updateAll();
+  saveState();
+  showToast('✅ Settings saved!', 'ok');
+}
+
+// ═══════════════════════════════════════
+// YER INPUTS
+// ═══════════════════════════════════════
+function yerUpdate() {
+  S.cacfpReimbursement = parseFloat(document.getElementById('yer-cacfp-input').value) || 0;
+  S.foodCost = parseFloat(document.getElementById('yer-food-input').value) || 0;
+  syncYERFromMonthly();
+  updateDashboard();
+  saveState();
+}
+
+function saveYERInputs() { yerUpdate(); showToast('✅ YER data saved!', 'ok'); }
+
+// ═══════════════════════════════════════
+// UPLOADS
+// ═══════════════════════════════════════
+function handleDocUpload(type, input) {
+  if (!input.files[0]) return;
+  const name = input.files[0].name;
+  S.docNames[type] = name;
+  const zone = document.getElementById('uz-' + type);
+  const nameEl = document.getElementById('un-' + type);
+  if (zone) zone.classList.add('done');
+  if (nameEl) nameEl.textContent = '✅ ' + name;
+  saveState(); updateAll();
+  showToast('✅ ' + name + ' uploaded!', 'ok');
+}
+
+function handleMonthlyDoc(type, key, input) {
+  if (!input.files[0]) return;
+  const name = input.files[0].name;
+  const docKey = type + '_' + key;
+  S.docNames[docKey] = name;
+  // Update all upload zones for this combo
+  ['uz-' + type + '-' + key, 'uz-' + type + '2-' + key].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.classList.add('done');
+      const nameEl = el.querySelector('.uz-name');
+      if (nameEl) nameEl.textContent = name;
+    }
+  });
+  saveState();
+  showToast('✅ ' + name + ' saved!', 'ok');
+}
+
+// ═══════════════════════════════════════
+// GENERATE
+// ═══════════════════════════════════════
+async function generateGL() {
+  showToast('⏳ Generating...', '');
+  try {
+    const payload = {
+      ...S,
+      salaryTotal: calcTotals().salaryTotal,
+      benefitsTotal: calcTotals().benefits,
+    };
+    const resp = await fetch('/api/generate-gl', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error('Server error');
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `TCC_NFSA_General_Ledger_${S.fiscalYear}.docx`;
+    a.click();
+    showToast('✅ General Ledger downloaded!', 'ok');
+  } catch (e) { showToast('❌ Error generating document', 'err'); }
+}
+
+function showYERModal() {
+  const { salaryTotal, benefits, foodCost, cacfpReimb, totalExp, fundMod, totalRev } = calcTotals();
+  document.getElementById('yerModalBody').innerHTML = `
+    <p style="color:var(--muted); font-size:0.875rem; margin-bottom:20px;">${S.fiscalYear} | Sponsor ID: ${S.sponsorId} | Use these exact amounts when entering in MIND.</p>
+    <div style="display:grid; gap:18px;">
+      ${[
+        { title: 'Revenue Worksheet', rows: [['3a','CACFP Reimbursement (pre-filled by MDE)',fmt(cacfpReimb)],['10','Fund Modification',fmt(fundMod)],['11','Total Revenue',fmt(totalRev)]] },
+        { title: 'Expenditure Worksheet', rows: [['1','Salaries — Food Service',fmt(salaryTotal)],['2','Employee Benefits (7.65%)',fmt(benefits)],['10','Food Cost',fmt(foodCost)],['11','Total Expenditures',fmt(totalExp)]] },
+        { title: 'Balance Sheet', rows: [['1','Beginning Balance','$0.00'],['2','Year End Revenue',fmt(totalRev)],['3','Year End Expenditures',fmt(totalExp)],['6','Ending Fund Balance','$0.00']] },
+      ].map(section => `
+        <div>
+          <h4 style="font-family:'Libre Baskerville',serif; color:var(--navy); margin-bottom:10px; font-size:1rem;">${section.title}</h4>
+          <table style="width:100%; border-collapse:collapse; font-size:0.875rem;">
+            <thead><tr style="background:var(--navy); color:white;"><th style="padding:7px 12px; text-align:left;">Line</th><th style="padding:7px 12px;">Description</th><th style="padding:7px 12px; text-align:right;">Amount</th></tr></thead>
+            <tbody>${section.rows.map((r,i) => `<tr style="background:${i===section.rows.length-1?'var(--light)':'white'}; border-bottom:1px solid var(--border);">
+              <td style="padding:7px 12px; font-weight:600;">${r[0]}</td>
+              <td style="padding:7px 12px;">${r[1]}</td>
+              <td style="padding:7px 12px; text-align:right; font-weight:${i===section.rows.length-1?'700':'400'}; color:${i===section.rows.length-1?'var(--mid)':'inherit'};">${r[2]}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>`).join('')}
+    </div>`;
+  document.getElementById('yerModal').classList.add('open');
+}
+
+// ═══════════════════════════════════════
+// DEADLINE
+// ═══════════════════════════════════════
+function checkDeadline() {
+  const now = new Date();
+  const dec1 = new Date(now.getFullYear(), 11, 1);
+  const chip = document.getElementById('deadlineChip');
+  const label = document.getElementById('deadlineLabel');
+  if (now > dec1) {
+    chip.classList.add('ok');
+    label.textContent = 'Past Dec 1 — Finalize for MDE';
+  } else {
+    const days = Math.ceil((dec1 - now) / (1000*60*60*24));
+    label.textContent = `${days} days until Dec 1`;
+  }
+}
+
+// ═══════════════════════════════════════
+// PERSIST
+// ═══════════════════════════════════════
+function saveState() {
+  try { localStorage.setItem('tcc_cacfp', JSON.stringify(S)); } catch(e) {}
+  fetch('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(S) }).catch(() => {});
+}
+
+function loadState() {
+  try {
+    const saved = localStorage.getItem('tcc_cacfp');
+    if (saved) {
+      S = { ...S, ...JSON.parse(saved) };
+      document.getElementById('set-fy').value = S.fiscalYear || 'FY2026';
+      document.getElementById('set-sponsor').value = S.sponsorId || '990004457';
+      document.getElementById('set-org').value = S.orgName || "The Children's Center";
+      document.getElementById('set-contact').value = S.contactName || 'Mary Wardlaw';
+      document.getElementById('set-email').value = S.contactEmail || 'mewardlaw@sbcglobal.net';
+      document.getElementById('set-phone').value = S.contactPhone || '(269) 240-0557';
+      document.getElementById('sidebarFY').textContent = S.fiscalYear;
+      document.getElementById('sidebarSponsor').textContent = S.sponsorId;
+      if (S.cacfpReimbursement) document.getElementById('yer-cacfp-input').value = S.cacfpReimbursement;
+      if (S.foodCost) document.getElementById('yer-food-input').value = S.foodCost;
+      // Restore doc upload zones
+      Object.entries(S.docNames || {}).forEach(([key, name]) => {
+        if (key === 'pl' || key === 'benefits') {
+          const zone = document.getElementById('uz-' + key);
+          const nameEl = document.getElementById('un-' + key);
+          if (zone) zone.classList.add('done');
+          if (nameEl) nameEl.textContent = '✅ ' + name;
+        }
+      });
+    }
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (type || '');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+</script>
+</body>
+</html>
