@@ -356,6 +356,25 @@ body { font-family: 'Inter', sans-serif; background: var(--gray); color: var(--t
 </style>
 </head>
 <body>
+<!-- PIN SCREEN -->
+<div id="pinScreen" style="display:flex; position:fixed; inset:0; background:linear-gradient(135deg,#0f2340,#1a3558,#2557a7); z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:20px; padding:40px 48px; width:380px; text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.4);">
+    <div style="font-size:2.5rem; margin-bottom:12px;">🍽️</div>
+    <div style="font-family:'Libre Baskerville',serif; font-size:1.4rem; font-weight:700; color:#0f2340; margin-bottom:4px;">TCC CACFP Suite</div>
+    <div style="font-size:0.8rem; color:#64748b; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:28px;">The Children's Center</div>
+    <div style="font-size:0.85rem; font-weight:600; color:#0f2340; margin-bottom:8px; text-align:left;">Enter Access PIN</div>
+    <input id="pinInput" type="password" placeholder="••••••••"
+      style="width:100%; padding:12px 16px; border:2px solid #dce5f0; border-radius:10px; font-size:1.1rem; text-align:center; font-family:'Inter',sans-serif; margin-bottom:10px; letter-spacing:0.2em;"
+      onkeydown="if(event.key==='Enter') submitPIN()">
+    <div id="pinError" style="color:#991b1b; font-size:0.82rem; min-height:20px; margin-bottom:8px;"></div>
+    <button onclick="submitPIN()"
+      style="width:100%; padding:12px; background:#2557a7; color:white; border:none; border-radius:10px; font-size:0.95rem; font-weight:700; font-family:'Inter',sans-serif; cursor:pointer;">
+      Unlock →
+    </button>
+    <div style="margin-top:20px; font-size:0.75rem; color:#94a3b8;">Mary · Jared · Kelsey &mdash; Authorized access only</div>
+  </div>
+</div>
+
 <div class="shell">
 
 <!-- ── SIDEBAR ── -->
@@ -720,10 +739,11 @@ body { font-family: 'Inter', sans-serif; background: var(--gray); color: var(--t
 
 <script>
 // ═══════════════════════════════════════
-// STATE
+// STATE & AUTH
 // ═══════════════════════════════════════
 const MONTHS_LIST = ['October','November','December','January','February','March','April','May','June','July','August','September'];
 
+let PIN = '';
 let S = {
   fiscalYear: 'FY2026',
   sponsorId: '990004457',
@@ -739,14 +759,105 @@ let S = {
   docNames: {}
 };
 
+// ── PIN AUTH ──────────────────────────────────────
+async function submitPIN() {
+  const pin = document.getElementById('pinInput').value.trim();
+  const errEl = document.getElementById('pinError');
+  errEl.textContent = '';
+  if (!pin) { errEl.textContent = 'Please enter your PIN.'; return; }
+  try {
+    const resp = await fetch('/api/auth', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    if (resp.ok) {
+      PIN = pin;
+      sessionStorage.setItem('cacfp_pin', pin);
+      document.getElementById('pinScreen').style.display = 'none';
+      await loadFromDB();
+      buildMonthlyUI();
+      updateAll();
+      checkDeadline();
+    } else {
+      const data = await resp.json();
+      errEl.textContent = data.error || 'Incorrect PIN.';
+      document.getElementById('pinInput').value = '';
+      document.getElementById('pinInput').focus();
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error. Please try again.';
+  }
+}
+
+// ── API HELPERS ───────────────────────────────────
+async function apiGet(path) {
+  const resp = await fetch(path, { headers: { 'x-pin': PIN } });
+  if (!resp.ok) throw new Error('API error');
+  return resp.json();
+}
+
+async function apiPost(path, body) {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-pin': PIN },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) throw new Error('API error');
+  return resp.json();
+}
+
+async function loadFromDB() {
+  try {
+    const data = await apiGet('/api/data');
+    if (data && Object.keys(data).length > 0) {
+      S = { ...S, ...data };
+      // Restore UI fields
+      document.getElementById('set-fy').value = S.fiscalYear || 'FY2026';
+      document.getElementById('set-sponsor').value = S.sponsorId || '990004457';
+      document.getElementById('set-org').value = S.orgName || "The Children's Center";
+      document.getElementById('set-contact').value = S.contactName || 'Mary Wardlaw';
+      document.getElementById('set-email').value = S.contactEmail || 'mewardlaw@sbcglobal.net';
+      document.getElementById('set-phone').value = S.contactPhone || '(269) 240-0557';
+      document.getElementById('sidebarFY').textContent = S.fiscalYear;
+      document.getElementById('sidebarSponsor').textContent = S.sponsorId;
+      if (S.cacfpReimbursement) document.getElementById('yer-cacfp-input').value = S.cacfpReimbursement;
+      if (S.foodCost) document.getElementById('yer-food-input').value = S.foodCost;
+      // Restore doc upload zones
+      Object.entries(S.docNames || {}).forEach(([key, name]) => {
+        if (key === 'pl' || key === 'benefits') {
+          const zone = document.getElementById('uz-' + key);
+          const nameEl = document.getElementById('un-' + key);
+          if (zone) zone.classList.add('done');
+          if (nameEl) nameEl.textContent = '✅ ' + name;
+        }
+      });
+    }
+    showToast('✅ Data loaded from server', 'ok');
+  } catch (e) {
+    console.error('Load error:', e);
+    // Fall back to localStorage
+    loadLocalState();
+  }
+}
+
 // ═══════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════
 window.onload = () => {
-  loadState();
-  buildMonthlyUI();
-  updateAll();
-  checkDeadline();
+  // Check if PIN is cached in session
+  const cachedPIN = sessionStorage.getItem('cacfp_pin');
+  if (cachedPIN) {
+    PIN = cachedPIN;
+    document.getElementById('pinScreen').style.display = 'none';
+    loadFromDB().then(() => {
+      buildMonthlyUI();
+      updateAll();
+      checkDeadline();
+    });
+  } else {
+    // Show PIN screen, focus input
+    setTimeout(() => document.getElementById('pinInput').focus(), 100);
+  }
 };
 
 function getFYYearNum() { return parseInt(S.fiscalYear.replace('FY','')); }
@@ -1202,13 +1313,10 @@ function handleMonthlyDoc(type, key, input) {
 async function generateGL() {
   showToast('⏳ Generating...', '');
   try {
-    const payload = {
-      ...S,
-      salaryTotal: calcTotals().salaryTotal,
-      benefitsTotal: calcTotals().benefits,
-    };
+    const payload = { ...S, salaryTotal: calcTotals().salaryTotal, benefitsTotal: calcTotals().benefits };
     const resp = await fetch('/api/generate-gl', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-pin': PIN },
       body: JSON.stringify(payload)
     });
     if (!resp.ok) throw new Error('Server error');
@@ -1264,38 +1372,28 @@ function checkDeadline() {
 }
 
 // ═══════════════════════════════════════
-// PERSIST
+// PERSIST — PostgreSQL + localStorage fallback
 // ═══════════════════════════════════════
+let saveTimer = null;
+
 function saveState() {
+  // Always save to localStorage as immediate fallback
   try { localStorage.setItem('tcc_cacfp', JSON.stringify(S)); } catch(e) {}
-  fetch('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(S) }).catch(() => {});
+  // Debounce DB saves to avoid hammering on rapid input
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await apiPost('/api/data', S);
+    } catch(e) {
+      console.warn('DB save failed, using localStorage only');
+    }
+  }, 800);
 }
 
-function loadState() {
+function loadLocalState() {
   try {
     const saved = localStorage.getItem('tcc_cacfp');
-    if (saved) {
-      S = { ...S, ...JSON.parse(saved) };
-      document.getElementById('set-fy').value = S.fiscalYear || 'FY2026';
-      document.getElementById('set-sponsor').value = S.sponsorId || '990004457';
-      document.getElementById('set-org').value = S.orgName || "The Children's Center";
-      document.getElementById('set-contact').value = S.contactName || 'Mary Wardlaw';
-      document.getElementById('set-email').value = S.contactEmail || 'mewardlaw@sbcglobal.net';
-      document.getElementById('set-phone').value = S.contactPhone || '(269) 240-0557';
-      document.getElementById('sidebarFY').textContent = S.fiscalYear;
-      document.getElementById('sidebarSponsor').textContent = S.sponsorId;
-      if (S.cacfpReimbursement) document.getElementById('yer-cacfp-input').value = S.cacfpReimbursement;
-      if (S.foodCost) document.getElementById('yer-food-input').value = S.foodCost;
-      // Restore doc upload zones
-      Object.entries(S.docNames || {}).forEach(([key, name]) => {
-        if (key === 'pl' || key === 'benefits') {
-          const zone = document.getElementById('uz-' + key);
-          const nameEl = document.getElementById('un-' + key);
-          if (zone) zone.classList.add('done');
-          if (nameEl) nameEl.textContent = '✅ ' + name;
-        }
-      });
-    }
+    if (saved) S = { ...S, ...JSON.parse(saved) };
   } catch(e) {}
 }
 
