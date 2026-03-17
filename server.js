@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-        AlignmentType, BorderStyle, WidthType, ShadingType } = require('docx');
+        AlignmentType, BorderStyle, WidthType, ShadingType, HeadingLevel } = require('docx');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,520 +16,622 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+// File uploads — store in memory for DB storage
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+// ── SCHEMA INIT ───────────────────────────────────────────
 async function initDB() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS cacfp_data (
-        id SERIAL PRIMARY KEY,
-        data_key VARCHAR(255) UNIQUE NOT NULL,
-        data_value JSONB NOT NULL,
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS cacfp_uploads (
-        id SERIAL PRIMARY KEY,
-        upload_key VARCHAR(255) NOT NULL,
-        original_name VARCHAR(500),
-        stored_path VARCHAR(500),
-        upload_type VARCHAR(100),
-        month_key VARCHAR(50),
-        center VARCHAR(50),
-        uploaded_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    console.log('Database ready');
-  } catch (err) { console.error('DB init error:', err.message); }
-}
-
-async function dbGet(key) {
-  try {
-    const res = await pool.query('SELECT data_value FROM cacfp_data WHERE data_key=$1', [key]);
-    return res.rows[0] ? res.rows[0].data_value : null;
-  } catch (e) { return null; }
-}
-
-async function dbSet(key, value) {
-  try {
-    await pool.query(
-      `INSERT INTO cacfp_data (data_key, data_value, updated_at) VALUES ($1,$2,NOW())
-       ON CONFLICT (data_key) DO UPDATE SET data_value=$2, updated_at=NOW()`,
-      [key, JSON.stringify(value)]
+  await pool.query(`
+    -- Fiscal years
+    CREATE TABLE IF NOT EXISTS fiscal_years (
+      id SERIAL PRIMARY KEY,
+      label VARCHAR(20) NOT NULL UNIQUE,
+      start_month INTEGER NOT NULL DEFAULT 10,
+      start_year INTEGER NOT NULL,
+      end_month INTEGER NOT NULL DEFAULT 9,
+      end_year INTEGER NOT NULL,
+      is_active BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW()
     );
-    return true;
-  } catch (e) { console.error('dbSet:', e.message); return false; }
+
+    -- Staff roster (persists across months, carries forward to new years)
+    CREATE TABLE IF NOT EXISTS staff (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(150) NOT NULL,
+      center VARCHAR(50) NOT NULL,
+      hourly_rate NUMERIC(8,2) NOT NULL DEFAULT 0,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Monthly staff time entries (from Time Distribution forms)
+    CREATE TABLE IF NOT EXISTS staff_time_entries (
+      id SERIAL PRIMARY KEY,
+      staff_id INTEGER REFERENCES staff(id) ON DELETE CASCADE,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      month_key VARCHAR(10) NOT NULL,
+      food_service_hours NUMERIC(8,2) DEFAULT 0,
+      admin_hours NUMERIC(8,2) DEFAULT 0,
+      hourly_rate_used NUMERIC(8,2) DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(staff_id, fiscal_year_id, month_key)
+    );
+
+    -- Uploaded documents (PDFs stored as bytea for audit)
+    CREATE TABLE IF NOT EXISTS documents (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      month_key VARCHAR(10),
+      doc_type VARCHAR(80) NOT NULL,
+      filename VARCHAR(255) NOT NULL,
+      mime_type VARCHAR(100),
+      file_data BYTEA,
+      staff_id INTEGER REFERENCES staff(id) ON DELETE SET NULL,
+      metadata JSONB DEFAULT '{}',
+      uploaded_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Monthly financial data (claims, food costs, attendance, etc.)
+    CREATE TABLE IF NOT EXISTS monthly_data (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      month_key VARCHAR(10) NOT NULL,
+      data_type VARCHAR(80) NOT NULL,
+      data JSONB DEFAULT '{}',
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(fiscal_year_id, month_key, data_type)
+    );
+
+    -- NFSA Revenue tracking
+    CREATE TABLE IF NOT EXISTS revenue_entries (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      month_key VARCHAR(10) NOT NULL,
+      revenue_type VARCHAR(80) NOT NULL,
+      description TEXT,
+      amount NUMERIC(12,2) DEFAULT 0,
+      source VARCHAR(120),
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Program documents (application, approval, etc.)
+    CREATE TABLE IF NOT EXISTS program_documents (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      doc_type VARCHAR(80) NOT NULL,
+      label VARCHAR(255),
+      filename VARCHAR(255) NOT NULL,
+      mime_type VARCHAR(100),
+      file_data BYTEA,
+      uploaded_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Year-end report data
+    CREATE TABLE IF NOT EXISTS yer_data (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id) UNIQUE,
+      food_cost NUMERIC(12,2) DEFAULT 0,
+      cacfp_reimbursement NUMERIC(12,2) DEFAULT 0,
+      total_salaries NUMERIC(12,2) DEFAULT 0,
+      total_benefits NUMERIC(12,2) DEFAULT 0,
+      total_admin NUMERIC(12,2) DEFAULT 0,
+      total_revenue NUMERIC(12,2) DEFAULT 0,
+      fund_balance NUMERIC(12,2) DEFAULT 0,
+      notes TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Seed first fiscal year if none exists
+    INSERT INTO fiscal_years (label, start_year, end_year, is_active)
+    VALUES ('2025-2026', 2025, 2026, true)
+    ON CONFLICT (label) DO NOTHING;
+  `);
+  console.log('✅ Database tables ready');
 }
 
-// ── MIDDLEWARE ────────────────────────────────────────────
-app.use(express.json({ limit: '20mb' }));
-app.use(express.static('public'));
-
-function requirePIN(req, res, next) {
-  const pin = req.headers['x-pin'] || req.body?.pin || req.query?.pin;
+// ── AUTH MIDDLEWARE ────────────────────────────────────────
+function authCheck(req, res, next) {
+  const pin = req.headers['x-access-pin'] || req.query.pin;
   if (pin === ACCESS_PIN) return next();
   res.status(401).json({ error: 'Invalid PIN' });
 }
 
-// ── FILE UPLOAD ───────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = 'uploads/';
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => { cb(null, Date.now() + '-' + file.originalname); }
-});
-const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
-
-// ── AUTH ──────────────────────────────────────────────────
+// ── PUBLIC: PIN check ─────────────────────────────────────
 app.post('/api/auth', (req, res) => {
-  if (req.body.pin === ACCESS_PIN) res.json({ success: true });
-  else res.status(401).json({ error: 'Incorrect PIN. Please try again.' });
+  if (req.body.pin === ACCESS_PIN) return res.json({ ok: true });
+  res.status(401).json({ error: 'Invalid PIN' });
 });
 
-// ── CORE DATA ─────────────────────────────────────────────
-app.get('/api/data', requirePIN, async (req, res) => {
-  const data = await dbGet('app_state');
-  res.json(data || {});
-});
-
-app.post('/api/data', requirePIN, async (req, res) => {
-  const ok = await dbSet('app_state', req.body);
-  res.json({ success: ok });
-});
-
-// ── PARSE CACFP CSV ───────────────────────────────────────
-app.post('/api/parse-cacfp-csv', requirePIN, upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
+// ── FISCAL YEARS ──────────────────────────────────────────
+app.get('/api/fiscal-years', authCheck, async (req, res) => {
   try {
-    const content = fs.readFileSync(req.file.path, 'utf-8').replace(/^\uFEFF/, '');
-    const lines = content.split('\n');
-
-    // Parse header for dates
-    const headerLine = lines[2] || lines[1];
-    const headers = headerLine.split(',');
-    const dateLabels = headers.slice(4).map(h => h.trim().replace(/\r/g,''));
-    const nDates = dateLabels.length;
-
-    const MEAL_ORDER = ['Breakfast','AM snack','Lunch','PM snack','Dinner','Not specified'];
-
-    // Parse students
-    const students = [];
-    let i = 3;
-    while (i < lines.length) {
-      const line = lines[i].trim();
-      if (!line) { i++; continue; }
-      const row = parseCSVLine(lines[i]);
-      if (row.length === 4 && row[0].trim() && !row[0].includes('School Name') &&
-          !MEAL_ORDER.includes(row[3].trim())) {
-        const first = row[0].trim(), last = row[1]?.trim() || '', classroom = row[3]?.trim() || '';
-        let eligibility = '', meals = {};
-        let j = i + 1, mFound = 0;
-        while (j < lines.length && mFound < MEAL_ORDER.length) {
-          const mline = lines[j].trim();
-          if (!mline) { j++; continue; }
-          const mrow = parseCSVLine(lines[j]);
-          if (mrow.length > 3 && MEAL_ORDER.includes(mrow[3].trim())) {
-            const mt = mrow[3].trim();
-            if (mFound === 0 && ['Paid','Free','Reduced'].includes(mrow[0].trim()))
-              eligibility = mrow[0].trim();
-            const days = mrow.slice(4, 4 + nDates).map(d => d.trim() === 'X');
-            while (days.length < nDates) days.push(false);
-            meals[mt] = days;
-            mFound++; j++;
-          } else break;
-        }
-        students.push({ first, last, classroom, eligibility, meals });
-        i = j;
-      } else i++;
-    }
-
-    // Apply 3-meal rule & calculate totals
-    const catMap = { 'Free': 'A', 'Reduced': 'B', 'Paid': 'C', '': 'C' };
-    const mealTypes = ['Breakfast','AM snack','Lunch','PM snack'];
-    const daily = {};
-    mealTypes.forEach(mt => { daily[mt] = { A:[...Array(nDates)].map(()=>0), B:[...Array(nDates)].map(()=>0), C:[...Array(nDates)].map(()=>0) }; });
-
-    // Track exclusions for annotated report
-    const exclusions = {};
-    students.forEach(s => {
-      exclusions[s.first+'_'+s.last] = {};
-      for (let d = 0; d < nDates; d++) {
-        const served = mealTypes.filter(mt => s.meals[mt]?.[d]);
-        if (served.length > 3) {
-          const excl = new Set();
-          let toExcl = served.slice();
-          while (toExcl.filter(m => !excl.has(m)).length > 3) {
-            for (const c of ['PM snack','AM snack','Breakfast']) {
-              if (toExcl.includes(c) && !excl.has(c)) { excl.add(c); break; }
-            }
-          }
-          exclusions[s.first+'_'+s.last][d] = [...excl];
-        }
-      }
-    });
-
-    students.forEach(s => {
-      const cat = catMap[s.eligibility] || 'C';
-      const excl = exclusions[s.first+'_'+s.last];
-      for (let d = 0; d < nDates; d++) {
-        const dayExcl = new Set(excl[d] || []);
-        mealTypes.forEach(mt => {
-          if (s.meals[mt]?.[d] && !dayExcl.has(mt)) daily[mt][cat][d]++;
-        });
-      }
-    });
-
-    // Monthly totals
-    const monthly = {};
-    mealTypes.forEach(mt => {
-      monthly[mt] = {
-        A: daily[mt].A.reduce((a,b)=>a+b,0),
-        B: daily[mt].B.reduce((a,b)=>a+b,0),
-        C: daily[mt].C.reduce((a,b)=>a+b,0),
-      };
-      monthly[mt].Total = monthly[mt].A + monthly[mt].B + monthly[mt].C;
-    });
-
-    // Snacks combined
-    monthly['Snacks'] = {
-      A: monthly['AM snack'].A + monthly['PM snack'].A,
-      B: monthly['AM snack'].B + monthly['PM snack'].B,
-      C: monthly['AM snack'].C + monthly['PM snack'].C,
-      Total: monthly['AM snack'].Total + monthly['PM snack'].Total,
-    };
-
-    // Days food service provided = days where any meal was served to anyone
-    const daysWithService = dateLabels.filter((_, d) =>
-      mealTypes.some(mt => students.some(s => s.meals[mt]?.[d]))
-    ).length;
-
-    // Total enrollment from this report
-    const totalEnrolled = students.length;
-
-    res.json({
-      success: true,
-      filename: req.file.originalname,
-      students: totalEnrolled,
-      daysWithService,
-      monthly,
-      dateLabels,
-      exclusionCount: Object.values(exclusions).reduce((sum, days) =>
-        sum + Object.values(days).reduce((s,e) => s + e.length, 0), 0),
-    });
-  } catch (err) {
-    console.error('CSV parse error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    const { rows } = await pool.query('SELECT * FROM fiscal_years ORDER BY start_year DESC');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── PARSE ATTENDANCE CSV ──────────────────────────────────
-app.post('/api/parse-attendance-csv', requirePIN, upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
+app.post('/api/fiscal-years', authCheck, async (req, res) => {
   try {
-    const content = fs.readFileSync(req.file.path, 'utf-8').replace(/^\uFEFF/, '');
-    const lines = content.split('\n');
-
-    // Find summary stats line
-    let totalEnrolled = 0, avgDailyAttendance = 0, totalPresent = 0;
-    let operatingDays = 0;
-
-    for (const line of lines) {
-      if (line.includes('Number students')) {
-        const match = line.match(/(\d+)/);
-        if (match) totalEnrolled = parseInt(match[1]);
-      }
-      if (line.includes('Average daily attendance') && !line.includes('%')) {
-        const match = line.match(/(\d+\.?\d*)/g);
-        if (match && match.length >= 2) avgDailyAttendance = parseFloat(match[1]);
-      }
-    }
-
-    // Parse header for dates, count operating days (Mon-Fri with P entries)
-    const headerRow = parseCSVLine(lines[2] || lines[1]);
-    const dateCols = headerRow.slice(3, -2); // skip classroom, first, last, total present, total absent
-
-    // Count days that had any attendance (P entries)
-    const dataLines = lines.slice(3).filter(l => l.trim() && !l.includes('AGGREGATE') && !l.includes('Summary'));
-    if (dateCols.length > 0 && dataLines.length > 0) {
-      for (let d = 0; d < dateCols.length; d++) {
-        const hasPresent = dataLines.some(l => {
-          const row = parseCSVLine(l);
-          return row[3 + d]?.trim() === 'P';
-        });
-        if (hasPresent) operatingDays++;
-      }
-    }
-
-    // Get aggregate totals row
-    const aggLine = lines.find(l => l.includes('AGGREGATE'));
-    if (aggLine) {
-      const aggRow = parseCSVLine(aggLine);
-      const dailyCounts = aggRow.slice(3, -1).map(v => parseInt(v) || 0).filter(v => v > 0);
-      if (dailyCounts.length > 0 && !avgDailyAttendance) {
-        avgDailyAttendance = dailyCounts.reduce((a,b)=>a+b,0) / dailyCounts.length;
-      }
-    }
-
-    res.json({
-      success: true,
-      filename: req.file.originalname,
-      totalEnrolled,
-      avgDailyAttendance: Math.round(avgDailyAttendance * 10) / 10,
-      operatingDays,
-    });
-  } catch (err) {
-    console.error('Attendance parse error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    const { label, start_year, end_year } = req.body;
+    // Deactivate all, then insert new as active
+    await pool.query('UPDATE fiscal_years SET is_active = false');
+    const { rows } = await pool.query(
+      `INSERT INTO fiscal_years (label, start_year, end_year, is_active)
+       VALUES ($1, $2, $3, true)
+       ON CONFLICT (label) DO UPDATE SET is_active = true
+       RETURNING *`,
+      [label, start_year, end_year]
+    );
+    // Copy active staff roster to new year (they'll need new time entries)
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── PARSE CDC PDF ─────────────────────────────────────────
-app.post('/api/parse-cdc-pdf', requirePIN, upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
+app.put('/api/fiscal-years/:id/activate', authCheck, async (req, res) => {
   try {
-    // Use pdf-parse to extract text
-    let pdfParse;
-    try { pdfParse = require('pdf-parse'); } catch(e) {
-      return res.json({ success: false, error: 'pdf-parse not available', manualEntry: true });
-    }
-
-    const dataBuffer = fs.readFileSync(req.file.path);
-    const pdfData = await pdfParse(dataBuffer);
-    const text = pdfData.text;
-
-    // Extract children using regex pattern
-    // Pattern: "Child's Name : FirstName LastName" followed by payment info
-    const childPattern = /Child's Name\s*:\s*([^\n]+)\n.*?Total for Child:\s*\$\s*([\d,.]+)/gs;
-    const amountPattern = /\$\s*([\d,]+\.\d{2})\s*$/m;
-
-    const children = [];
-    const seen = new Set();
-
-    // Split by child entries
-    const sections = text.split(/Child's Name\s*:/);
-    for (let i = 1; i < sections.length; i++) {
-      const section = sections[i];
-      const nameMatch = section.match(/^\s*([A-Za-z][^\n]+)/);
-      if (!nameMatch) continue;
-      const name = nameMatch[1].trim();
-
-      // Get amount paid
-      const totalMatch = section.match(/Total for Child:\s*\$\s*([\d,]+\.\d{2})/);
-      if (!totalMatch) continue;
-      const amountPaid = parseFloat(totalMatch[1].replace(',',''));
-
-      // Check for error descriptions that indicate $0
-      const noAuth = section.includes('No Authorization');
-      const dupBill = section.includes('Duplicate Bill');
-
-      // Only count if payment > 0
-      if (amountPaid > 0 && !seen.has(name.toLowerCase())) {
-        seen.add(name.toLowerCase());
-        children.push({ name, amountPaid, status: 'qualifying' });
-      }
-    }
-
-    res.json({
-      success: true,
-      filename: req.file.originalname,
-      qualifyingChildren: children.length,
-      children,
-    });
-  } catch (err) {
-    console.error('CDC PDF parse error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    await pool.query('UPDATE fiscal_years SET is_active = false');
+    const { rows } = await pool.query(
+      'UPDATE fiscal_years SET is_active = true WHERE id = $1 RETURNING *',
+      [req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── PARSE FOOD RECEIPT (AI extraction) ───────────────────
-app.post('/api/parse-receipt', requirePIN, upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
+// ── STAFF ROSTER ──────────────────────────────────────────
+app.get('/api/staff', authCheck, async (req, res) => {
   try {
-    let extractedTotal = null;
-    const filename = req.file.originalname.toLowerCase();
+    const center = req.query.center;
+    let q = 'SELECT * FROM staff WHERE is_active = true';
+    const params = [];
+    if (center) { q += ' AND center = $1'; params.push(center); }
+    q += ' ORDER BY name';
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    // Try pdf-parse for PDFs
-    if (filename.endsWith('.pdf')) {
-      try {
-        const pdfParse = require('pdf-parse');
-        const dataBuffer = fs.readFileSync(req.file.path);
-        const pdfData = await pdfParse(dataBuffer);
-        const text = pdfData.text;
+app.post('/api/staff', authCheck, async (req, res) => {
+  try {
+    const { name, center, hourly_rate } = req.body;
+    const { rows } = await pool.query(
+      'INSERT INTO staff (name, center, hourly_rate) VALUES ($1, $2, $3) RETURNING *',
+      [name, center, hourly_rate || 0]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-        // Look for total patterns
-        const patterns = [
-          /(?:total|amount due|grand total|subtotal)[:\s]*\$?\s*([\d,]+\.\d{2})/gi,
-          /\$\s*([\d,]+\.\d{2})\s*(?:total|due)/gi,
-        ];
-        for (const pattern of patterns) {
-          const match = pattern.exec(text);
-          if (match) {
-            extractedTotal = parseFloat(match[1].replace(',',''));
-            break;
-          }
-        }
-      } catch(e) { /* fall through to manual */ }
+app.put('/api/staff/:id', authCheck, async (req, res) => {
+  try {
+    const { name, hourly_rate, is_active } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE staff SET
+        name = COALESCE($1, name),
+        hourly_rate = COALESCE($2, hourly_rate),
+        is_active = COALESCE($3, is_active),
+        updated_at = NOW()
+       WHERE id = $4 RETURNING *`,
+      [name, hourly_rate, is_active, req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── STAFF TIME ENTRIES ────────────────────────────────────
+app.get('/api/staff-time', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key } = req.query;
+    let q = `SELECT ste.*, s.name, s.center, s.hourly_rate as current_rate
+             FROM staff_time_entries ste
+             JOIN staff s ON s.id = ste.staff_id
+             WHERE 1=1`;
+    const params = [];
+    if (fiscal_year_id) { params.push(fiscal_year_id); q += ` AND ste.fiscal_year_id = $${params.length}`; }
+    if (month_key) { params.push(month_key); q += ` AND ste.month_key = $${params.length}`; }
+    q += ' ORDER BY s.center, s.name';
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/staff-time', authCheck, async (req, res) => {
+  try {
+    const { staff_id, fiscal_year_id, month_key, food_service_hours, admin_hours, hourly_rate_used } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO staff_time_entries (staff_id, fiscal_year_id, month_key, food_service_hours, admin_hours, hourly_rate_used)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (staff_id, fiscal_year_id, month_key)
+       DO UPDATE SET food_service_hours = $4, admin_hours = $5, hourly_rate_used = $6, updated_at = NOW()
+       RETURNING *`,
+      [staff_id, fiscal_year_id, month_key, food_service_hours || 0, admin_hours || 0, hourly_rate_used || 0]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Bulk upsert time entries for a month
+app.post('/api/staff-time/bulk', authCheck, async (req, res) => {
+  try {
+    const { entries, fiscal_year_id, month_key } = req.body;
+    const results = [];
+    for (const e of entries) {
+      const { rows } = await pool.query(
+        `INSERT INTO staff_time_entries (staff_id, fiscal_year_id, month_key, food_service_hours, admin_hours, hourly_rate_used)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (staff_id, fiscal_year_id, month_key)
+         DO UPDATE SET food_service_hours = $4, admin_hours = $5, hourly_rate_used = $6, updated_at = NOW()
+         RETURNING *`,
+        [e.staff_id, fiscal_year_id, month_key, e.food_service_hours || 0, e.admin_hours || 0, e.hourly_rate_used || 0]
+      );
+      results.push(rows[0]);
+    }
+    res.json(results);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get monthly salary/admin totals for a fiscal year
+app.get('/api/staff-time/totals', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id } = req.query;
+    const { rows } = await pool.query(`
+      SELECT month_key,
+        SUM(food_service_hours * hourly_rate_used) as food_service_cost,
+        SUM(admin_hours * hourly_rate_used) as admin_cost,
+        SUM(food_service_hours) as total_fs_hours,
+        SUM(admin_hours) as total_admin_hours,
+        COUNT(DISTINCT staff_id) as staff_count
+      FROM staff_time_entries
+      WHERE fiscal_year_id = $1
+      GROUP BY month_key
+      ORDER BY month_key
+    `, [fiscal_year_id]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── DOCUMENT UPLOAD/DOWNLOAD ──────────────────────────────
+app.post('/api/documents/upload', authCheck, upload.single('file'), async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, doc_type, staff_id, metadata } = req.body;
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'No file uploaded' });
+    const { rows } = await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, staff_id, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, filename, doc_type, uploaded_at`,
+      [fiscal_year_id, month_key || null, doc_type, file.originalname, file.mimetype, file.buffer,
+       staff_id || null, metadata ? JSON.parse(metadata) : {}]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/documents', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, doc_type, staff_id } = req.query;
+    let q = 'SELECT id, fiscal_year_id, month_key, doc_type, filename, mime_type, staff_id, metadata, uploaded_at FROM documents WHERE 1=1';
+    const params = [];
+    if (fiscal_year_id) { params.push(fiscal_year_id); q += ` AND fiscal_year_id = $${params.length}`; }
+    if (month_key) { params.push(month_key); q += ` AND month_key = $${params.length}`; }
+    if (doc_type) { params.push(doc_type); q += ` AND doc_type = $${params.length}`; }
+    if (staff_id) { params.push(staff_id); q += ` AND staff_id = $${params.length}`; }
+    q += ' ORDER BY uploaded_at DESC';
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/documents/:id/download', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT filename, mime_type, file_data FROM documents WHERE id = $1', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.setHeader('Content-Disposition', `attachment; filename="${rows[0].filename}"`);
+    res.setHeader('Content-Type', rows[0].mime_type || 'application/octet-stream');
+    res.send(rows[0].file_data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/documents/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM documents WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── MONTHLY DATA (generic key-value per month) ───────────
+app.get('/api/monthly-data', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, data_type } = req.query;
+    let q = 'SELECT * FROM monthly_data WHERE 1=1';
+    const params = [];
+    if (fiscal_year_id) { params.push(fiscal_year_id); q += ` AND fiscal_year_id = $${params.length}`; }
+    if (month_key) { params.push(month_key); q += ` AND month_key = $${params.length}`; }
+    if (data_type) { params.push(data_type); q += ` AND data_type = $${params.length}`; }
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/monthly-data', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, data_type, data } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO monthly_data (fiscal_year_id, month_key, data_type, data)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (fiscal_year_id, month_key, data_type)
+       DO UPDATE SET data = $4, updated_at = NOW()
+       RETURNING *`,
+      [fiscal_year_id, month_key, data_type, JSON.stringify(data)]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── REVENUE ENTRIES ───────────────────────────────────────
+app.get('/api/revenue', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key } = req.query;
+    let q = 'SELECT * FROM revenue_entries WHERE 1=1';
+    const params = [];
+    if (fiscal_year_id) { params.push(fiscal_year_id); q += ` AND fiscal_year_id = $${params.length}`; }
+    if (month_key) { params.push(month_key); q += ` AND month_key = $${params.length}`; }
+    q += ' ORDER BY month_key, revenue_type';
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/revenue', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, revenue_type, description, amount, source } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO revenue_entries (fiscal_year_id, month_key, revenue_type, description, amount, source)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [fiscal_year_id, month_key, revenue_type, description, amount, source]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/revenue/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM revenue_entries WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Revenue summary for fiscal year
+app.get('/api/revenue/summary', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id } = req.query;
+    const { rows } = await pool.query(`
+      SELECT month_key, revenue_type,
+        SUM(amount) as total
+      FROM revenue_entries
+      WHERE fiscal_year_id = $1
+      GROUP BY month_key, revenue_type
+      ORDER BY month_key
+    `, [fiscal_year_id]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── PROGRAM DOCUMENTS ─────────────────────────────────────
+app.post('/api/program-documents/upload', authCheck, upload.single('file'), async (req, res) => {
+  try {
+    const { fiscal_year_id, doc_type, label } = req.body;
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'No file' });
+    const { rows } = await pool.query(
+      `INSERT INTO program_documents (fiscal_year_id, doc_type, label, filename, mime_type, file_data)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, doc_type, label, filename, uploaded_at`,
+      [fiscal_year_id, doc_type, label || file.originalname, file.originalname, file.mimetype, file.buffer]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/program-documents', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, doc_type } = req.query;
+    let q = 'SELECT id, fiscal_year_id, doc_type, label, filename, mime_type, uploaded_at FROM program_documents WHERE 1=1';
+    const params = [];
+    if (fiscal_year_id) { params.push(fiscal_year_id); q += ` AND fiscal_year_id = $${params.length}`; }
+    if (doc_type) { params.push(doc_type); q += ` AND doc_type = $${params.length}`; }
+    q += ' ORDER BY uploaded_at DESC';
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/program-documents/:id/download', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT filename, mime_type, file_data FROM program_documents WHERE id = $1', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.setHeader('Content-Disposition', `attachment; filename="${rows[0].filename}"`);
+    res.setHeader('Content-Type', rows[0].mime_type || 'application/octet-stream');
+    res.send(rows[0].file_data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/program-documents/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM program_documents WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── YER DATA ──────────────────────────────────────────────
+app.get('/api/yer', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id } = req.query;
+    const { rows } = await pool.query(
+      'SELECT * FROM yer_data WHERE fiscal_year_id = $1', [fiscal_year_id]
+    );
+    res.json(rows[0] || null);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/yer', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, food_cost, cacfp_reimbursement, notes } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO yer_data (fiscal_year_id, food_cost, cacfp_reimbursement, notes)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (fiscal_year_id)
+       DO UPDATE SET food_cost = COALESCE($2, yer_data.food_cost),
+         cacfp_reimbursement = COALESCE($3, yer_data.cacfp_reimbursement),
+         notes = COALESCE($4, yer_data.notes),
+         updated_at = NOW()
+       RETURNING *`,
+      [fiscal_year_id, food_cost, cacfp_reimbursement, notes]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GENERATE NFSA GENERAL LEDGER (.docx) ──────────────────
+app.post('/api/generate-gl', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id } = req.body;
+
+    // Get fiscal year info
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id = $1', [fiscal_year_id]);
+    const fy = fyRes.rows[0];
+    if (!fy) return res.status(404).json({ error: 'Fiscal year not found' });
+
+    // Get salary totals
+    const salRes = await pool.query(`
+      SELECT month_key,
+        SUM(food_service_hours * hourly_rate_used) as fs_cost,
+        SUM(admin_hours * hourly_rate_used) as admin_cost
+      FROM staff_time_entries WHERE fiscal_year_id = $1
+      GROUP BY month_key ORDER BY month_key
+    `, [fiscal_year_id]);
+
+    // Get YER data
+    const yerRes = await pool.query('SELECT * FROM yer_data WHERE fiscal_year_id = $1', [fiscal_year_id]);
+    const yer = yerRes.rows[0] || {};
+
+    // Get revenue
+    const revRes = await pool.query(`
+      SELECT month_key, revenue_type, SUM(amount) as total
+      FROM revenue_entries WHERE fiscal_year_id = $1
+      GROUP BY month_key, revenue_type ORDER BY month_key
+    `, [fiscal_year_id]);
+
+    // Calculate totals
+    let totalFSCost = 0, totalAdminCost = 0;
+    for (const r of salRes.rows) {
+      totalFSCost += parseFloat(r.fs_cost) || 0;
+      totalAdminCost += parseFloat(r.admin_cost) || 0;
+    }
+    const benefits = totalFSCost * 0.0765;
+    const totalSalaries = totalFSCost;
+    const foodCost = parseFloat(yer.food_cost) || 0;
+    const cacfpReimb = parseFloat(yer.cacfp_reimbursement) || 0;
+    const totalExpenses = foodCost + totalSalaries + benefits + totalAdminCost;
+    let totalRevenue = cacfpReimb;
+    for (const r of revRes.rows) { totalRevenue += parseFloat(r.total) || 0; }
+    const fundBalance = totalRevenue - totalExpenses;
+
+    const fmt = n => '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    // Build document
+    const noBorder = { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE },
+      left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } };
+    const navy = '1B2A4A';
+    const gold = 'C5972C';
+
+    function makeRow(label, amount, bold = false, shading = null) {
+      return new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 70, type: WidthType.PERCENTAGE },
+            borders: noBorder,
+            shading: shading ? { type: ShadingType.SOLID, color: shading } : undefined,
+            children: [new Paragraph({
+              children: [new TextRun({ text: label, bold, size: 22, font: 'Calibri',
+                color: shading === navy ? 'FFFFFF' : '333333' })]
+            })]
+          }),
+          new TableCell({
+            width: { size: 30, type: WidthType.PERCENTAGE },
+            borders: noBorder,
+            shading: shading ? { type: ShadingType.SOLID, color: shading } : undefined,
+            children: [new Paragraph({
+              alignment: AlignmentType.RIGHT,
+              children: [new TextRun({ text: amount, bold, size: 22, font: 'Calibri',
+                color: shading === navy ? 'FFFFFF' : '333333' })]
+            })]
+          })
+        ]
+      });
     }
 
-    res.json({
-      success: true,
-      filename: req.file.originalname,
-      extractedTotal,
-      requiresManualEntry: extractedTotal === null,
-      message: extractedTotal
-        ? `Extracted total: $${extractedTotal.toFixed(2)} — please verify`
-        : 'Could not auto-extract total — please enter manually',
+    const doc = new Document({
+      sections: [{
+        properties: { page: { margin: { top: 720, bottom: 720, left: 1080, right: 1080 } } },
+        children: [
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 100 },
+            children: [new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 32, font: 'Calibri', color: navy })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 100 },
+            children: [new TextRun({ text: 'Non-profit Food Service Account (NFSA) — General Ledger', size: 24, font: 'Calibri', color: '666666' })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 300 },
+            children: [new TextRun({ text: `Fiscal Year: ${fy.label} | Sponsor #990004457`, size: 20, font: 'Calibri', color: '999999' })]
+          }),
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [
+              makeRow('REVENUE', '', true, navy),
+              makeRow('  CACFP Reimbursement (MIND Line 3a)', fmt(cacfpReimb)),
+              makeRow('  Program Meal Revenue (B & C Categories)', fmt(totalRevenue - cacfpReimb)),
+              makeRow('  Total Revenue', fmt(totalRevenue), true, 'F0F0F0'),
+              makeRow('', ''),
+              makeRow('EXPENSES', '', true, navy),
+              makeRow('  Food & Supplies (Account 64100)', fmt(foodCost)),
+              makeRow('  Food Service Salaries', fmt(totalSalaries)),
+              makeRow('  Employee Benefits (7.65%)', fmt(benefits)),
+              makeRow('  Administrative Costs', fmt(totalAdminCost)),
+              makeRow('  Total Expenses', fmt(totalExpenses), true, 'F0F0F0'),
+              makeRow('', ''),
+              makeRow('FUND BALANCE', fmt(fundBalance), true, fundBalance >= 0 ? '2D7D46' : 'C0392B'),
+            ]
+          }),
+          new Paragraph({ spacing: { before: 400 }, children: [] }),
+          new Paragraph({
+            children: [new TextRun({ text: 'Notes: ', bold: true, size: 20, font: 'Calibri' }),
+              new TextRun({ text: yer.notes || 'Revenue includes CACFP reimbursement and tuition-funded meal revenue for Category B and C meals, as required by MDE NFSA revenue policy.',
+                size: 20, font: 'Calibri', color: '666666' })]
+          }),
+        ]
+      }]
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── GENERIC UPLOAD (store filename in state) ──────────────
-app.post('/api/upload/:docType', requirePIN, upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const existing = (await dbGet('app_state')) || {};
-  if (!existing.docNames) existing.docNames = {};
-  existing.docNames[req.params.docType] = req.file.originalname;
-  await dbSet('app_state', existing);
-  res.json({ success: true, filename: req.file.originalname });
-});
-
-// ── GENERATE GENERAL LEDGER ───────────────────────────────
-app.post('/api/generate-gl', requirePIN, async (req, res) => {
-  try {
-    const data = req.body;
-    const salaryTotal = parseFloat(data.salaryTotal) || 0;
-    const benefitsTotal = salaryTotal * 0.0765;
-    const foodCost = parseFloat(data.foodCost) || 0;
-    const adminCost = parseFloat(data.adminCost) || 0;
-    const cacfpReimb = parseFloat(data.cacfpReimbursement) || 0;
-    const totalExp = salaryTotal + benefitsTotal + foodCost + adminCost;
-    const fundMod = Math.max(0, totalExp - cacfpReimb);
-    const totalRev = cacfpReimb + fundMod;
-    const fy = data.fiscalYear || 'FY2026';
-    const yearNum = parseInt(fy.replace('FY',''));
-    const fyStart = `October 1, ${yearNum - 1}`;
-    const fyEnd = `September 30, ${yearNum}`;
-    const fmt = n => '$' + parseFloat(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-    const b={style:BorderStyle.SINGLE,size:1,color:"CCCCCC"};
-    const borders={top:b,bottom:b,left:b,right:b};
-    const tb={style:BorderStyle.SINGLE,size:3,color:"0F2340"};
-    const tborders={top:tb,bottom:tb,left:tb,right:tb};
-    const hc=(t,w)=>new TableCell({borders:tborders,width:{size:w,type:WidthType.DXA},shading:{fill:"0F2340",type:ShadingType.CLEAR},margins:{top:80,bottom:80,left:120,right:120},children:[new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:t,bold:true,color:"FFFFFF",font:"Arial",size:20})]})]});
-    const dc=(t,w,bold=false,fill="FFFFFF",align=AlignmentType.LEFT)=>new TableCell({borders,width:{size:w,type:WidthType.DXA},shading:{fill,type:ShadingType.CLEAR},margins:{top:80,bottom:80,left:120,right:120},children:[new Paragraph({alignment:align,children:[new TextRun({text:t,bold,font:"Arial",size:20})]})]});
-    const sc=(t,w,align=AlignmentType.LEFT)=>new TableCell({borders,width:{size:w,type:WidthType.DXA},shading:{fill:"D6E4F0",type:ShadingType.CLEAR},margins:{top:80,bottom:80,left:120,right:120},children:[new Paragraph({alignment:align,children:[new TextRun({text:t,bold:true,font:"Arial",size:20})]})]});
-    const tc=(t,w,align=AlignmentType.LEFT)=>new TableCell({borders:tborders,width:{size:w,type:WidthType.DXA},shading:{fill:"0F2340",type:ShadingType.CLEAR},margins:{top:80,bottom:80,left:120,right:120},children:[new Paragraph({alignment:align,children:[new TextRun({text:t,bold:true,color:"FFFFFF",font:"Arial",size:20})]})]});
-    const ar=(d,desc,amt)=>new TableRow({children:[dc(d,1800),dc(desc,5160),dc(amt,2400,false,"FFFFFF",AlignmentType.RIGHT)]});
-    const sr=(label,amt)=>new TableRow({children:[sc("",1800),sc(label,5160),sc(amt,2400,AlignmentType.RIGHT)]});
-    const tr2=(label,amt)=>new TableRow({children:[tc("",1800),tc(label,5160),tc(amt,2400,AlignmentType.RIGHT)]});
-
-    const MONTHS=['October','November','December','January','February','March','April','May','June','July','August','September'];
-    const ms=data.monthlySalaries||{};
-    const mc=data.monthlyClaims||{};
-    const mf=data.monthlyFoodCosts||{};
-    const ma=data.monthlyAdminCosts||{};
-
-    const salRows=MONTHS.map(m=>{const yr=['October','November','December'].includes(m)?yearNum-1:yearNum;const key=`${m}_${yr}`;return ar(`${m} ${yr}`,"Food Service Staff — Niles & Peace Centers",fmt(parseFloat(ms[key]||0)));});
-    const claimRows=MONTHS.map(m=>{const yr=['October','November','December'].includes(m)?yearNum-1:yearNum;const key=`${m}_${yr}`;return ar(`${m} ${yr}`,"CACFP Federal Reimbursement — Child Care Meals",fmt(parseFloat(mc[key]||0)));});
-    const foodRows=MONTHS.map(m=>{const yr=['October','November','December'].includes(m)?yearNum-1:yearNum;const key=`${m}_${yr}`;return ar(`${m} ${yr}`,"Food Purchases — All CACFP Sites",fmt(parseFloat(mf[key]||0)));});
-    const adminRows=MONTHS.map(m=>{const yr=['October','November','December'].includes(m)?yearNum-1:yearNum;const key=`${m}_${yr}`;return ar(`${m} ${yr}`,"Administrative Costs — CACFP Coordinator",fmt(parseFloat(ma[key]||0)));});
-
-    const doc=new Document({sections:[{
-      properties:{page:{size:{width:12240,height:15840},margin:{top:1080,right:1080,bottom:1080,left:1080}}},
-      children:[
-        new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:60},children:[new TextRun({text:"The Children's Center",bold:true,font:"Arial",size:32,color:"0F2340"})]}),
-        new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:60},children:[new TextRun({text:"Non-profit Food Service Account (NFSA) — Detailed General Ledger",bold:true,font:"Arial",size:26})]}),
-        new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:60},children:[new TextRun({text:`${fy}: ${fyStart} – ${fyEnd}`,font:"Arial",size:24})]}),
-        new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:300},border:{bottom:{style:BorderStyle.SINGLE,size:6,color:"0F2340",space:1}},children:[new TextRun({text:`CACFP Sponsor ID: ${data.sponsorId||'990004457'} | Niles & Peace Boulevard Centers | Mary Wardlaw, Owner`,font:"Arial",size:20,italics:true})]}),
-
-        new Paragraph({spacing:{before:200,after:100},children:[new TextRun({text:"NFSA SUMMARY",bold:true,font:"Arial",size:24,color:"0F2340"})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[6960,2400],rows:[
-          new TableRow({children:[hc("Description",6960),hc("Amount",2400)]}),
-          new TableRow({children:[dc("CACFP Federal Reimbursement (Line 3a)",6960),dc(fmt(cacfpReimb),2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("Fund Modification — Tuition/Subsidy/GSRP (Line 10)",6960),dc(fmt(fundMod),2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("TOTAL REVENUE",6960,true,"E8EEF5"),dc(fmt(totalRev),2400,true,"E8EEF5",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("Food Service Salaries (Line 1)",6960),dc(fmt(salaryTotal),2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("Employee Benefits 7.65% (Line 2)",6960),dc(fmt(benefitsTotal),2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("Administrative Costs (Line 3)",6960),dc(fmt(adminCost),2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("Food Cost (Line 10)",6960),dc(fmt(foodCost),2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("TOTAL EXPENDITURES",6960,true,"E8EEF5"),dc(fmt(totalExp),2400,true,"E8EEF5",AlignmentType.RIGHT)]}),
-          new TableRow({children:[tc("ENDING FUND BALANCE",6960),tc("$0.00",2400,AlignmentType.RIGHT)]}),
-        ]}),
-
-        new Paragraph({spacing:{before:300,after:80},children:[new TextRun({text:"SECTION 1: REVENUE",bold:true,font:"Arial",size:24,color:"0F2340"})]}),
-        new Paragraph({spacing:{before:80,after:80},children:[new TextRun({text:"1A. CACFP Federal Reimbursement (CNP-YER Line 3a)",bold:true,font:"Arial",size:22})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[1800,5160,2400],rows:[new TableRow({children:[hc("Period",1800),hc("Description",5160),hc("Amount",2400)]}),...claimRows,sr("TOTAL CACFP Reimbursement",fmt(cacfpReimb))]}),
-        new Paragraph({spacing:{before:200,after:80},children:[new TextRun({text:"1B. Fund Modification (CNP-YER Line 10)",bold:true,font:"Arial",size:22})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[1800,5160,2400],rows:[new TableRow({children:[hc("Period",1800),hc("Description",5160),hc("Amount",2400)]}),ar(`${fyStart} – ${fyEnd}`,"Transfer from general operating funds — Category B & C meal revenue gap",fmt(fundMod)),sr("TOTAL Fund Modification",fmt(fundMod)),tr2("TOTAL REVENUE",fmt(totalRev))]}),
-
-        new Paragraph({spacing:{before:300,after:80},children:[new TextRun({text:"SECTION 2: EXPENDITURES",bold:true,font:"Arial",size:24,color:"0F2340"})]}),
-        new Paragraph({spacing:{before:80,after:80},children:[new TextRun({text:"2A. Food Service Staff Salaries (CNP-YER Line 1)",bold:true,font:"Arial",size:22})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[1800,5160,2400],rows:[new TableRow({children:[hc("Period",1800),hc("Description",5160),hc("Amount",2400)]}),...salRows,sr("TOTAL Salaries",fmt(salaryTotal))]}),
-        new Paragraph({spacing:{before:200,after:80},children:[new TextRun({text:"2B. Employee Benefits (CNP-YER Line 2)",bold:true,font:"Arial",size:22})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[1800,5160,2400],rows:[new TableRow({children:[hc("Period",1800),hc("Description",5160),hc("Amount",2400)]}),ar(`${fyStart} – ${fyEnd}`,`Employer payroll taxes: SS 6.2% + Medicare 1.45% × ${fmt(salaryTotal)}`,fmt(benefitsTotal)),sr("TOTAL Benefits",fmt(benefitsTotal))]}),
-        new Paragraph({spacing:{before:200,after:80},children:[new TextRun({text:"2C. Administrative Costs (CNP-YER Line 3)",bold:true,font:"Arial",size:22})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[1800,5160,2400],rows:[new TableRow({children:[hc("Period",1800),hc("Description",5160),hc("Amount",2400)]}),...adminRows,sr("TOTAL Admin Costs",fmt(adminCost))]}),
-        new Paragraph({spacing:{before:200,after:80},children:[new TextRun({text:"2D. Food Cost (CNP-YER Line 10)",bold:true,font:"Arial",size:22})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[1800,5160,2400],rows:[new TableRow({children:[hc("Period",1800),hc("Description",5160),hc("Amount",2400)]}),...foodRows,sr("TOTAL Food Cost",fmt(foodCost)),tr2("TOTAL EXPENDITURES",fmt(totalExp))]}),
-
-        new Paragraph({spacing:{before:300,after:80},children:[new TextRun({text:"SECTION 3: BALANCE SUMMARY",bold:true,font:"Arial",size:24,color:"0F2340"})]}),
-        new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[6960,2400],rows:[
-          new TableRow({children:[hc("Description",6960),hc("Amount",2400)]}),
-          new TableRow({children:[dc(`Beginning Fund Balance (${fyStart})`,6960),dc("$0.00",2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("Add: Total NFSA Revenue",6960),dc(fmt(totalRev),2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[dc("Less: Total NFSA Expenditures",6960),dc(`(${fmt(totalExp)})`,2400,false,"FFFFFF",AlignmentType.RIGHT)]}),
-          new TableRow({children:[tc(`Ending Fund Balance (${fyEnd})`,6960),tc("$0.00",2400,AlignmentType.RIGHT)]}),
-        ]}),
-
-        new Paragraph({spacing:{before:300,after:80},border:{top:{style:BorderStyle.SINGLE,size:4,color:"0F2340",space:1}},children:[new TextRun({text:"CERTIFICATION",bold:true,font:"Arial",size:24,color:"0F2340"})]}),
-        new Paragraph({spacing:{after:80},children:[new TextRun({text:`I certify that the information in this general ledger is accurate and complete for The Children's Center NFSA, ${fy}: ${fyStart} through ${fyEnd}. Centers: Niles (210 E Main St) and Peace Boulevard.`,font:"Arial",size:20})]}),
-        new Paragraph({spacing:{after:200},children:[new TextRun({text:"All amounts reconcile with the CNP-YER submitted to the Michigan Department of Education.",font:"Arial",size:20})]}),
-        new Paragraph({spacing:{after:80},children:[new TextRun({text:"Authorized Signature: _________________________________     Date: _______________",font:"Arial",size:20})]}),
-        new Paragraph({spacing:{after:40},children:[new TextRun({text:"Printed Name: Mary Wardlaw     Title: Owner, The Children's Center",font:"Arial",size:20})]}),
-        new Paragraph({spacing:{after:40},children:[new TextRun({text:`CACFP Sponsor ID: ${data.sponsorId||'990004457'}`,font:"Arial",size:20})]}),
-      ]
-    }]});
 
     const buffer = await Packer.toBuffer(doc);
-    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.setHeader('Content-Disposition',`attachment; filename=TCC_NFSA_General_Ledger_${fy}.docx`);
+    res.setHeader('Content-Disposition', `attachment; filename="NFSA_General_Ledger_${fy.label}.docx"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buffer);
-  } catch(err) { console.error(err); res.status(500).json({error:err.message}); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── GENERATE YER SUMMARY ──────────────────────────────────
-app.post('/api/generate-yer', requirePIN, (req, res) => {
-  const data=req.body;
-  const sal=parseFloat(data.salaryTotal)||0;
-  const ben=sal*0.0765;
-  const food=parseFloat(data.foodCost)||0;
-  const admin=parseFloat(data.adminCost)||0;
-  const cacfp=parseFloat(data.cacfpReimbursement)||0;
-  const totalExp=sal+ben+food+admin;
-  const fundMod=Math.max(0,totalExp-cacfp);
-  const totalRev=cacfp+fundMod;
-  const fmt=n=>'$'+parseFloat(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-  res.json({
-    fiscalYear:data.fiscalYear||'FY2026', sponsorId:data.sponsorId||'990004457',
-    revenue:{line3a:fmt(cacfp),line10:fmt(fundMod),line11:fmt(totalRev)},
-    expenditures:{line1:fmt(sal),line2:fmt(ben),line3:fmt(admin),line10:fmt(food),line11:fmt(totalExp)},
-    balance:{beginning:'$0.00',revenue:fmt(totalRev),expenditures:fmt(totalExp),ending:'$0.00'}
-  });
+// ── START ─────────────────────────────────────────────────
+initDB().then(() => {
+  app.listen(PORT, () => console.log(`🍽️ TCC CACFP Suite v4 running on port ${PORT}`));
+}).catch(err => {
+  console.error('DB init error:', err);
+  app.listen(PORT, () => console.log(`🍽️ TCC CACFP Suite v4 running on port ${PORT} (DB init failed)`));
 });
-
-// ── HELPERS ───────────────────────────────────────────────
-function parseCSVLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === '"') { inQuotes = !inQuotes; }
-    else if (line[i] === ',' && !inQuotes) { result.push(current); current = ''; }
-    else { current += line[i]; }
-  }
-  result.push(current);
-  return result.map(v => v.replace(/\r/g,''));
-}
-
-initDB().then(() => app.listen(PORT, () => console.log(`TCC CACFP Suite v2 on port ${PORT}`)));
