@@ -347,6 +347,21 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 <div class="modal-overlay" id="addStaffModal"><div class="modal"><div class="modal-hdr"><h3>Add Staff Member</h3><button class="modal-close" onclick="closeModal('addStaffModal')">&times;</button></div><div class="modal-body"><div class="form-group"><label>Name</label><input type="text" id="newStaffName" placeholder="Full name"></div><div class="form-group"><label>Center</label><select id="newStaffCenter"><option value="niles">Niles</option><option value="peace">Peace Boulevard</option></select></div><div class="form-group"><label>Hourly Rate ($)</label><input type="number" id="newStaffRate" step="0.01" placeholder="0.00"></div></div><div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('addStaffModal')">Cancel</button><button class="btn btn-primary" onclick="addStaffMember()">Add Staff</button></div></div></div>
 <div class="modal-overlay" id="addRevenueModal"><div class="modal"><div class="modal-hdr"><h3>Add Revenue Entry</h3><button class="modal-close" onclick="closeModal('addRevenueModal')">&times;</button></div><div class="modal-body"><div class="form-group"><label>Month</label><select id="revMonth"></select></div><div class="form-group"><label>Revenue Type</label><select id="revType"><option value="tuition_meal_revenue">Tuition Meal Revenue</option><option value="cacfp_reimbursement">CACFP Reimbursement</option><option value="dhhs_subsidy">DHHS Childcare Subsidy</option><option value="gsrp_funds">GSRP Funds</option><option value="general_fund">General Fund Transfer</option><option value="other">Other</option></select></div><div class="form-group"><label>Amount ($)</label><input type="number" id="revAmount" step="0.01" placeholder="0.00"></div><div class="form-group"><label>Description</label><input type="text" id="revDesc" placeholder="e.g. October tuition allocation"></div></div><div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('addRevenueModal')">Cancel</button><button class="btn btn-gold" onclick="addRevenueEntry()">Add Revenue</button></div></div></div>
 
+<!-- DELETE CONFIRMATION MODAL -->
+<div class="modal-overlay" id="deleteConfirmModal">
+  <div class="modal">
+    <div class="modal-hdr" style="background:var(--error);color:#fff"><h3>⚠️ Confirm Deletion</h3><button class="modal-close" onclick="closeModal('deleteConfirmModal')" style="color:#fff">&times;</button></div>
+    <div class="modal-body">
+      <p style="font-size:.95rem;margin-bottom:12px" id="deleteConfirmMsg"></p>
+      <div class="alert alert-err" style="margin:0" id="deleteConfirmWarn"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('deleteConfirmModal')">Cancel — Keep Document</button>
+      <button class="btn btn-danger" id="deleteConfirmBtn" onclick="executeDelete()">🗑️ Yes, Delete</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -740,9 +755,121 @@ async function uploadTimeDist(center,mk,type,input){if(!input.files[0])return;
   const fd=new FormData();fd.append('file',input.files[0]);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','time_distribution_'+type);fd.append('metadata',JSON.stringify({center}));
   try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);renderStaffCosts();showToast('✅ Document saved for audit!','ok');}catch(e){showToast('Error: '+e.message,'err');}}
 
-async function deleteDoc(id){if(!confirm('Delete?'))return;
-  try{await api(`/api/documents/${id}`,{method:'DELETE'});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);renderSubPanel();showToast('Deleted','ok');}catch(e){showToast('Error','err');}}
+// ── SMART DELETE WITH DATA CLEANUP ──
+let pendingDelete={type:null,id:null,meta:null};
 
+function describeDocImpact(doc){
+  // Determine what data this document corresponds to
+  const dt=doc.doc_type||'';const mk=doc.month_key;const center=doc.metadata?.center;
+  const parts=[];
+  if(dt.startsWith('batch_time_forms')||dt.startsWith('time_distribution_fs')){
+    parts.push('food service staff time entries for '+(center==='niles'?'Niles':'Peace Boulevard'));
+    parts.push('The food service salary totals for '+ML[mk]+' will be recalculated without this data.');
+  }else if(dt==='time_distribution_admin'){
+    parts.push('administrative time entries');
+    parts.push('The admin cost totals for '+ML[mk]+' will be recalculated.');
+  }else if(dt.startsWith('attendance_csv')){
+    parts.push('attendance figures'+(center?' for '+(center==='niles'?'Niles':'Peace Boulevard'):''));
+  }else if(dt.startsWith('meal_counts_csv')){
+    parts.push('meal count data'+(center?' for '+(center==='niles'?'Niles':'Peace Boulevard'):''));
+  }else if(dt.startsWith('cdc_statement')){
+    parts.push('CDC eligibility data'+(center?' for '+(center==='niles'?'Niles':'Peace Boulevard'):''));
+  }else if(dt==='food_receipts'||dt==='food_receipt'){
+    parts.push('food cost figures');
+    parts.push('The monthly food cost total may need to be manually adjusted.');
+  }else if(dt==='claims_listing'){
+    parts.push('CACFP claim reimbursement figures');
+  }
+  return parts;
+}
+
+function deleteDoc(id){
+  const doc=documents.find(d=>d.id===id);
+  if(!doc)return;
+  pendingDelete={type:'doc',id,meta:doc};
+  const impacts=describeDocImpact(doc);
+  document.getElementById('deleteConfirmMsg').innerHTML=`
+    <strong>You are about to delete:</strong><br>
+    <span style="font-size:1rem">📄 ${doc.filename}</span><br>
+    <span style="color:var(--muted);font-size:.85rem">${doc.doc_type} — ${doc.month_key?ML[doc.month_key]+' '+fyYear(doc.month_key):'General'}</span>`;
+  document.getElementById('deleteConfirmWarn').innerHTML=impacts.length>0
+    ?`<strong>⚠️ Deleting this document will also remove the corresponding data:</strong><ul style="margin:8px 0 0 16px;font-size:.85rem">${impacts.map(i=>'<li>'+i+'</li>').join('')}</ul>
+      <p style="margin-top:8px;font-size:.85rem">This action cannot be undone. You will need to re-upload and re-enter data.</p>`
+    :'<strong>⚠️ This action cannot be undone.</strong> The document will be permanently removed.';
+  openModal('deleteConfirmModal');
+}
+
+function deleteProgDocConfirm(id){
+  const doc=programDocs.find(d=>d.id===id);
+  if(!doc)return;
+  pendingDelete={type:'progdoc',id,meta:doc};
+  document.getElementById('deleteConfirmMsg').innerHTML=`
+    <strong>You are about to delete:</strong><br>
+    <span style="font-size:1rem">📄 ${doc.label||doc.filename}</span><br>
+    <span style="color:var(--muted);font-size:.85rem">${doc.doc_type} — Program Document</span>`;
+  document.getElementById('deleteConfirmWarn').innerHTML=
+    '<strong>⚠️ This action cannot be undone.</strong> The program document will be permanently removed. If this is needed for compliance, you will need to re-upload it.';
+  openModal('deleteConfirmModal');
+}
+
+function deleteRevenueConfirm(id){
+  const rev=revenueEntries.find(r=>r.id===id);
+  if(!rev)return;
+  pendingDelete={type:'revenue',id,meta:rev};
+  document.getElementById('deleteConfirmMsg').innerHTML=`
+    <strong>You are about to delete:</strong><br>
+    <span style="font-size:1rem">💰 ${rev.revenue_type.replace(/_/g,' ')} — ${fmt(rev.amount)}</span><br>
+    <span style="color:var(--muted);font-size:.85rem">${ML[rev.month_key]||rev.month_key} — ${rev.description||''}</span>`;
+  document.getElementById('deleteConfirmWarn').innerHTML=
+    '<strong>⚠️ Deleting this revenue entry will reduce the NFSA revenue total</strong> and may affect the Year End Report fund balance calculation. This action cannot be undone.';
+  openModal('deleteConfirmModal');
+}
+
+async function executeDelete(){
+  const{type,id,meta}=pendingDelete;
+  closeModal('deleteConfirmModal');
+  try{
+    if(type==='doc'){
+      // Delete the document
+      await api(`/api/documents/${id}`,{method:'DELETE'});
+      // Clear corresponding staff time data if it was a time distribution form
+      const dt=meta.doc_type||'';const mk=meta.month_key;const center=meta.metadata?.center;
+      if((dt.startsWith('batch_time_forms')||dt.startsWith('time_distribution_fs'))&&mk&&center){
+        // Remove time entries for that center/month
+        const staffInCenter=staffList.filter(s=>s.center===center);
+        for(const s of staffInCenter){
+          const entry=staffTimeEntries.find(e=>e.staff_id===s.id&&e.month_key===mk);
+          if(entry){
+            await api('/api/staff-time',{method:'POST',body:{staff_id:s.id,fiscal_year_id:activeFY.id,month_key:mk,food_service_hours:0,admin_hours:entry.admin_hours||0,hourly_rate_used:entry.hourly_rate_used||0}});
+          }
+        }
+        await reloadTime();
+      }
+      if(dt==='time_distribution_admin'&&mk){
+        // Clear admin hours for all staff that month
+        const entries=staffTimeEntries.filter(e=>e.month_key===mk);
+        for(const e of entries){
+          await api('/api/staff-time',{method:'POST',body:{staff_id:e.staff_id,fiscal_year_id:activeFY.id,month_key:mk,food_service_hours:e.food_service_hours||0,admin_hours:0,hourly_rate_used:e.hourly_rate_used||0}});
+        }
+        await reloadTime();
+      }
+      documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+      renderSubPanel();renderDashboard();
+      showToast('🗑️ Document and corresponding data deleted.','ok');
+    }else if(type==='progdoc'){
+      await api(`/api/program-documents/${id}`,{method:'DELETE'});
+      programDocs=await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);
+      renderProgramDocs();renderDashboard();
+      showToast('🗑️ Program document deleted.','ok');
+    }else if(type==='revenue'){
+      await api(`/api/revenue/${id}`,{method:'DELETE'});
+      revenueEntries=await api(`/api/revenue?fiscal_year_id=${activeFY.id}`);
+      renderRevenuePage();renderDashboard();
+      showToast('🗑️ Revenue entry deleted.','ok');
+    }
+  }catch(e){showToast('Delete error: '+e.message,'err');}
+  pendingDelete={type:null,id:null,meta:null};
+}
 // ═══════════════════════════════════════════════════
 // BATCH PDF UPLOAD + OCR (Time & Attendance)
 // ═══════════════════════════════════════════════════
@@ -1181,8 +1308,7 @@ async function addRevenueEntry(){
   catch(e){showToast('Error: '+e.message,'err');}
 }
 
-async function deleteRevenue(id){if(!confirm('Delete?'))return;
-  try{await api(`/api/revenue/${id}`,{method:'DELETE'});revenueEntries=await api(`/api/revenue?fiscal_year_id=${activeFY.id}`);renderRevenuePage();renderDashboard();}catch(e){showToast('Error','err');}}
+async function deleteRevenue(id){deleteRevenueConfirm(id);}
 
 // ═══════════════════════════════════════════════════
 // PROGRAM DOCUMENTS
@@ -1193,7 +1319,7 @@ function renderProgramDocs(){
     cHtml+=`<div class="upload-zone ${ex?'done':''}" style="padding:16px"><input type="file" accept=".pdf,.png,.jpg,.docx" onchange="uploadProgDoc('${dt.key}','${dt.label}',this)">
       <div class="uz-icon">${dt.icon}</div><div style="font-weight:600;font-size:.85rem">${dt.label}</div>
       <div class="uz-file">${ex?'✅ '+ex.filename:''}</div>
-      ${ex?`<div style="margin-top:8px"><a href="/api/program-documents/${ex.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank" onclick="event.stopPropagation()">⬇️</a></div>`:''}</div>`;}
+      ${ex?`<div style="margin-top:8px;display:flex;gap:6px;justify-content:center"><a href="/api/program-documents/${ex.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank" onclick="event.stopPropagation()">⬇️</a><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteProgDoc(${ex.id})" style="padding:4px 8px">🗑️</button></div>`:''}</div>`;}
   cHtml+='</div>';document.getElementById('progDocsCore').innerHTML=cHtml;
 
   const other=programDocs.filter(d=>!CORE_DOCS.some(c=>c.key===d.doc_type));
@@ -1213,8 +1339,7 @@ function showAddOtherDocModal(){const label=prompt('Document label:');if(!label)
   input.onchange=()=>{if(!input.files[0])return;const fd=new FormData();fd.append('file',input.files[0]);fd.append('fiscal_year_id',activeFY.id);fd.append('doc_type','other_'+Date.now());fd.append('label',label);
     api('/api/program-documents/upload',{method:'POST',body:fd}).then(async()=>{programDocs=await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);renderProgramDocs();showToast('✅ Uploaded!','ok');}).catch(e=>showToast('Error','err'));};input.click();}
 
-async function deleteProgDoc(id){if(!confirm('Delete?'))return;
-  try{await api(`/api/program-documents/${id}`,{method:'DELETE'});programDocs=await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);renderProgramDocs();}catch(e){showToast('Error','err');}}
+async function deleteProgDoc(id){deleteProgDocConfirm(id);}
 
 // ═══════════════════════════════════════════════════
 // YEAR END REPORT
