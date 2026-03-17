@@ -6,209 +6,201 @@
 <title>TCC CACFP Management Suite</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
 <style>
-:root {
-  --navy: #1B2A4A; --navy-light: #2A3D66; --navy-dark: #0F1A2E;
-  --gold: #C5972C; --gold-light: #D4A94A; --gold-bg: #FFF8ED;
-  --bg: #F4F6F9; --card: #FFFFFF; --border: #E2E8F0;
-  --text: #1A202C; --muted: #718096; --success: #2D7D46; --error: #C0392B;
-  --radius: 10px; --shadow: 0 2px 8px rgba(27,42,74,0.08);
+:root{--navy:#1B2A4A;--navy-light:#2A3D66;--navy-dark:#0F1A2E;--gold:#C5972C;--gold-light:#D4A94A;--gold-bg:#FFF8ED;--bg:#F4F6F9;--card:#FFF;--border:#E2E8F0;--text:#1A202C;--muted:#718096;--success:#2D7D46;--error:#C0392B;--radius:10px;--shadow:0 2px 8px rgba(27,42,74,.08)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+/* LOGIN */
+.login-overlay{position:fixed;inset:0;background:var(--navy);display:flex;align-items:center;justify-content:center;z-index:9999}
+.login-box{background:var(--card);border-radius:16px;padding:48px 40px;text-align:center;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.login-box h1{color:var(--navy);font-size:1.5rem;margin-bottom:8px}
+.login-box p{color:var(--muted);margin-bottom:24px;font-size:.9rem}
+.login-box input{width:100%;padding:14px 16px;border:2px solid var(--border);border-radius:8px;font-size:1.1rem;text-align:center;letter-spacing:4px;font-family:'JetBrains Mono',monospace}
+.login-box input:focus{outline:none;border-color:var(--gold)}
+.login-box button{margin-top:16px;width:100%;padding:14px;background:var(--navy);color:#fff;border:none;border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer}
+.login-box button:hover{background:var(--navy-light)}
+.login-err{color:var(--error);font-size:.85rem;margin-top:10px;display:none}
+
+/* HEADER */
+.top-header{background:var(--navy);color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.top-header h1{font-size:1.2rem;font-weight:700}
+.top-header .subtitle{font-size:.8rem;opacity:.7}
+.fy-selector{display:flex;align-items:center;gap:10px}
+.fy-selector select{padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,.3);background:var(--navy-light);color:#fff;font-family:inherit;font-size:.85rem;cursor:pointer}
+.fy-selector button{padding:8px 14px;border-radius:6px;border:1px solid var(--gold);background:transparent;color:var(--gold);font-weight:600;font-size:.8rem;cursor:pointer}
+.fy-selector button:hover{background:var(--gold);color:var(--navy)}
+
+/* LAYOUT */
+.app-layout{display:flex;min-height:calc(100vh - 56px)}
+.sidebar{width:220px;background:var(--navy-dark);padding:16px 0;flex-shrink:0}
+.nav-item{display:flex;align-items:center;gap:10px;padding:12px 20px;color:rgba(255,255,255,.7);font-size:.9rem;cursor:pointer;transition:all .15s;border-left:3px solid transparent}
+.nav-item:hover{background:rgba(255,255,255,.05);color:#fff}
+.nav-item.active{background:rgba(197,151,44,.12);color:var(--gold);border-left-color:var(--gold);font-weight:600}
+.nav-item .icon{font-size:1.1rem;width:24px;text-align:center}
+.nav-divider{height:1px;background:rgba(255,255,255,.08);margin:12px 20px}
+.main-content{flex:1;padding:24px;max-width:1200px;overflow-y:auto}
+.page{display:none}.page.active{display:block}
+
+/* CARDS */
+.card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:20px;overflow:hidden}
+.card-hdr{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-hdr h3{font-size:1rem;font-weight:600;flex:1}
+.card-hdr .badge{background:var(--gold-bg);color:var(--gold);font-size:.8rem;font-weight:600;padding:4px 10px;border-radius:20px}
+.card-body{padding:20px}
+
+/* MONTH BAR */
+.month-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
+.month-btn{padding:8px 14px;border:2px solid var(--border);border-radius:8px;background:#fff;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .15s}
+.month-btn:hover{border-color:var(--gold)}
+.month-btn.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+.month-btn.has-data{border-color:var(--success)}
+.month-btn.has-data::after{content:'✓';margin-left:4px;color:var(--success);font-size:.7rem}
+.month-btn.active.has-data::after{color:var(--gold)}
+
+/* SUB TABS */
+.sub-tabs{display:flex;gap:4px;margin-bottom:20px;background:var(--bg);padding:4px;border-radius:8px;flex-wrap:wrap}
+.sub-tab{padding:10px 16px;border-radius:6px;font-size:.85rem;font-weight:500;cursor:pointer;transition:all .15s;color:var(--muted)}
+.sub-tab:hover{color:var(--text)}.sub-tab.active{background:#fff;color:var(--navy);box-shadow:0 1px 3px rgba(0,0,0,.1);font-weight:600}
+.sub-panel{display:none}.sub-panel.active{display:block}
+
+/* TABLES */
+.staff-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.staff-table th{background:var(--navy);color:#fff;padding:10px 12px;text-align:left;font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px}
+.staff-table td{padding:8px 12px;border-bottom:1px solid var(--border)}
+.staff-table tr:hover{background:var(--gold-bg)}
+.staff-table input{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.85rem}
+.staff-table input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 2px rgba(197,151,44,.15)}
+.staff-table .earned{font-weight:600;color:var(--navy);font-family:'JetBrains Mono',monospace}
+.btn-remove{background:none;border:none;color:var(--error);cursor:pointer;font-size:1rem;padding:4px}
+
+/* TOTALS BOX */
+.totals-box{background:linear-gradient(135deg,var(--navy),var(--navy-light));color:#fff;border-radius:var(--radius);padding:20px;margin-top:16px}
+.totals-box h4{font-size:.9rem;opacity:.8;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
+.totals-row{display:flex;justify-content:space-between;padding:6px 0;font-size:.9rem}
+.totals-row.big{font-size:1.1rem;font-weight:700;border-top:1px solid rgba(255,255,255,.2);margin-top:8px;padding-top:12px}
+.totals-row .label{opacity:.85}.totals-row .val{font-family:'JetBrains Mono',monospace}
+
+/* UPLOAD */
+.upload-zone{border:2px dashed var(--border);border-radius:8px;padding:20px;text-align:center;cursor:pointer;position:relative;transition:all .15s}
+.upload-zone:hover{border-color:var(--gold);background:var(--gold-bg)}
+.upload-zone.done{border-color:var(--success);border-style:solid;background:#F0FFF4}
+.upload-zone input[type="file"]{position:absolute;inset:0;opacity:0;cursor:pointer}
+.upload-zone .uz-icon{font-size:2rem;margin-bottom:8px}
+.upload-zone .uz-label{font-size:.85rem;color:var(--muted)}
+.upload-zone .uz-file{font-size:.8rem;color:var(--success);font-weight:600;margin-top:6px}
+
+/* FORM */
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:.85rem;font-weight:600;color:var(--navy);margin-bottom:6px}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:.9rem}
+.form-group input:focus,.form-group select:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(197,151,44,.1)}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.form-hint{font-size:.8rem;color:var(--muted);margin-top:4px}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-size:.85rem;font-weight:600;cursor:pointer;border:none;transition:all .15s}
+.btn-primary{background:var(--navy);color:#fff}.btn-primary:hover{background:var(--navy-light)}
+.btn-gold{background:var(--gold);color:#fff}.btn-gold:hover{background:var(--gold-light)}
+.btn-outline{background:transparent;border:2px solid var(--border);color:var(--text)}.btn-outline:hover{border-color:var(--navy)}
+.btn-sm{padding:6px 12px;font-size:.8rem}
+.btn-danger{background:var(--error);color:#fff}
+.btn-success{background:var(--success);color:#fff}
+
+/* STAT CARDS */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:#fff;border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);border-left:4px solid var(--navy)}
+.stat-card .stat-label{font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.stat-card .stat-val{font-size:1.5rem;font-weight:700;color:var(--navy);font-family:'JetBrains Mono',monospace;margin-top:4px}
+.stat-card.gold{border-left-color:var(--gold)}.stat-card.green{border-left-color:var(--success)}.stat-card.red{border-left-color:var(--error)}
+
+/* REVENUE TABLE */
+.rev-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.rev-table th{background:var(--bg);padding:10px 12px;text-align:left;font-weight:600;font-size:.8rem}
+.rev-table td{padding:8px 12px;border-bottom:1px solid var(--border)}
+.rev-table .amt{font-family:'JetBrains Mono',monospace;text-align:right}
+
+/* RATES TABLE */
+.rates-table{width:100%;border-collapse:collapse;font-size:.82rem;margin:12px 0}
+.rates-table th{background:var(--navy);color:#fff;padding:8px 10px;font-size:.75rem;text-transform:uppercase}
+.rates-table td{padding:6px 10px;border-bottom:1px solid var(--border)}
+
+/* YER */
+.yer-section{margin-bottom:24px}
+.yer-section h3{font-size:1rem;color:var(--navy);margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--gold)}
+.yer-line{display:flex;justify-content:space-between;padding:8px 0;font-size:.9rem}
+.yer-line.total{font-weight:700;border-top:2px solid var(--navy);margin-top:8px;padding-top:12px}
+.yer-line .val{font-family:'JetBrains Mono',monospace}
+
+/* DOC LIST */
+.doc-list{list-style:none}
+.doc-list li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);font-size:.85rem}
+.doc-list li:last-child{border-bottom:none}
+.doc-list .doc-name{flex:1;font-weight:500}
+.doc-list .doc-date{color:var(--muted);font-size:.8rem}
+.doc-list .doc-actions{display:flex;gap:6px}
+
+/* WIZARD */
+.wizard-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:5000;display:none;align-items:center;justify-content:center}
+.wizard-overlay.show{display:flex}
+.wizard{background:#fff;border-radius:16px;max-width:700px;width:95%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)}
+.wizard-header{background:var(--navy);color:#fff;padding:20px 24px;border-radius:16px 16px 0 0;display:flex;align-items:center;justify-content:space-between}
+.wizard-header h2{font-size:1.1rem}.wizard-close{background:none;border:none;color:rgba(255,255,255,.7);font-size:1.5rem;cursor:pointer}
+.wizard-progress{display:flex;padding:16px 24px;gap:8px;background:var(--bg)}
+.wiz-step{flex:1;height:6px;border-radius:3px;background:var(--border);transition:background .3s}
+.wiz-step.done{background:var(--success)}.wiz-step.current{background:var(--gold)}
+.wizard-body{padding:24px}
+.wizard-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.wiz-step-label{font-size:.85rem;color:var(--muted)}
+
+/* BATCH OCR */
+.batch-results{max-height:400px;overflow-y:auto;margin-top:16px}
+.batch-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;font-size:.85rem}
+.batch-row.matched{border-color:var(--success);background:#F0FFF4}
+.batch-row.flagged{border-color:var(--error);background:#FFF5F5}
+.batch-row.pending{border-color:var(--gold);background:var(--gold-bg)}
+.batch-row .page-num{background:var(--navy);color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;flex-shrink:0}
+.batch-row .info{flex:1}
+.batch-row .info .name{font-weight:600}
+.batch-row .info .detail{font-size:.8rem;color:var(--muted)}
+.batch-row .status-icon{font-size:1.2rem}
+.batch-row select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:.82rem}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:5000;display:none;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:#fff;border-radius:12px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
+.modal-hdr{padding:20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.modal-hdr h3{font-size:1rem}.modal-close{background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--muted)}
+.modal-body{padding:20px}.modal-footer{padding:16px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+
+/* TOAST */
+.toast{position:fixed;bottom:24px;right:24px;background:var(--navy);color:#fff;padding:14px 24px;border-radius:8px;font-size:.9rem;box-shadow:0 8px 24px rgba(0,0,0,.2);z-index:10000;transform:translateY(100px);opacity:0;transition:all .3s}
+.toast.show{transform:translateY(0);opacity:1}.toast.ok{background:var(--success)}.toast.err{background:var(--error)}
+
+/* EXTRACTED PREVIEW */
+.extracted-preview{background:var(--gold-bg);border:1px solid var(--gold);border-radius:8px;padding:16px;margin-top:12px}
+.extracted-preview h4{font-size:.85rem;color:var(--gold);margin-bottom:10px}
+.extracted-row{display:flex;justify-content:space-between;padding:4px 0;font-size:.85rem}
+.extracted-row .lbl{color:var(--muted)}.extracted-row .val{font-family:'JetBrains Mono',monospace;font-weight:600}
+
+/* ALERTS */
+.alert{padding:12px 16px;border-radius:8px;font-size:.85rem;margin-bottom:12px;display:flex;align-items:flex-start;gap:10px}
+.alert-warn{background:#FFF8E1;border:1px solid #FFE082;color:#8D6E00}
+.alert-err{background:#FFF5F5;border:1px solid #FCC;color:var(--error)}
+.alert-ok{background:#F0FFF4;border:1px solid #C6F6D5;color:var(--success)}
+
+/* RESPONSIVE */
+@media(max-width:768px){
+  .sidebar{display:none}.app-layout{flex-direction:column}.main-content{padding:16px}
+  .form-grid{grid-template-columns:1fr}.stat-grid{grid-template-columns:1fr 1fr}
+  .mobile-nav{display:flex!important}
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-
-/* ── LOGIN ── */
-.login-overlay { position: fixed; inset: 0; background: var(--navy); display: flex; align-items: center; justify-content: center; z-index: 9999; }
-.login-box { background: var(--card); border-radius: 16px; padding: 48px 40px; text-align: center; max-width: 400px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
-.login-box h1 { color: var(--navy); font-size: 1.5rem; margin-bottom: 8px; }
-.login-box p { color: var(--muted); margin-bottom: 24px; font-size: 0.9rem; }
-.login-box input { width: 100%; padding: 14px 16px; border: 2px solid var(--border); border-radius: 8px; font-size: 1.1rem; text-align: center; letter-spacing: 4px; font-family: 'JetBrains Mono', monospace; }
-.login-box input:focus { outline: none; border-color: var(--gold); }
-.login-box button { margin-top: 16px; width: 100%; padding: 14px; background: var(--navy); color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
-.login-box button:hover { background: var(--navy-light); }
-.login-err { color: var(--error); font-size: 0.85rem; margin-top: 10px; display: none; }
-
-/* ── TOP HEADER ── */
-.top-header { background: var(--navy); color: white; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
-.top-header h1 { font-size: 1.2rem; font-weight: 700; }
-.top-header .subtitle { font-size: 0.8rem; opacity: 0.7; }
-.fy-selector { display: flex; align-items: center; gap: 10px; }
-.fy-selector select { padding: 8px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.3); background: var(--navy-light); color: white; font-family: inherit; font-size: 0.85rem; cursor: pointer; }
-.fy-selector button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--gold); background: transparent; color: var(--gold); font-weight: 600; font-size: 0.8rem; cursor: pointer; }
-.fy-selector button:hover { background: var(--gold); color: var(--navy); }
-
-/* ── SIDEBAR NAV ── */
-.app-layout { display: flex; min-height: calc(100vh - 56px); }
-.sidebar { width: 220px; background: var(--navy-dark); padding: 16px 0; flex-shrink: 0; }
-.nav-item { display: flex; align-items: center; gap: 10px; padding: 12px 20px; color: rgba(255,255,255,0.7); font-size: 0.9rem; cursor: pointer; transition: all 0.15s; border-left: 3px solid transparent; }
-.nav-item:hover { background: rgba(255,255,255,0.05); color: white; }
-.nav-item.active { background: rgba(197,151,44,0.12); color: var(--gold); border-left-color: var(--gold); font-weight: 600; }
-.nav-item .icon { font-size: 1.1rem; width: 24px; text-align: center; }
-.nav-divider { height: 1px; background: rgba(255,255,255,0.08); margin: 12px 20px; }
-
-/* ── MAIN CONTENT ── */
-.main-content { flex: 1; padding: 24px; max-width: 1200px; overflow-y: auto; }
-.page { display: none; }
-.page.active { display: block; }
-
-/* ── CARDS ── */
-.card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 20px; overflow: hidden; }
-.card-hdr { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
-.card-hdr h3 { font-size: 1rem; font-weight: 600; flex: 1; }
-.card-hdr .badge { background: var(--gold-bg); color: var(--gold); font-size: 0.8rem; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
-.card-body { padding: 20px; }
-
-/* ── MONTH SELECTOR ── */
-.month-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; }
-.month-btn { padding: 8px 14px; border: 2px solid var(--border); border-radius: 8px; background: white; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: all 0.15s; }
-.month-btn:hover { border-color: var(--gold); }
-.month-btn.active { background: var(--navy); color: white; border-color: var(--navy); }
-.month-btn.has-data { border-color: var(--success); }
-.month-btn.has-data::after { content: '✓'; margin-left: 4px; color: var(--success); font-size: 0.7rem; }
-.month-btn.active.has-data::after { color: var(--gold); }
-
-/* ── TABS WITHIN PAGES ── */
-.sub-tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--bg); padding: 4px; border-radius: 8px; }
-.sub-tab { padding: 10px 16px; border-radius: 6px; font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.15s; color: var(--muted); }
-.sub-tab:hover { color: var(--text); }
-.sub-tab.active { background: white; color: var(--navy); box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-weight: 600; }
-.sub-panel { display: none; }
-.sub-panel.active { display: block; }
-
-/* ── STAFF TABLE ── */
-.staff-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.staff-table th { background: var(--navy); color: white; padding: 10px 12px; text-align: left; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
-.staff-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-.staff-table tr:hover { background: var(--gold-bg); }
-.staff-table input { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
-.staff-table input:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 2px rgba(197,151,44,0.15); }
-.staff-table .earned { font-weight: 600; color: var(--navy); font-family: 'JetBrains Mono', monospace; }
-.staff-table .btn-remove { background: none; border: none; color: var(--error); cursor: pointer; font-size: 1rem; padding: 4px; }
-
-/* ── TOTALS BOX ── */
-.totals-box { background: linear-gradient(135deg, var(--navy), var(--navy-light)); color: white; border-radius: var(--radius); padding: 20px; margin-top: 16px; }
-.totals-box h4 { font-size: 0.9rem; opacity: 0.8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
-.totals-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.9rem; }
-.totals-row.big { font-size: 1.1rem; font-weight: 700; border-top: 1px solid rgba(255,255,255,0.2); margin-top: 8px; padding-top: 12px; }
-.totals-row .label { opacity: 0.85; }
-.totals-row .val { font-family: 'JetBrains Mono', monospace; }
-
-/* ── UPLOAD ZONE ── */
-.upload-zone { border: 2px dashed var(--border); border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; position: relative; transition: all 0.15s; }
-.upload-zone:hover { border-color: var(--gold); background: var(--gold-bg); }
-.upload-zone.done { border-color: var(--success); border-style: solid; background: #F0FFF4; }
-.upload-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-.upload-zone .uz-icon { font-size: 2rem; margin-bottom: 8px; }
-.upload-zone .uz-label { font-size: 0.85rem; color: var(--muted); }
-.upload-zone .uz-file { font-size: 0.8rem; color: var(--success); font-weight: 600; margin-top: 6px; }
-.upload-zone.processing { border-color: var(--gold); background: var(--gold-bg); }
-.upload-zone.processing .uz-icon::after { content: ' Scanning...'; font-size: 0.8rem; }
-
-/* ── OCR PROGRESS ── */
-.ocr-progress { margin-top: 12px; display: none; }
-.ocr-progress.active { display: block; }
-.ocr-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
-.ocr-bar-fill { height: 100%; background: var(--gold); border-radius: 3px; transition: width 0.3s; width: 0%; }
-.ocr-status { font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
-
-/* ── FORM ELEMENTS ── */
-.form-group { margin-bottom: 16px; }
-.form-group label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--navy); margin-bottom: 6px; }
-.form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 0.9rem; }
-.form-group input:focus, .form-group select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(197,151,44,0.1); }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.form-hint { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
-
-/* ── BUTTONS ── */
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 18px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; }
-.btn-primary { background: var(--navy); color: white; }
-.btn-primary:hover { background: var(--navy-light); }
-.btn-gold { background: var(--gold); color: white; }
-.btn-gold:hover { background: var(--gold-light); }
-.btn-outline { background: transparent; border: 2px solid var(--border); color: var(--text); }
-.btn-outline:hover { border-color: var(--navy); }
-.btn-sm { padding: 6px 12px; font-size: 0.8rem; }
-.btn-danger { background: var(--error); color: white; }
-
-/* ── DASHBOARD STAT CARDS ── */
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-.stat-card { background: white; border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); border-left: 4px solid var(--navy); }
-.stat-card .stat-label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-card .stat-val { font-size: 1.5rem; font-weight: 700; color: var(--navy); font-family: 'JetBrains Mono', monospace; margin-top: 4px; }
-.stat-card.gold { border-left-color: var(--gold); }
-.stat-card.green { border-left-color: var(--success); }
-.stat-card.red { border-left-color: var(--error); }
-
-/* ── REVENUE TABLE ── */
-.rev-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.rev-table th { background: var(--bg); padding: 10px 12px; text-align: left; font-weight: 600; font-size: 0.8rem; }
-.rev-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-.rev-table .amt { font-family: 'JetBrains Mono', monospace; text-align: right; }
-
-/* ── REIMBURSEMENT RATES TABLE ── */
-.rates-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin: 12px 0; }
-.rates-table th { background: var(--navy); color: white; padding: 8px 10px; font-size: 0.75rem; text-transform: uppercase; }
-.rates-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
-.rates-table .cat-a { color: var(--success); font-weight: 600; }
-.rates-table .cat-b { color: var(--gold); font-weight: 600; }
-.rates-table .cat-c { color: var(--error); font-weight: 600; }
-
-/* ── TOAST ── */
-.toast { position: fixed; bottom: 24px; right: 24px; background: var(--navy); color: white; padding: 14px 24px; border-radius: 8px; font-size: 0.9rem; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: 10000; transform: translateY(100px); opacity: 0; transition: all 0.3s; }
-.toast.show { transform: translateY(0); opacity: 1; }
-.toast.ok { background: var(--success); }
-.toast.err { background: var(--error); }
-
-/* ── EXTRACTED DATA PREVIEW ── */
-.extracted-preview { background: var(--gold-bg); border: 1px solid var(--gold); border-radius: 8px; padding: 16px; margin-top: 12px; }
-.extracted-preview h4 { font-size: 0.85rem; color: var(--gold); margin-bottom: 10px; }
-.extracted-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.85rem; }
-.extracted-row .lbl { color: var(--muted); }
-.extracted-row .val { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
-
-/* ── DOC LIST ── */
-.doc-list { list-style: none; }
-.doc-list li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
-.doc-list li:last-child { border-bottom: none; }
-.doc-list .doc-icon { font-size: 1.2rem; }
-.doc-list .doc-name { flex: 1; font-weight: 500; }
-.doc-list .doc-date { color: var(--muted); font-size: 0.8rem; }
-.doc-list .doc-actions { display: flex; gap: 6px; }
-
-/* ── YER SUMMARY ── */
-.yer-section { margin-bottom: 24px; }
-.yer-section h3 { font-size: 1rem; color: var(--navy); margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid var(--gold); }
-.yer-line { display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.9rem; }
-.yer-line.total { font-weight: 700; border-top: 2px solid var(--navy); margin-top: 8px; padding-top: 12px; }
-.yer-line .val { font-family: 'JetBrains Mono', monospace; }
-
-/* ── RESPONSIVE ── */
-@media (max-width: 768px) {
-  .sidebar { display: none; }
-  .app-layout { flex-direction: column; }
-  .main-content { padding: 16px; }
-  .form-grid { grid-template-columns: 1fr; }
-  .stat-grid { grid-template-columns: 1fr 1fr; }
-  /* Show mobile nav */
-  .mobile-nav { display: flex !important; }
-}
-.mobile-nav { display: none; background: var(--navy-dark); padding: 8px; gap: 4px; overflow-x: auto; }
-.mobile-nav .nav-item { padding: 8px 12px; font-size: 0.75rem; white-space: nowrap; border-left: none; border-radius: 6px; }
-.mobile-nav .nav-item.active { background: rgba(197,151,44,0.2); }
-
-/* ── MODAL ── */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 5000; display: none; align-items: center; justify-content: center; }
-.modal-overlay.show { display: flex; }
-.modal { background: white; border-radius: 12px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; }
-.modal-hdr { padding: 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-.modal-hdr h3 { font-size: 1rem; }
-.modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--muted); }
-.modal-body { padding: 20px; }
-.modal-footer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
-
-/* ── LOADING SPINNER ── */
-.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.mobile-nav{display:none;background:var(--navy-dark);padding:8px;gap:4px;overflow-x:auto}
+.mobile-nav .nav-item{padding:8px 12px;font-size:.75rem;white-space:nowrap;border-left:none;border-radius:6px}
+.mobile-nav .nav-item.active{background:rgba(197,151,44,.2)}
 </style>
 </head>
 <body>
@@ -224,22 +216,16 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
   </div>
 </div>
 
-<!-- APP SHELL -->
+<!-- APP -->
 <div id="appShell" style="display:none">
-
-  <!-- TOP HEADER -->
   <div class="top-header">
-    <div>
-      <h1>TCC CACFP Suite</h1>
-      <div class="subtitle">Non-profit Food Service Account Management</div>
-    </div>
+    <div><h1>TCC CACFP Suite</h1><div class="subtitle">Non-profit Food Service Account Management</div></div>
     <div class="fy-selector">
       <select id="fySelect" onchange="switchFiscalYear()"></select>
       <button onclick="showNewYearModal()">+ New Year</button>
     </div>
   </div>
 
-  <!-- MOBILE NAV -->
   <div class="mobile-nav">
     <div class="nav-item active" onclick="navTo('dashboard')"><span class="icon">🏠</span> Home</div>
     <div class="nav-item" onclick="navTo('monthly')"><span class="icon">📅</span> Monthly</div>
@@ -249,7 +235,6 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
   </div>
 
   <div class="app-layout">
-    <!-- SIDEBAR -->
     <nav class="sidebar">
       <div class="nav-item active" onclick="navTo('dashboard')"><span class="icon">🏠</span> Dashboard</div>
       <div class="nav-item" onclick="navTo('monthly')"><span class="icon">📅</span> Monthly Reporting</div>
@@ -261,1333 +246,907 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
       <div class="nav-item" onclick="navTo('settings')"><span class="icon">⚙️</span> Settings</div>
     </nav>
 
-    <!-- MAIN -->
     <div class="main-content">
 
-      <!-- ═══════ DASHBOARD ═══════ -->
+      <!-- DASHBOARD -->
       <div class="page active" id="page-dashboard">
         <h2 style="margin-bottom:20px">Dashboard</h2>
         <div class="stat-grid" id="dashStats"></div>
-        <div class="card">
-          <div class="card-hdr"><h3>📅 Monthly Progress</h3></div>
-          <div class="card-body" id="dashProgress"></div>
-        </div>
-        <div class="card">
-          <div class="card-hdr"><h3>✅ Year End Report Checklist</h3></div>
-          <div class="card-body" id="dashChecklist"></div>
-        </div>
+        <div class="card"><div class="card-hdr"><h3>📅 Monthly Progress</h3></div><div class="card-body" id="dashProgress"></div></div>
+        <div class="card"><div class="card-hdr"><h3>✅ Year End Report Checklist</h3></div><div class="card-body" id="dashChecklist"></div></div>
       </div>
 
-      <!-- ═══════ MONTHLY REPORTING ═══════ -->
+      <!-- MONTHLY REPORTING -->
       <div class="page" id="page-monthly">
-        <h2 style="margin-bottom:20px">Monthly Reporting</h2>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+          <h2>Monthly Reporting</h2>
+          <button class="btn btn-gold" onclick="startWizard()">🪄 Monthly Upload Wizard</button>
+        </div>
         <div class="month-bar" id="monthBar"></div>
-
         <div class="sub-tabs" id="monthlySubTabs">
           <div class="sub-tab active" onclick="monthSubTab('staffcosts')">👥 Staff Costs</div>
-          <div class="sub-tab" onclick="monthSubTab('claims')">📋 CACFP Claim</div>
+          <div class="sub-tab" onclick="monthSubTab('attendance')">📊 Attendance</div>
           <div class="sub-tab" onclick="monthSubTab('meals')">🍽️ Meal Counts</div>
+          <div class="sub-tab" onclick="monthSubTab('cdc')">🏥 CDC Eligibility</div>
+          <div class="sub-tab" onclick="monthSubTab('foodcosts')">🧾 Food Costs</div>
+          <div class="sub-tab" onclick="monthSubTab('claims')">📋 CACFP Claim</div>
           <div class="sub-tab" onclick="monthSubTab('monthdocs')">📁 Documents</div>
         </div>
-
-        <!-- STAFF COSTS SUB-PANEL -->
         <div class="sub-panel active" id="sp-staffcosts"></div>
-
-        <!-- CLAIMS SUB-PANEL -->
-        <div class="sub-panel" id="sp-claims"></div>
-
-        <!-- MEALS SUB-PANEL -->
+        <div class="sub-panel" id="sp-attendance"></div>
         <div class="sub-panel" id="sp-meals"></div>
-
-        <!-- MONTH DOCS SUB-PANEL -->
+        <div class="sub-panel" id="sp-cdc"></div>
+        <div class="sub-panel" id="sp-foodcosts"></div>
+        <div class="sub-panel" id="sp-claims"></div>
         <div class="sub-panel" id="sp-monthdocs"></div>
       </div>
 
-      <!-- ═══════ REVENUE TRACKING ═══════ -->
+      <!-- REVENUE -->
       <div class="page" id="page-revenue">
         <h2 style="margin-bottom:20px">NFSA Revenue Tracking</h2>
-        <div class="card">
-          <div class="card-hdr">
-            <h3>💰 Revenue Requirements</h3>
-            <span class="badge">Non-Pricing Program</span>
-          </div>
-          <div class="card-body">
-            <p style="font-size:0.9rem;color:var(--muted);margin-bottom:16px">
-              As a non-pricing program, meal revenue comes from tuition funds. Every meal served must have revenue
-              equal to or greater than the Category A (free) reimbursement rate. Category B and C meals need additional
-              revenue documented to the NFSA from tuition or other non-federal sources.
-            </p>
-            <div id="ratesDisplay"></div>
-          </div>
+        <div class="card"><div class="card-hdr"><h3>💰 Revenue Requirements</h3><span class="badge">Non-Pricing Program</span></div>
+          <div class="card-body"><p style="font-size:.9rem;color:var(--muted);margin-bottom:16px">As a non-pricing program, meal revenue comes from tuition funds. Every meal must have revenue ≥ the Category A (free) rate. B & C meals need additional revenue documented to the NFSA.</p><div id="ratesDisplay"></div></div>
         </div>
-
-        <div class="card">
-          <div class="card-hdr">
-            <h3>📊 Monthly Revenue Calculator</h3>
-            <button class="btn btn-sm btn-gold" onclick="showAddRevenueModal()">+ Add Revenue Entry</button>
-          </div>
-          <div class="card-body" id="revenueBody"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-hdr"><h3>📈 Revenue Summary</h3></div>
-          <div class="card-body" id="revenueSummary"></div>
-        </div>
+        <div class="card"><div class="card-hdr"><h3>📊 Monthly Revenue</h3><button class="btn btn-sm btn-gold" onclick="showAddRevenueModal()">+ Add Revenue</button></div><div class="card-body" id="revenueBody"></div></div>
+        <div class="card"><div class="card-hdr"><h3>📈 Revenue Summary</h3></div><div class="card-body" id="revenueSummary"></div></div>
       </div>
 
-      <!-- ═══════ PROGRAM DOCUMENTS ═══════ -->
+      <!-- PROGRAM DOCUMENTS -->
       <div class="page" id="page-documents">
         <h2 style="margin-bottom:20px">Program Documents</h2>
-        <div class="card">
-          <div class="card-hdr"><h3>🗂️ Core Program Documents</h3></div>
-          <div class="card-body" id="progDocsCore"></div>
-        </div>
-        <div class="card">
-          <div class="card-hdr">
-            <h3>📎 Additional Documents</h3>
-            <button class="btn btn-sm btn-outline" onclick="showAddOtherDocModal()">+ Add Document</button>
-          </div>
-          <div class="card-body" id="progDocsOther"></div>
-        </div>
+        <div class="card"><div class="card-hdr"><h3>🗂️ Core Program Documents</h3></div><div class="card-body" id="progDocsCore"></div></div>
+        <div class="card"><div class="card-hdr"><h3>📎 Additional Documents</h3><button class="btn btn-sm btn-outline" onclick="showAddOtherDocModal()">+ Add Document</button></div><div class="card-body" id="progDocsOther"></div></div>
       </div>
 
-      <!-- ═══════ YEAR END REPORT ═══════ -->
+      <!-- YEAR END REPORT -->
       <div class="page" id="page-yer">
         <h2 style="margin-bottom:20px">Year End Report</h2>
-        <div class="card">
-          <div class="card-hdr"><h3>📊 CNP-YER Summary</h3><span class="badge" id="yerFyBadge"></span></div>
-          <div class="card-body" id="yerBody"></div>
-        </div>
+        <div class="card"><div class="card-hdr"><h3>📊 CNP-YER Summary</h3><span class="badge" id="yerFyBadge"></span></div><div class="card-body" id="yerBody"></div></div>
         <div style="display:flex;gap:12px;margin-top:16px">
           <button class="btn btn-primary" onclick="downloadGL()">⬇️ Download NFSA General Ledger (.docx)</button>
-          <button class="btn btn-gold" onclick="showYERSummaryModal()">📋 View CNP-YER Summary Sheet</button>
         </div>
       </div>
 
-      <!-- ═══════ SETTINGS ═══════ -->
+      <!-- SETTINGS -->
       <div class="page" id="page-settings">
         <h2 style="margin-bottom:20px">Settings</h2>
-        <div class="card">
-          <div class="card-hdr"><h3>⚙️ Application Settings</h3></div>
-          <div class="card-body">
-            <div class="form-grid">
-              <div class="form-group">
-                <label>CACFP Sponsor ID</label>
-                <input type="text" value="990004457" id="settingSponsorId" readonly>
-              </div>
-              <div class="form-group">
-                <label>Organization</label>
-                <input type="text" value="The Children's Center, Inc." readonly>
-              </div>
-              <div class="form-group">
-                <label>Program Type</label>
-                <input type="text" value="Non-Pricing (Tuition Covers Meals)" readonly>
-              </div>
-              <div class="form-group">
-                <label>Centers</label>
-                <input type="text" value="Niles, Peace Boulevard" readonly>
-              </div>
-            </div>
-          </div>
+        <div class="card"><div class="card-hdr"><h3>⚙️ Application Settings</h3></div>
+          <div class="card-body"><div class="form-grid">
+            <div class="form-group"><label>CACFP Sponsor ID</label><input type="text" value="990004457" readonly></div>
+            <div class="form-group"><label>Organization</label><input type="text" value="The Children's Center, Inc." readonly></div>
+            <div class="form-group"><label>Program Type</label><input type="text" value="Non-Pricing (Tuition Covers Meals)" readonly></div>
+            <div class="form-group"><label>Centers</label><input type="text" value="Niles, Peace Boulevard" readonly></div>
+          </div></div>
         </div>
       </div>
-
-    </div><!-- /main-content -->
-  </div><!-- /app-layout -->
-</div><!-- /appShell -->
-
-<!-- NEW YEAR MODAL -->
-<div class="modal-overlay" id="newYearModal">
-  <div class="modal">
-    <div class="modal-hdr"><h3>Create New Fiscal Year</h3><button class="modal-close" onclick="closeModal('newYearModal')">&times;</button></div>
-    <div class="modal-body">
-      <p style="font-size:0.9rem;color:var(--muted);margin-bottom:16px">This will create a new fiscal year and carry forward your current staff roster and rates.</p>
-      <div class="form-group">
-        <label>Fiscal Year Label</label>
-        <input type="text" id="newFyLabel" placeholder="e.g. 2026-2027">
-      </div>
-      <div class="form-grid">
-        <div class="form-group"><label>Start Year</label><input type="number" id="newFyStart" placeholder="2026"></div>
-        <div class="form-group"><label>End Year</label><input type="number" id="newFyEnd" placeholder="2027"></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('newYearModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="createNewYear()">Create Year</button>
     </div>
   </div>
 </div>
 
-<!-- ADD STAFF MODAL -->
-<div class="modal-overlay" id="addStaffModal">
-  <div class="modal">
-    <div class="modal-hdr"><h3>Add Staff Member</h3><button class="modal-close" onclick="closeModal('addStaffModal')">&times;</button></div>
-    <div class="modal-body">
-      <div class="form-group"><label>Name</label><input type="text" id="newStaffName" placeholder="Full name"></div>
-      <div class="form-group">
-        <label>Center</label>
-        <select id="newStaffCenter">
-          <option value="niles">Niles</option>
-          <option value="peace">Peace Boulevard</option>
-        </select>
-      </div>
-      <div class="form-group"><label>Hourly Rate ($)</label><input type="number" id="newStaffRate" step="0.01" placeholder="0.00"></div>
+<!-- WIZARD OVERLAY -->
+<div class="wizard-overlay" id="wizardOverlay">
+  <div class="wizard">
+    <div class="wizard-header">
+      <h2 id="wizTitle">🪄 Monthly Upload Wizard</h2>
+      <button class="wizard-close" onclick="closeWizard()">&times;</button>
     </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('addStaffModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="addStaffMember()">Add Staff</button>
+    <div class="wizard-progress" id="wizProgress"></div>
+    <div class="wizard-body" id="wizBody"></div>
+    <div class="wizard-footer">
+      <span class="wiz-step-label" id="wizStepLabel"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline" id="wizBack" onclick="wizPrev()">← Back</button>
+        <button class="btn btn-gold" id="wizNext" onclick="wizNext()">Next →</button>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- ADD REVENUE MODAL -->
-<div class="modal-overlay" id="addRevenueModal">
-  <div class="modal">
-    <div class="modal-hdr"><h3>Add Revenue Entry</h3><button class="modal-close" onclick="closeModal('addRevenueModal')">&times;</button></div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label>Month</label>
-        <select id="revMonth"></select>
-      </div>
-      <div class="form-group">
-        <label>Revenue Type</label>
-        <select id="revType">
-          <option value="tuition_meal_revenue">Tuition Meal Revenue (B & C Categories)</option>
-          <option value="cacfp_reimbursement">CACFP Reimbursement</option>
-          <option value="dhhs_subsidy">DHHS Childcare Subsidy</option>
-          <option value="gsrp_funds">GSRP Funds</option>
-          <option value="head_start">Head Start Funds</option>
-          <option value="general_fund">General Fund Transfer</option>
-          <option value="other">Other Revenue</option>
-        </select>
-      </div>
-      <div class="form-group"><label>Amount ($)</label><input type="number" id="revAmount" step="0.01" placeholder="0.00"></div>
-      <div class="form-group"><label>Description / Source</label><input type="text" id="revDesc" placeholder="e.g. October tuition meal allocation"></div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('addRevenueModal')">Cancel</button>
-      <button class="btn btn-gold" onclick="addRevenueEntry()">Add Revenue</button>
-    </div>
-  </div>
-</div>
+<!-- MODALS -->
+<div class="modal-overlay" id="newYearModal"><div class="modal"><div class="modal-hdr"><h3>Create New Fiscal Year</h3><button class="modal-close" onclick="closeModal('newYearModal')">&times;</button></div><div class="modal-body"><div class="form-group"><label>Label</label><input type="text" id="newFyLabel" placeholder="e.g. 2026-2027"></div><div class="form-grid"><div class="form-group"><label>Start Year</label><input type="number" id="newFyStart" placeholder="2026"></div><div class="form-group"><label>End Year</label><input type="number" id="newFyEnd" placeholder="2027"></div></div></div><div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('newYearModal')">Cancel</button><button class="btn btn-primary" onclick="createNewYear()">Create Year</button></div></div></div>
+<div class="modal-overlay" id="addStaffModal"><div class="modal"><div class="modal-hdr"><h3>Add Staff Member</h3><button class="modal-close" onclick="closeModal('addStaffModal')">&times;</button></div><div class="modal-body"><div class="form-group"><label>Name</label><input type="text" id="newStaffName" placeholder="Full name"></div><div class="form-group"><label>Center</label><select id="newStaffCenter"><option value="niles">Niles</option><option value="peace">Peace Boulevard</option></select></div><div class="form-group"><label>Hourly Rate ($)</label><input type="number" id="newStaffRate" step="0.01" placeholder="0.00"></div></div><div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('addStaffModal')">Cancel</button><button class="btn btn-primary" onclick="addStaffMember()">Add Staff</button></div></div></div>
+<div class="modal-overlay" id="addRevenueModal"><div class="modal"><div class="modal-hdr"><h3>Add Revenue Entry</h3><button class="modal-close" onclick="closeModal('addRevenueModal')">&times;</button></div><div class="modal-body"><div class="form-group"><label>Month</label><select id="revMonth"></select></div><div class="form-group"><label>Revenue Type</label><select id="revType"><option value="tuition_meal_revenue">Tuition Meal Revenue</option><option value="cacfp_reimbursement">CACFP Reimbursement</option><option value="dhhs_subsidy">DHHS Childcare Subsidy</option><option value="gsrp_funds">GSRP Funds</option><option value="general_fund">General Fund Transfer</option><option value="other">Other</option></select></div><div class="form-group"><label>Amount ($)</label><input type="number" id="revAmount" step="0.01" placeholder="0.00"></div><div class="form-group"><label>Description</label><input type="text" id="revDesc" placeholder="e.g. October tuition allocation"></div></div><div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('addRevenueModal')">Cancel</button><button class="btn btn-gold" onclick="addRevenueEntry()">Add Revenue</button></div></div></div>
 
-<!-- TOAST -->
 <div class="toast" id="toast"></div>
 
 <script>
 // ═══════════════════════════════════════════════════
-// STATE & CONFIG
+// STATE
 // ═══════════════════════════════════════════════════
-let PIN = '';
-let fiscalYears = [];
-let activeFY = null;
-let staffList = [];
-let staffTimeEntries = [];
-let salaryTotals = [];
-let monthlyDataCache = {};
-let revenueEntries = [];
-let documents = [];
-let programDocs = [];
-let yerData = null;
-let currentMonth = null;
-let currentSubTab = 'staffcosts';
+let PIN='',fiscalYears=[],activeFY=null,staffList=[],staffTimeEntries=[],salaryTotals=[],
+    monthlyDataCache={},revenueEntries=[],documents=[],programDocs=[],yerData=null,
+    currentMonth=null,currentSubTab='staffcosts';
 
-const MONTHS_ORDER = ['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep'];
-const MONTH_LABELS = {oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
-
-// MDE Reimbursement rates 7/1/2025 – 6/30/2026
-const RATES_2025_2026 = {
-  breakfast: { A: 2.46, B: 2.16, C: 0.40, addlB: 0.30, addlC: 2.06 },
-  lunch:     { A: 4.60, B: 4.20, C: 0.44, addlB: 0.40, addlC: 4.16 },
-  supper:    { A: 4.60, B: 4.20, C: 0.44, addlB: 0.40, addlC: 4.16 },
-  snack:     { A: 1.26, B: 0.63, C: 0.11, addlB: 0.15, addlC: 1.15 }
-};
-
-const BENEFITS_RATE = 0.0765;
-const CORE_DOC_TYPES = [
-  { key: 'application', label: 'CACFP Sponsor Application', icon: '📋' },
-  { key: 'approval_email', label: 'MDE Renewal Approval Email', icon: '✉️' },
-  { key: 'agreement', label: 'Agreement / Contract with MDE', icon: '📄' },
-  { key: 'budget', label: 'Budget Narrative', icon: '💰' },
-  { key: 'training', label: 'Staff Training Certifications', icon: '🎓' },
-];
-
-const fmt = n => '$' + (Math.abs(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-function monthKey(m) { return m; }
-function monthLabel(m) { return MONTH_LABELS[m] || m; }
-function fyMonthYear(m) {
-  if (!activeFY) return '';
-  const isFirstHalf = ['oct','nov','dec'].includes(m);
-  return isFirstHalf ? activeFY.start_year : activeFY.end_year;
-}
+const MO=['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep'];
+const ML={oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
+const RATES={breakfast:{A:2.46,B:2.16,C:0.40,addlB:0.30,addlC:2.06},lunch:{A:4.60,B:4.20,C:0.44,addlB:0.40,addlC:4.16},supper:{A:4.60,B:4.20,C:0.44,addlB:0.40,addlC:4.16},snack:{A:1.26,B:0.63,C:0.11,addlB:0.15,addlC:1.15}};
+const BEN_RATE=0.0765;
+const CORE_DOCS=[{key:'application',label:'CACFP Sponsor Application',icon:'📋'},{key:'approval_email',label:'MDE Renewal Approval Email',icon:'✉️'},{key:'agreement',label:'Agreement / Contract with MDE',icon:'📄'},{key:'budget',label:'Budget Narrative',icon:'💰'},{key:'training',label:'Staff Training Certifications',icon:'🎓'}];
+const fmt=n=>'$'+(Math.abs(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fyYear=m=>activeFY?(['oct','nov','dec'].includes(m)?activeFY.start_year:activeFY.end_year):'';
 
 // ═══════════════════════════════════════════════════
-// API HELPERS
+// API
 // ═══════════════════════════════════════════════════
-async function api(url, opts = {}) {
-  const headers = { 'X-Access-PIN': PIN, ...(opts.headers || {}) };
-  if (opts.body && !(opts.body instanceof FormData)) {
-    headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(opts.body);
-  }
-  const res = await fetch(url, { ...opts, headers });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || 'Request failed');
-  }
-  const ct = res.headers.get('content-type') || '';
-  if (ct.includes('application/json')) return res.json();
-  return res;
+async function api(url,opts={}){
+  const h={'X-Access-PIN':PIN,...(opts.headers||{})};
+  if(opts.body&&!(opts.body instanceof FormData)){h['Content-Type']='application/json';opts.body=JSON.stringify(opts.body);}
+  const r=await fetch(url,{...opts,headers:h});
+  if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||'Failed');}
+  const ct=r.headers.get('content-type')||'';
+  return ct.includes('json')?r.json():r;
 }
 
 // ═══════════════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════════════
-async function doLogin() {
-  const pin = document.getElementById('pinInput').value;
-  try {
-    await api('/api/auth', { method: 'POST', body: { pin } });
-    PIN = pin;
-    document.getElementById('loginOverlay').style.display = 'none';
-    document.getElementById('appShell').style.display = 'block';
-    await loadAll();
-  } catch (e) {
-    document.getElementById('loginErr').style.display = 'block';
-  }
+async function doLogin(){
+  const pin=document.getElementById('pinInput').value;
+  try{await api('/api/auth',{method:'POST',body:{pin}});PIN=pin;document.getElementById('loginOverlay').style.display='none';document.getElementById('appShell').style.display='block';await loadAll();}
+  catch(e){document.getElementById('loginErr').style.display='block';}
 }
 
 // ═══════════════════════════════════════════════════
 // DATA LOADING
 // ═══════════════════════════════════════════════════
-async function loadAll() {
-  try {
-    fiscalYears = await api('/api/fiscal-years');
+async function loadAll(){
+  try{
+    fiscalYears=await api('/api/fiscal-years');
     renderFYSelector();
-    activeFY = fiscalYears.find(f => f.is_active) || fiscalYears[0];
-    if (!activeFY) return;
-    document.getElementById('fySelect').value = activeFY.id;
+    activeFY=fiscalYears.find(f=>f.is_active)||fiscalYears[0];
+    if(!activeFY)return;
+    document.getElementById('fySelect').value=activeFY.id;
     await loadFYData();
-  } catch (e) { showToast('Error loading data: ' + e.message, 'err'); }
+  }catch(e){showToast('Error: '+e.message,'err');}
 }
 
-async function loadFYData() {
-  if (!activeFY) return;
-  const fyId = activeFY.id;
-  [staffList, staffTimeEntries, salaryTotals, revenueEntries, documents, programDocs, yerData] = await Promise.all([
-    api('/api/staff'),
-    api(`/api/staff-time?fiscal_year_id=${fyId}`),
-    api(`/api/staff-time/totals?fiscal_year_id=${fyId}`),
-    api(`/api/revenue?fiscal_year_id=${fyId}`),
-    api(`/api/documents?fiscal_year_id=${fyId}`),
-    api(`/api/program-documents?fiscal_year_id=${fyId}`),
-    api(`/api/yer?fiscal_year_id=${fyId}`)
+async function loadFYData(){
+  if(!activeFY)return;
+  const id=activeFY.id;
+  [staffList,staffTimeEntries,salaryTotals,revenueEntries,documents,programDocs,yerData]=await Promise.all([
+    api('/api/staff'),api(`/api/staff-time?fiscal_year_id=${id}`),api(`/api/staff-time/totals?fiscal_year_id=${id}`),
+    api(`/api/revenue?fiscal_year_id=${id}`),api(`/api/documents?fiscal_year_id=${id}`),
+    api(`/api/program-documents?fiscal_year_id=${id}`),api(`/api/yer?fiscal_year_id=${id}`)
   ]);
-  // Load monthly data
-  const mdRows = await api(`/api/monthly-data?fiscal_year_id=${fyId}`);
-  monthlyDataCache = {};
-  for (const r of mdRows) {
-    const k = r.month_key + '_' + r.data_type;
-    monthlyDataCache[k] = r.data;
-  }
-  currentMonth = currentMonth || MONTHS_ORDER[0];
+  const mdRows=await api(`/api/monthly-data?fiscal_year_id=${id}`);
+  monthlyDataCache={};
+  for(const r of mdRows)monthlyDataCache[r.month_key+'_'+r.data_type]=r.data;
+  currentMonth=currentMonth||MO[0];
   renderAll();
 }
 
-function renderFYSelector() {
-  const sel = document.getElementById('fySelect');
-  sel.innerHTML = fiscalYears.map(f => `<option value="${f.id}">${f.label}</option>`).join('');
-}
+function renderFYSelector(){document.getElementById('fySelect').innerHTML=fiscalYears.map(f=>`<option value="${f.id}">${f.label}</option>`).join('');}
 
-async function switchFiscalYear() {
-  const sel = document.getElementById('fySelect');
-  const fy = fiscalYears.find(f => f.id == sel.value);
-  if (!fy) return;
-  await api(`/api/fiscal-years/${fy.id}/activate`, { method: 'PUT' });
-  activeFY = fy;
-  await loadFYData();
-  showToast('Switched to ' + fy.label, 'ok');
+async function switchFiscalYear(){
+  const fy=fiscalYears.find(f=>f.id==document.getElementById('fySelect').value);
+  if(!fy)return;
+  await api(`/api/fiscal-years/${fy.id}/activate`,{method:'PUT'});
+  activeFY=fy;await loadFYData();showToast('Switched to '+fy.label,'ok');
 }
 
 // ═══════════════════════════════════════════════════
-// NAVIGATION
+// NAV
 // ═══════════════════════════════════════════════════
-function navTo(page) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('page-' + page)?.classList.add('active');
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.querySelectorAll(`.nav-item`).forEach(n => {
-    if (n.onclick?.toString().includes(`'${page}'`)) n.classList.add('active');
-  });
-  if (page === 'monthly') renderMonthlyPage();
-  if (page === 'revenue') renderRevenuePage();
-  if (page === 'documents') renderProgramDocs();
-  if (page === 'yer') renderYER();
-  if (page === 'dashboard') renderDashboard();
+function navTo(page){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+page)?.classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>{if(n.onclick?.toString().includes("'"+page+"'"))n.classList.add('active');});
+  if(page==='monthly')renderMonthlyPage();
+  if(page==='revenue')renderRevenuePage();
+  if(page==='documents')renderProgramDocs();
+  if(page==='yer')renderYER();
+  if(page==='dashboard')renderDashboard();
 }
 
-function monthSubTab(tab) {
-  currentSubTab = tab;
-  document.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.sub-tab').forEach(t => {
-    if (t.onclick?.toString().includes(`'${tab}'`)) t.classList.add('active');
-  });
-  document.getElementById('sp-' + tab)?.classList.add('active');
-  renderMonthSubPanel();
+function monthSubTab(tab){
+  currentSubTab=tab;
+  document.querySelectorAll('.sub-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.sub-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.sub-tab').forEach(t=>{if(t.onclick?.toString().includes("'"+tab+"'"))t.classList.add('active');});
+  document.getElementById('sp-'+tab)?.classList.add('active');
+  renderSubPanel();
 }
 
-// ═══════════════════════════════════════════════════
-// RENDER ALL
-// ═══════════════════════════════════════════════════
-function renderAll() {
-  renderDashboard();
-  renderMonthBar();
-  renderMonthlyPage();
-  renderRevenuePage();
-  renderProgramDocs();
-  renderYER();
-}
+function renderAll(){renderDashboard();renderMonthBar();renderMonthlyPage();renderRevenuePage();renderProgramDocs();renderYER();}
 
 // ═══════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════
-function renderDashboard() {
-  const totalSal = salaryTotals.reduce((s, r) => s + (parseFloat(r.food_service_cost) || 0), 0);
-  const totalAdmin = salaryTotals.reduce((s, r) => s + (parseFloat(r.admin_cost) || 0), 0);
-  const benefits = totalSal * BENEFITS_RATE;
-  const monthsReported = salaryTotals.length;
-  const totalRevenue = revenueEntries.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
-  const cacfpReimb = parseFloat(yerData?.cacfp_reimbursement) || 0;
-  const foodCost = parseFloat(yerData?.food_cost) || 0;
-  const totalExpenses = foodCost + totalSal + benefits + totalAdmin;
-  const fundBal = (cacfpReimb + totalRevenue) - totalExpenses;
+function renderDashboard(){
+  const tSal=salaryTotals.reduce((s,r)=>s+(parseFloat(r.food_service_cost)||0),0);
+  const tAdm=salaryTotals.reduce((s,r)=>s+(parseFloat(r.admin_cost)||0),0);
+  const ben=tSal*BEN_RATE;const mr=salaryTotals.length;
+  const tRev=revenueEntries.reduce((s,r)=>s+(parseFloat(r.amount)||0),0);
+  const cr=parseFloat(yerData?.cacfp_reimbursement)||0;
+  const fc=parseFloat(yerData?.food_cost)||0;
+  const tExp=fc+tSal+ben+tAdm;const fb=(cr+tRev)-tExp;
 
-  document.getElementById('dashStats').innerHTML = `
-    <div class="stat-card gold"><div class="stat-label">Food Service Salaries YTD</div><div class="stat-val">${fmt(totalSal)}</div></div>
-    <div class="stat-card"><div class="stat-label">Admin Costs YTD</div><div class="stat-val">${fmt(totalAdmin)}</div></div>
-    <div class="stat-card green"><div class="stat-label">NFSA Revenue YTD</div><div class="stat-val">${fmt(cacfpReimb + totalRevenue)}</div></div>
-    <div class="stat-card ${fundBal >= 0 ? 'green' : 'red'}"><div class="stat-label">Est. Fund Balance</div><div class="stat-val">${fundBal < 0 ? '-' : ''}${fmt(fundBal)}</div></div>
-  `;
+  document.getElementById('dashStats').innerHTML=`
+    <div class="stat-card gold"><div class="stat-label">Food Service Salaries YTD</div><div class="stat-val">${fmt(tSal)}</div></div>
+    <div class="stat-card"><div class="stat-label">Admin Costs YTD</div><div class="stat-val">${fmt(tAdm)}</div></div>
+    <div class="stat-card green"><div class="stat-label">NFSA Revenue YTD</div><div class="stat-val">${fmt(cr+tRev)}</div></div>
+    <div class="stat-card ${fb>=0?'green':'red'}"><div class="stat-label">Est. Fund Balance</div><div class="stat-val">${fb<0?'-':''}${fmt(fb)}</div></div>`;
 
-  // Monthly progress
-  let progHtml = '<div class="month-bar">';
-  for (const m of MONTHS_ORDER) {
-    const hasData = salaryTotals.some(r => r.month_key === m);
-    progHtml += `<div class="month-btn ${hasData ? 'has-data' : ''}" style="cursor:default">${monthLabel(m).slice(0,3)}</div>`;
-  }
-  progHtml += '</div>';
-  progHtml += `<p style="font-size:0.85rem;color:var(--muted);margin-top:12px">${monthsReported} of 12 months reported</p>`;
-  document.getElementById('dashProgress').innerHTML = progHtml;
+  let progHtml='<div class="month-bar">';
+  for(const m of MO){const has=salaryTotals.some(r=>r.month_key===m)||Object.keys(monthlyDataCache).some(k=>k.startsWith(m+'_'));
+    progHtml+=`<div class="month-btn ${has?'has-data':''}" style="cursor:default">${ML[m].slice(0,3)}</div>`;}
+  progHtml+='</div><p style="font-size:.85rem;color:var(--muted);margin-top:12px">'+mr+' of 12 months with staff data</p>';
+  document.getElementById('dashProgress').innerHTML=progHtml;
 
-  // Checklist
-  const checks = [
-    { label: 'Staff roster populated', done: staffList.length > 0, purpose: 'For YER' },
-    { label: 'Time distribution forms uploaded', done: documents.some(d => d.doc_type === 'time_distribution_fs'), purpose: 'For audit' },
-    { label: 'Monthly salary totals entered (all 12)', done: salaryTotals.length >= 12, purpose: 'For YER' },
-    { label: 'CACFP reimbursement entered', done: (parseFloat(yerData?.cacfp_reimbursement) || 0) > 0, purpose: 'For YER' },
-    { label: 'Food cost entered', done: (parseFloat(yerData?.food_cost) || 0) > 0, purpose: 'For YER' },
-    { label: 'Revenue documented for B & C meals', done: revenueEntries.length > 0, purpose: 'For YER (new req)' },
-    { label: 'Sponsor Application uploaded', done: programDocs.some(d => d.doc_type === 'application'), purpose: 'Program docs' },
-    { label: 'MDE Approval Email uploaded', done: programDocs.some(d => d.doc_type === 'approval_email'), purpose: 'Program docs' },
-    { label: 'P&L report uploaded', done: documents.some(d => d.doc_type === 'pl_report'), purpose: 'For YER' },
-    { label: 'General Ledger generated with revenue', done: false, purpose: 'For YER (new req)' },
-    { label: 'Journal entries for fund transfers documented', done: false, purpose: 'For YER (new req)' },
+  const checks=[
+    {label:'Staff roster populated',done:staffList.length>0,tag:'YER'},
+    {label:'Time distribution forms uploaded',done:documents.some(d=>d.doc_type?.startsWith('time_distribution')),tag:'Audit'},
+    {label:'Monthly salary totals (all 12)',done:salaryTotals.length>=12,tag:'YER'},
+    {label:'CACFP reimbursement entered',done:cr>0,tag:'YER'},
+    {label:'Food cost entered',done:fc>0,tag:'YER'},
+    {label:'Revenue documented (B & C meals)',done:revenueEntries.length>0,tag:'YER (new)'},
+    {label:'Attendance data entered',done:Object.keys(monthlyDataCache).some(k=>k.includes('_attendance')),tag:'Claim'},
+    {label:'Meal counts entered',done:Object.keys(monthlyDataCache).some(k=>k.includes('_meals')),tag:'Claim'},
+    {label:'CDC eligibility uploaded',done:Object.keys(monthlyDataCache).some(k=>k.includes('_cdc')),tag:'Claim'},
+    {label:'Sponsor Application uploaded',done:programDocs.some(d=>d.doc_type==='application'),tag:'Program'},
+    {label:'MDE Approval Email uploaded',done:programDocs.some(d=>d.doc_type==='approval_email'),tag:'Program'},
   ];
-  document.getElementById('dashChecklist').innerHTML = checks.map(c =>
+  document.getElementById('dashChecklist').innerHTML=checks.map(c=>
     `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-      <span style="font-size:1.1rem">${c.done ? '✅' : '⬜'}</span>
-      <span style="flex:1;font-size:0.9rem;${c.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${c.label}</span>
-      <span style="font-size:0.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${c.purpose}</span>
-    </div>`
-  ).join('');
+      <span style="font-size:1.1rem">${c.done?'✅':'⬜'}</span>
+      <span style="flex:1;font-size:.9rem;${c.done?'text-decoration:line-through;color:var(--muted)':''}">${c.label}</span>
+      <span style="font-size:.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${c.tag}</span></div>`).join('');
 }
 
 // ═══════════════════════════════════════════════════
-// MONTH BAR
+// MONTH BAR & SUB PANELS
 // ═══════════════════════════════════════════════════
-function renderMonthBar() {
-  const bar = document.getElementById('monthBar');
-  bar.innerHTML = MONTHS_ORDER.map(m => {
-    const hasData = salaryTotals.some(r => r.month_key === m);
-    const isActive = m === currentMonth;
-    return `<div class="month-btn ${isActive ? 'active' : ''} ${hasData ? 'has-data' : ''}" onclick="selectMonth('${m}')">${monthLabel(m).slice(0,3)} ${fyMonthYear(m)}</div>`;
+function renderMonthBar(){
+  document.getElementById('monthBar').innerHTML=MO.map(m=>{
+    const has=salaryTotals.some(r=>r.month_key===m)||Object.keys(monthlyDataCache).some(k=>k.startsWith(m+'_'));
+    return `<div class="month-btn ${m===currentMonth?'active':''} ${has?'has-data':''}" onclick="selectMonth('${m}')">${ML[m].slice(0,3)} ${fyYear(m)}</div>`;
   }).join('');
 }
+function selectMonth(m){currentMonth=m;renderMonthBar();renderSubPanel();}
+function renderMonthlyPage(){renderMonthBar();renderSubPanel();}
 
-function selectMonth(m) {
-  currentMonth = m;
-  renderMonthBar();
-  renderMonthSubPanel();
+function renderSubPanel(){
+  const fn={staffcosts:renderStaffCosts,attendance:renderAttendance,meals:renderMeals,cdc:renderCDC,foodcosts:renderFoodCosts,claims:renderClaims,monthdocs:renderMonthDocs};
+  if(fn[currentSubTab])fn[currentSubTab]();
 }
 
 // ═══════════════════════════════════════════════════
-// MONTHLY PAGE
+// STAFF COSTS (restored + enhanced)
 // ═══════════════════════════════════════════════════
-function renderMonthlyPage() {
-  renderMonthBar();
-  renderMonthSubPanel();
-}
+function renderStaffCosts(){
+  const m=currentMonth;
+  const timeMap={};
+  staffTimeEntries.filter(e=>e.month_key===m).forEach(e=>{timeMap[e.staff_id]=e;});
 
-function renderMonthSubPanel() {
-  if (currentSubTab === 'staffcosts') renderStaffCosts();
-  else if (currentSubTab === 'claims') renderClaimsPanel();
-  else if (currentSubTab === 'meals') renderMealsPanel();
-  else if (currentSubTab === 'monthdocs') renderMonthDocs();
-}
-
-// ═══════════════════════════════════════════════════
-// STAFF COSTS (combined salaries + admin)
-// ═══════════════════════════════════════════════════
-function renderStaffCosts() {
-  const m = currentMonth;
-  const nilesStaff = staffList.filter(s => s.center === 'niles');
-  const peaceStaff = staffList.filter(s => s.center === 'peace');
-  const timeMap = {};
-  staffTimeEntries.filter(e => e.month_key === m).forEach(e => { timeMap[e.staff_id] = e; });
-
-  function buildTable(center, staff) {
-    const label = center === 'niles' ? 'Niles' : 'Peace Boulevard';
-    let total_fs = 0, total_admin = 0;
-    const rows = staff.map(s => {
-      const te = timeMap[s.id] || {};
-      const fsHrs = parseFloat(te.food_service_hours) || 0;
-      const admHrs = parseFloat(te.admin_hours) || 0;
-      const rate = parseFloat(te.hourly_rate_used) || parseFloat(s.hourly_rate) || 0;
-      const fsEarned = fsHrs * rate;
-      const admEarned = admHrs * rate;
-      total_fs += fsEarned;
-      total_admin += admEarned;
-      return `<tr>
-        <td style="font-weight:500">${s.name}</td>
-        <td><input type="number" step="0.01" value="${rate || ''}" onchange="updateStaffRate(${s.id}, this.value)" placeholder="0.00" style="width:80px"></td>
-        <td><input type="number" step="0.25" value="${fsHrs || ''}" onchange="updateStaffTime(${s.id},'${m}','fs',this.value)" placeholder="0" style="width:70px"></td>
-        <td class="earned">${fsEarned > 0 ? fmt(fsEarned) : '—'}</td>
-        <td><input type="number" step="0.25" value="${admHrs || ''}" onchange="updateStaffTime(${s.id},'${m}','admin',this.value)" placeholder="0" style="width:70px"></td>
-        <td class="earned">${admEarned > 0 ? fmt(admEarned) : '—'}</td>
-        <td><button class="btn-remove" onclick="deactivateStaff(${s.id})" title="Remove">✕</button></td>
-      </tr>`;
+  function buildTable(center,label){
+    const staff=staffList.filter(s=>s.center===center);
+    let tFS=0,tAdm=0;
+    const rows=staff.map(s=>{
+      const te=timeMap[s.id]||{};
+      const fsH=parseFloat(te.food_service_hours)||0,admH=parseFloat(te.admin_hours)||0;
+      const rate=parseFloat(te.hourly_rate_used)||parseFloat(s.hourly_rate)||0;
+      tFS+=fsH*rate;tAdm+=admH*rate;
+      return `<tr><td style="font-weight:500">${s.name}</td>
+        <td><input type="number" step="0.01" value="${rate||''}" onchange="updateStaffRate(${s.id},this.value)" style="width:80px"></td>
+        <td><input type="number" step="0.25" value="${fsH||''}" onchange="updateStaffTime(${s.id},'${m}','fs',this.value)" style="width:70px"></td>
+        <td class="earned">${fsH*rate>0?fmt(fsH*rate):'—'}</td>
+        <td><input type="number" step="0.25" value="${admH||''}" onchange="updateStaffTime(${s.id},'${m}','admin',this.value)" style="width:70px"></td>
+        <td class="earned">${admH*rate>0?fmt(admH*rate):'—'}</td>
+        <td><button class="btn-remove" onclick="deactivateStaff(${s.id})" title="Remove">✕</button></td></tr>`;
     }).join('');
 
-    return `
-      <div class="card">
-        <div class="card-hdr">
-          <h3>📍 ${label} — ${monthLabel(m)} ${fyMonthYear(m)}</h3>
-          <button class="btn btn-sm btn-outline" onclick="showAddStaffForCenter('${center}')">+ Add Staff</button>
-        </div>
-        <div class="card-body">
-          <table class="staff-table">
-            <thead><tr>
-              <th>Name</th><th>Rate/Hr</th>
-              <th>FS Hours</th><th>FS Earned</th>
-              <th>Admin Hours</th><th>Admin Earned</th>
-              <th></th>
-            </tr></thead>
-            <tbody>${rows || '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No staff added yet. Click "+ Add Staff" to begin.</td></tr>'}</tbody>
-          </table>
-
-          <!-- Upload Time Distribution Forms -->
-          <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <div>
-              <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px">📄 Food Service Time Distribution</div>
-              <div class="upload-zone ${documents.some(d => d.doc_type === 'time_distribution_fs' && d.month_key === m && d.metadata?.center === center) ? 'done' : ''}" id="uz-fs-${center}-${m}">
-                <input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadTimeDistribution('${center}','${m}','fs',this)">
-                <div class="uz-icon">📄</div>
-                <div class="uz-label">Upload food service time form (PDF or photo)</div>
-                <div class="uz-file" id="uzf-fs-${center}-${m}">${getDocName('time_distribution_fs', m, center)}</div>
-              </div>
-              <div class="ocr-progress" id="ocr-fs-${center}-${m}">
-                <div class="ocr-bar"><div class="ocr-bar-fill" id="ocrfill-fs-${center}-${m}"></div></div>
-                <div class="ocr-status" id="ocrstatus-fs-${center}-${m}">Preparing to scan...</div>
-              </div>
-            </div>
-            <div>
-              <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px">📄 Admin Time Distribution</div>
-              <div class="upload-zone ${documents.some(d => d.doc_type === 'time_distribution_admin' && d.month_key === m && d.metadata?.center === center) ? 'done' : ''}" id="uz-admin-${center}-${m}">
-                <input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadTimeDistribution('${center}','${m}','admin',this)">
-                <div class="uz-icon">📄</div>
-                <div class="uz-label">Upload admin time form (PDF or photo)</div>
-                <div class="uz-file" id="uzf-admin-${center}-${m}">${getDocName('time_distribution_admin', m, center)}</div>
-              </div>
-              <div class="ocr-progress" id="ocr-admin-${center}-${m}">
-                <div class="ocr-bar"><div class="ocr-bar-fill" id="ocrfill-admin-${center}-${m}"></div></div>
-                <div class="ocr-status" id="ocrstatus-admin-${center}-${m}">Preparing to scan...</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  // Calculate combined totals
-  const allTime = staffTimeEntries.filter(e => e.month_key === m);
-  const nilesFsCost = allTime.filter(e => staffList.find(s => s.id == e.staff_id)?.center === 'niles')
-    .reduce((s, e) => s + (parseFloat(e.food_service_hours) || 0) * (parseFloat(e.hourly_rate_used) || 0), 0);
-  const peaceFsCost = allTime.filter(e => staffList.find(s => s.id == e.staff_id)?.center === 'peace')
-    .reduce((s, e) => s + (parseFloat(e.food_service_hours) || 0) * (parseFloat(e.hourly_rate_used) || 0), 0);
-  const nilesAdmCost = allTime.filter(e => staffList.find(s => s.id == e.staff_id)?.center === 'niles')
-    .reduce((s, e) => s + (parseFloat(e.admin_hours) || 0) * (parseFloat(e.hourly_rate_used) || 0), 0);
-  const peaceAdmCost = allTime.filter(e => staffList.find(s => s.id == e.staff_id)?.center === 'peace')
-    .reduce((s, e) => s + (parseFloat(e.admin_hours) || 0) * (parseFloat(e.hourly_rate_used) || 0), 0);
-  const totalFS = nilesFsCost + peaceFsCost;
-  const totalAdm = nilesAdmCost + peaceAdmCost;
-  const benefits = totalFS * BENEFITS_RATE;
-
-  document.getElementById('sp-staffcosts').innerHTML = `
-    ${buildTable('niles', nilesStaff)}
-    ${buildTable('peace', peaceStaff)}
-    <div class="totals-box">
-      <h4>📊 ${monthLabel(m)} ${fyMonthYear(m)} — Combined Staff Cost Summary</h4>
-      <div class="totals-row"><span class="label">Niles Food Service Salaries</span><span class="val">${fmt(nilesFsCost)}</span></div>
-      <div class="totals-row"><span class="label">Peace Food Service Salaries</span><span class="val">${fmt(peaceFsCost)}</span></div>
-      <div class="totals-row"><span class="label">Combined Food Service Salaries</span><span class="val">${fmt(totalFS)}</span></div>
-      <div class="totals-row"><span class="label">Employee Benefits (7.65%)</span><span class="val">${fmt(benefits)}</span></div>
-      <div class="totals-row"><span class="label">Niles Admin Costs</span><span class="val">${fmt(nilesAdmCost)}</span></div>
-      <div class="totals-row"><span class="label">Peace Admin Costs</span><span class="val">${fmt(peaceAdmCost)}</span></div>
-      <div class="totals-row"><span class="label">Combined Admin Costs</span><span class="val">${fmt(totalAdm)}</span></div>
-      <div class="totals-row big"><span class="label">TOTAL COST TO NFSA</span><span class="val">${fmt(totalFS + benefits + totalAdm)}</span></div>
-    </div>
-  `;
-}
-
-function getDocName(docType, monthKey, center) {
-  const doc = documents.find(d => d.doc_type === docType && d.month_key === monthKey && d.metadata?.center === center);
-  return doc ? '✅ ' + doc.filename : '';
-}
-
-// ── Staff data updates ──
-async function updateStaffRate(staffId, val) {
-  try {
-    await api(`/api/staff/${staffId}`, { method: 'PUT', body: { hourly_rate: parseFloat(val) || 0 } });
-    staffList = await api('/api/staff');
-    // Also update the time entry with new rate
-    const m = currentMonth;
-    const existing = staffTimeEntries.find(e => e.staff_id == staffId && e.month_key === m);
-    if (existing) {
-      await api('/api/staff-time', { method: 'POST', body: {
-        staff_id: staffId, fiscal_year_id: activeFY.id, month_key: m,
-        food_service_hours: existing.food_service_hours,
-        admin_hours: existing.admin_hours,
-        hourly_rate_used: parseFloat(val) || 0
-      }});
-      await reloadTimeEntries();
-    }
-    renderStaffCosts();
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
-
-async function updateStaffTime(staffId, monthKey, type, val) {
-  try {
-    const existing = staffTimeEntries.find(e => e.staff_id == staffId && e.month_key === monthKey);
-    const staff = staffList.find(s => s.id == staffId);
-    const rate = existing?.hourly_rate_used || staff?.hourly_rate || 0;
-    const fsHrs = type === 'fs' ? (parseFloat(val) || 0) : (parseFloat(existing?.food_service_hours) || 0);
-    const admHrs = type === 'admin' ? (parseFloat(val) || 0) : (parseFloat(existing?.admin_hours) || 0);
-    await api('/api/staff-time', { method: 'POST', body: {
-      staff_id: staffId, fiscal_year_id: activeFY.id, month_key: monthKey,
-      food_service_hours: fsHrs, admin_hours: admHrs, hourly_rate_used: parseFloat(rate)
-    }});
-    await reloadTimeEntries();
-    renderStaffCosts();
-    renderDashboard();
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
-
-async function reloadTimeEntries() {
-  staffTimeEntries = await api(`/api/staff-time?fiscal_year_id=${activeFY.id}`);
-  salaryTotals = await api(`/api/staff-time/totals?fiscal_year_id=${activeFY.id}`);
-}
-
-function showAddStaffForCenter(center) {
-  document.getElementById('newStaffCenter').value = center;
-  document.getElementById('newStaffName').value = '';
-  document.getElementById('newStaffRate').value = '';
-  openModal('addStaffModal');
-}
-
-async function addStaffMember() {
-  const name = document.getElementById('newStaffName').value.trim();
-  const center = document.getElementById('newStaffCenter').value;
-  const rate = parseFloat(document.getElementById('newStaffRate').value) || 0;
-  if (!name) return showToast('Please enter a name', 'err');
-  try {
-    await api('/api/staff', { method: 'POST', body: { name, center, hourly_rate: rate } });
-    staffList = await api('/api/staff');
-    closeModal('addStaffModal');
-    renderStaffCosts();
-    showToast('✅ ' + name + ' added!', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
-
-async function deactivateStaff(staffId) {
-  if (!confirm('Remove this staff member from the roster?')) return;
-  try {
-    await api(`/api/staff/${staffId}`, { method: 'PUT', body: { is_active: false } });
-    staffList = await api('/api/staff');
-    renderStaffCosts();
-    showToast('Staff member removed', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
-
-// ── Time Distribution Upload + OCR ──
-async function uploadTimeDistribution(center, monthKey, type, input) {
-  if (!input.files[0]) return;
-  const file = input.files[0];
-  const docType = 'time_distribution_' + type;
-  const ocrProg = document.getElementById(`ocr-${type}-${center}-${monthKey}`);
-  const ocrFill = document.getElementById(`ocrfill-${type}-${center}-${monthKey}`);
-  const ocrStatus = document.getElementById(`ocrstatus-${type}-${center}-${monthKey}`);
-
-  // Upload file to server for audit storage
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('fiscal_year_id', activeFY.id);
-  formData.append('month_key', monthKey);
-  formData.append('doc_type', docType);
-  formData.append('metadata', JSON.stringify({ center }));
-
-  try {
-    await api('/api/documents/upload', { method: 'POST', body: formData });
-    documents = await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
-    document.getElementById(`uz-${type}-${center}-${monthKey}`)?.classList.add('done');
-    document.getElementById(`uzf-${type}-${center}-${monthKey}`).textContent = '✅ ' + file.name;
-    showToast('✅ Document saved for audit!', 'ok');
-  } catch (e) { showToast('Upload error: ' + e.message, 'err'); }
-
-  // Now try OCR if it's an image
-  if (file.type.startsWith('image/') || file.name.match(/\.(png|jpg|jpeg)$/i)) {
-    ocrProg.classList.add('active');
-    ocrStatus.textContent = 'Scanning handwritten form...';
-    ocrFill.style.width = '10%';
-
-    try {
-      const worker = await Tesseract.createWorker('eng', 1, {
-        logger: m => {
-          if (m.status === 'recognizing text') {
-            ocrFill.style.width = Math.round(m.progress * 100) + '%';
-            ocrStatus.textContent = `Scanning... ${Math.round(m.progress * 100)}%`;
-          }
-        }
-      });
-      const result = await worker.recognize(file);
-      await worker.terminate();
-
-      ocrFill.style.width = '100%';
-      ocrStatus.textContent = 'Scan complete! Extracting data...';
-
-      const extracted = parseTimeDistribution(result.data.text, type);
-      if (extracted) {
-        showExtractedData(center, monthKey, type, extracted);
-        ocrStatus.textContent = '✅ Data extracted — review and confirm below';
-      } else {
-        ocrStatus.textContent = '⚠️ Could not auto-extract. Please enter hours manually.';
-      }
-    } catch (e) {
-      ocrStatus.textContent = '⚠️ OCR failed — enter data manually';
-      console.error('OCR error:', e);
-    }
-  }
-}
-
-function parseTimeDistribution(text, type) {
-  // Try to extract totals from the MDE Time & Attendance form
-  // Look for CACFP Hours column total and hourly rate
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  let totalHours = null;
-  let hourlyRate = null;
-
-  // Look for "Totals" line or bottom summary
-  for (const line of lines) {
-    // Match patterns like "Total CACFP Food Service Labor Time" or "Total CACFP Administrative Time"
-    const hourMatch = line.match(/(\d+\.?\d*)\s*(hours?|hrs?)/i);
-    const rateMatch = line.match(/\$\s*(\d+\.?\d*)/);
-    const totalMatch = line.match(/total[s]?\s*[\:]*\s*(\d+\.?\d*)/i);
-
-    if (totalMatch && !totalHours) totalHours = parseFloat(totalMatch[1]);
-    if (hourMatch && !totalHours) totalHours = parseFloat(hourMatch[1]);
-    if (rateMatch && !hourlyRate) hourlyRate = parseFloat(rateMatch[1]);
-  }
-
-  // Also try to find numbers in the last row area
-  const numbers = text.match(/\d+\.?\d*/g);
-  if (numbers && numbers.length > 0 && !totalHours) {
-    // The totals row numbers — try to use the last few
-    const lastNums = numbers.slice(-6).map(Number);
-    if (lastNums.some(n => n > 5 && n < 300)) {
-      totalHours = lastNums.find(n => n > 5 && n < 300);
-    }
-  }
-
-  if (totalHours !== null) {
-    return { hours: totalHours, rate: hourlyRate };
-  }
-  return null;
-}
-
-function showExtractedData(center, monthKey, type, data) {
-  const container = document.getElementById(`ocr-${type}-${center}-${monthKey}`);
-  const typeLabel = type === 'fs' ? 'Food Service' : 'Administrative';
-  container.innerHTML += `
-    <div class="extracted-preview">
-      <h4>📋 Extracted from ${typeLabel} Time Form</h4>
-      <div class="extracted-row"><span class="lbl">Total ${typeLabel} Hours:</span><span class="val">${data.hours}</span></div>
-      ${data.rate ? `<div class="extracted-row"><span class="lbl">Hourly Rate:</span><span class="val">$${data.rate}</span></div>` : ''}
-      ${data.rate && data.hours ? `<div class="extracted-row"><span class="lbl">Calculated Cost:</span><span class="val">${fmt(data.hours * data.rate)}</span></div>` : ''}
-      <p style="font-size:0.8rem;color:var(--muted);margin-top:8px">
-        ⚠️ OCR from handwritten forms may need correction. Please verify and enter the hours in the staff table above.
-      </p>
-    </div>
-  `;
-}
-
-// ═══════════════════════════════════════════════════
-// CLAIMS SUB-PANEL
-// ═══════════════════════════════════════════════════
-function renderClaimsPanel() {
-  const m = currentMonth;
-  const data = monthlyDataCache[m + '_claims'] || {};
-
-  document.getElementById('sp-claims').innerHTML = `
-    <div class="card">
-      <div class="card-hdr"><h3>📋 CACFP Claim — ${monthLabel(m)} ${fyMonthYear(m)}</h3></div>
+    return `<div class="card"><div class="card-hdr"><h3>📍 ${label} — ${ML[m]} ${fyYear(m)}</h3>
+      <button class="btn btn-sm btn-outline" onclick="showAddStaffForCenter('${center}')">+ Add Staff</button></div>
       <div class="card-body">
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Meal Reimbursement ($)</label>
-            <input type="number" step="0.01" value="${data.meal_reimbursement || ''}" onchange="saveClaimField('${m}','meal_reimbursement',this.value)" placeholder="From MIND claims listing">
-          </div>
-          <div class="form-group">
-            <label>Cash-in-Lieu ($)</label>
-            <input type="number" step="0.01" value="${data.cash_in_lieu || ''}" onchange="saveClaimField('${m}','cash_in_lieu',this.value)" placeholder="CIL amount">
-          </div>
-          <div class="form-group">
-            <label>Total Reimbursement ($)</label>
-            <input type="number" step="0.01" value="${data.total_reimbursement || ''}" onchange="saveClaimField('${m}','total_reimbursement',this.value)" placeholder="Total from claims listing">
-          </div>
+        <table class="staff-table"><thead><tr><th>Name</th><th>Rate/Hr</th><th>FS Hours</th><th>FS Earned</th><th>Admin Hrs</th><th>Admin Earned</th><th></th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No staff added yet</td></tr>'}</tbody></table>
+        <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div><div style="font-size:.85rem;font-weight:600;margin-bottom:8px">📄 FS Time Distribution</div>
+            <div class="upload-zone ${getDocExists('time_distribution_fs',m,center)?'done':''}"><input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadTimeDist('${center}','${m}','fs',this)">
+            <div class="uz-icon">📄</div><div class="uz-label">Upload food service time form</div><div class="uz-file">${getDocName('time_distribution_fs',m,center)}</div></div></div>
+          <div><div style="font-size:.85rem;font-weight:600;margin-bottom:8px">📄 Admin Time Distribution</div>
+            <div class="upload-zone ${getDocExists('time_distribution_admin',m,center)?'done':''}"><input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadTimeDist('${center}','${m}','admin',this)">
+            <div class="uz-icon">📄</div><div class="uz-label">Upload admin time form</div><div class="uz-file">${getDocName('time_distribution_admin',m,center)}</div></div></div>
         </div>
-        <div style="margin-top:16px">
-          <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px">📸 Claims Listing Screenshot</div>
-          <div class="upload-zone ${documents.some(d => d.doc_type === 'claims_listing' && d.month_key === m) ? 'done' : ''}">
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadMonthDoc('${m}','claims_listing',this)">
-            <div class="uz-icon">📸</div>
-            <div class="uz-label">Upload CACFP Claims Listing from MIND</div>
-            <div class="uz-file">${getDocNameSimple('claims_listing', m)}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
+        <div style="margin-top:12px"><button class="btn btn-sm btn-primary" onclick="startBatchUpload('${center}','${m}')">📑 Batch Upload Time Forms (Multi-Page PDF)</button></div>
+      </div></div>`;
+  }
+
+  // Totals
+  const at=staffTimeEntries.filter(e=>e.month_key===m);
+  const calc=(center,type)=>at.filter(e=>staffList.find(s=>s.id==e.staff_id)?.center===center)
+    .reduce((s,e)=>s+(parseFloat(e[type==='fs'?'food_service_hours':'admin_hours'])||0)*(parseFloat(e.hourly_rate_used)||0),0);
+  const nFS=calc('niles','fs'),pFS=calc('peace','fs'),nAd=calc('niles','adm'),pAd=calc('peace','adm');
+  const totalFS=nFS+pFS,totalAd=nAd+pAd,ben=totalFS*BEN_RATE;
+
+  document.getElementById('sp-staffcosts').innerHTML=`
+    ${buildTable('niles','Niles')}${buildTable('peace','Peace Boulevard')}
+    <div class="totals-box"><h4>📊 ${ML[m]} ${fyYear(m)} — Combined Staff Cost Summary</h4>
+      <div class="totals-row"><span class="label">Niles FS Salaries</span><span class="val">${fmt(nFS)}</span></div>
+      <div class="totals-row"><span class="label">Peace FS Salaries</span><span class="val">${fmt(pFS)}</span></div>
+      <div class="totals-row"><span class="label">Combined FS Salaries</span><span class="val">${fmt(totalFS)}</span></div>
+      <div class="totals-row"><span class="label">Benefits (7.65%)</span><span class="val">${fmt(ben)}</span></div>
+      <div class="totals-row"><span class="label">Combined Admin Costs</span><span class="val">${fmt(totalAd)}</span></div>
+      <div class="totals-row big"><span class="label">TOTAL COST TO NFSA</span><span class="val">${fmt(totalFS+ben+totalAd)}</span></div></div>`;
 }
 
-async function saveClaimField(monthKey, field, val) {
-  const data = monthlyDataCache[monthKey + '_claims'] || {};
-  data[field] = parseFloat(val) || 0;
-  monthlyDataCache[monthKey + '_claims'] = data;
-  try {
-    await api('/api/monthly-data', { method: 'POST', body: {
-      fiscal_year_id: activeFY.id, month_key: monthKey, data_type: 'claims', data
-    }});
-  } catch (e) { showToast('Save error: ' + e.message, 'err'); }
+function getDocExists(dt,mk,center){return documents.some(d=>d.doc_type===dt&&d.month_key===mk&&d.metadata?.center===center);}
+function getDocName(dt,mk,center){const d=documents.find(d2=>d2.doc_type===dt&&d2.month_key===mk&&d2.metadata?.center===center);return d?'✅ '+d.filename:'';}
+function getDocNameSimple(dt,mk){const d=documents.find(d2=>d2.doc_type===dt&&d2.month_key===mk);return d?'✅ '+d.filename:'';}
+
+async function updateStaffRate(id,val){
+  try{await api(`/api/staff/${id}`,{method:'PUT',body:{hourly_rate:parseFloat(val)||0}});
+    staffList=await api('/api/staff');
+    const m=currentMonth,ex=staffTimeEntries.find(e=>e.staff_id==id&&e.month_key===m);
+    if(ex){await api('/api/staff-time',{method:'POST',body:{staff_id:id,fiscal_year_id:activeFY.id,month_key:m,food_service_hours:ex.food_service_hours,admin_hours:ex.admin_hours,hourly_rate_used:parseFloat(val)||0}});await reloadTime();}
+    renderStaffCosts();}catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function updateStaffTime(id,mk,type,val){
+  try{const ex=staffTimeEntries.find(e=>e.staff_id==id&&e.month_key===mk);
+    const s=staffList.find(s2=>s2.id==id);const rate=ex?.hourly_rate_used||s?.hourly_rate||0;
+    const fsH=type==='fs'?(parseFloat(val)||0):(parseFloat(ex?.food_service_hours)||0);
+    const admH=type==='admin'?(parseFloat(val)||0):(parseFloat(ex?.admin_hours)||0);
+    await api('/api/staff-time',{method:'POST',body:{staff_id:id,fiscal_year_id:activeFY.id,month_key:mk,food_service_hours:fsH,admin_hours:admH,hourly_rate_used:parseFloat(rate)}});
+    await reloadTime();renderStaffCosts();renderDashboard();}catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function reloadTime(){staffTimeEntries=await api(`/api/staff-time?fiscal_year_id=${activeFY.id}`);salaryTotals=await api(`/api/staff-time/totals?fiscal_year_id=${activeFY.id}`);}
+
+function showAddStaffForCenter(c){document.getElementById('newStaffCenter').value=c;document.getElementById('newStaffName').value='';document.getElementById('newStaffRate').value='';openModal('addStaffModal');}
+
+async function addStaffMember(){
+  const name=document.getElementById('newStaffName').value.trim(),center=document.getElementById('newStaffCenter').value,rate=parseFloat(document.getElementById('newStaffRate').value)||0;
+  if(!name)return showToast('Enter a name','err');
+  try{await api('/api/staff',{method:'POST',body:{name,center,hourly_rate:rate}});staffList=await api('/api/staff');closeModal('addStaffModal');renderStaffCosts();showToast('✅ '+name+' added!','ok');}catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function deactivateStaff(id){if(!confirm('Remove this staff member?'))return;
+  try{await api(`/api/staff/${id}`,{method:'PUT',body:{is_active:false}});staffList=await api('/api/staff');renderStaffCosts();showToast('Staff removed','ok');}catch(e){showToast('Error: '+e.message,'err');}
 }
 
 // ═══════════════════════════════════════════════════
-// MEALS SUB-PANEL
+// ATTENDANCE SUB-PANEL
 // ═══════════════════════════════════════════════════
-function renderMealsPanel() {
-  const m = currentMonth;
-  const data = monthlyDataCache[m + '_meals'] || {};
+function renderAttendance(){
+  const m=currentMonth,data=monthlyDataCache[m+'_attendance']||{};
+  document.getElementById('sp-attendance').innerHTML=`<div class="card"><div class="card-hdr"><h3>📊 Attendance — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Enter or upload attendance data per center. These figures feed into the CACFP Claim.</p>
+    ${['niles','peace'].map(c=>{const d=data[c]||{};const cl=c==='niles'?'Niles':'Peace Boulevard';return `
+      <h4 style="margin:16px 0 10px;color:var(--navy)">${cl}</h4>
+      <div class="form-grid">
+        <div class="form-group"><label>Total Enrolled</label><input type="number" value="${d.enrolled||''}" onchange="saveAttField('${m}','${c}','enrolled',this.value)"></div>
+        <div class="form-group"><label>Avg Daily Attendance</label><input type="number" step="0.1" value="${d.ada||''}" onchange="saveAttField('${m}','${c}','ada',this.value)"></div>
+        <div class="form-group"><label>Operating Days</label><input type="number" value="${d.days||''}" onchange="saveAttField('${m}','${c}','days',this.value)"></div>
+        <div class="form-group"><label>Capacity</label><input type="number" value="${d.capacity||(c==='niles'?105:164)}" onchange="saveAttField('${m}','${c}','capacity',this.value)"></div>
+      </div>`;}).join('')}
+    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('attendance_csv',m)?'done':''}"><input type="file" accept=".csv" onchange="uploadMonthDoc('${m}','attendance_csv',this)"><div class="uz-icon">📊</div><div class="uz-label">Upload attendance CSV (optional)</div><div class="uz-file">${getDocNameSimple('attendance_csv',m)}</div></div></div>
+  </div></div>`;
+}
 
-  const mealTypes = ['breakfast','lunch','snack'];
-  const cats = ['A','B','C'];
+async function saveAttField(mk,center,field,val){
+  const data=monthlyDataCache[mk+'_attendance']||{};if(!data[center])data[center]={};
+  data[center][field]=parseFloat(val)||0;monthlyDataCache[mk+'_attendance']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'attendance',data}});}catch(e){showToast('Save error','err');}
+}
 
-  let html = `<div class="card"><div class="card-hdr"><h3>🍽️ Meal Counts — ${monthLabel(m)} ${fyMonthYear(m)}</h3></div><div class="card-body">
-    <table class="staff-table">
-      <thead><tr><th>Meal Type</th><th>Cat A (Free)</th><th>Cat B (Reduced)</th><th>Cat C (Paid)</th><th>Total</th></tr></thead>
-      <tbody>`;
-
-  for (const mt of mealTypes) {
-    const a = parseInt(data[mt + '_A']) || 0;
-    const b = parseInt(data[mt + '_B']) || 0;
-    const c = parseInt(data[mt + '_C']) || 0;
-    html += `<tr>
-      <td style="font-weight:600;text-transform:capitalize">${mt}</td>
+// ═══════════════════════════════════════════════════
+// MEAL COUNTS
+// ═══════════════════════════════════════════════════
+function renderMeals(){
+  const m=currentMonth,data=monthlyDataCache[m+'_meals']||{};
+  const meals=['breakfast','lunch','snack'];
+  let html=`<div class="card"><div class="card-hdr"><h3>🍽️ Meal Counts — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    <table class="staff-table"><thead><tr><th>Meal</th><th>Cat A</th><th>Cat B</th><th>Cat C</th><th>Total</th></tr></thead><tbody>`;
+  for(const mt of meals){const a=parseInt(data[mt+'_A'])||0,b=parseInt(data[mt+'_B'])||0,c=parseInt(data[mt+'_C'])||0;
+    html+=`<tr><td style="font-weight:600;text-transform:capitalize">${mt}</td>
       <td><input type="number" value="${a||''}" onchange="saveMealField('${m}','${mt}_A',this.value)" style="width:80px"></td>
       <td><input type="number" value="${b||''}" onchange="saveMealField('${m}','${mt}_B',this.value)" style="width:80px"></td>
       <td><input type="number" value="${c||''}" onchange="saveMealField('${m}','${mt}_C',this.value)" style="width:80px"></td>
-      <td class="earned">${a+b+c > 0 ? (a+b+c).toLocaleString() : '—'}</td>
-    </tr>`;
-  }
-  html += '</tbody></table>';
-
-  // Revenue calculation from meal counts
-  const bkA = parseInt(data.breakfast_A)||0, bkB = parseInt(data.breakfast_B)||0, bkC = parseInt(data.breakfast_C)||0;
-  const lnA = parseInt(data.lunch_A)||0, lnB = parseInt(data.lunch_B)||0, lnC = parseInt(data.lunch_C)||0;
-  const snA = parseInt(data.snack_A)||0, snB = parseInt(data.snack_B)||0, snC = parseInt(data.snack_C)||0;
-  const R = RATES_2025_2026;
-  const reimbEst = bkA*R.breakfast.A + bkB*R.breakfast.B + bkC*R.breakfast.C
-    + lnA*R.lunch.A + lnB*R.lunch.B + lnC*R.lunch.C
-    + snA*R.snack.A + snB*R.snack.B + snC*R.snack.C;
-  const addlRevNeeded = bkB*R.breakfast.addlB + bkC*R.breakfast.addlC
-    + lnB*R.lunch.addlB + lnC*R.lunch.addlC
-    + snB*R.snack.addlB + snC*R.snack.addlC;
-
-  if (bkA+bkB+bkC+lnA+lnB+lnC+snA+snB+snC > 0) {
-    html += `
-      <div class="totals-box" style="margin-top:16px">
-        <h4>💰 Revenue Calculation for ${monthLabel(m)}</h4>
-        <div class="totals-row"><span class="label">Estimated CACFP Reimbursement</span><span class="val">${fmt(reimbEst)}</span></div>
-        <div class="totals-row"><span class="label">Additional Revenue Needed (B & C meals)</span><span class="val">${fmt(addlRevNeeded)}</span></div>
-        <div class="totals-row big"><span class="label">Total Revenue Required for NFSA</span><span class="val">${fmt(reimbEst + addlRevNeeded)}</span></div>
-        <p style="font-size:0.8rem;opacity:0.7;margin-top:8px">Additional revenue from tuition should be documented in Revenue Tracking.</p>
-      </div>`;
-  }
-  html += '</div></div>';
-  document.getElementById('sp-meals').innerHTML = html;
+      <td class="earned">${a+b+c>0?(a+b+c).toLocaleString():'—'}</td></tr>`;}
+  html+='</tbody></table>';
+  // Revenue calc
+  const bA=parseInt(data.breakfast_A)||0,bB=parseInt(data.breakfast_B)||0,bC=parseInt(data.breakfast_C)||0;
+  const lA=parseInt(data.lunch_A)||0,lB=parseInt(data.lunch_B)||0,lC=parseInt(data.lunch_C)||0;
+  const sA=parseInt(data.snack_A)||0,sB=parseInt(data.snack_B)||0,sC=parseInt(data.snack_C)||0;
+  const R=RATES;const reimbEst=bA*R.breakfast.A+bB*R.breakfast.B+bC*R.breakfast.C+lA*R.lunch.A+lB*R.lunch.B+lC*R.lunch.C+sA*R.snack.A+sB*R.snack.B+sC*R.snack.C;
+  const addlRev=bB*R.breakfast.addlB+bC*R.breakfast.addlC+lB*R.lunch.addlB+lC*R.lunch.addlC+sB*R.snack.addlB+sC*R.snack.addlC;
+  if(bA+lA+sA>0){html+=`<div class="totals-box" style="margin-top:16px"><h4>💰 Revenue Calculation</h4>
+    <div class="totals-row"><span class="label">Est. CACFP Reimbursement</span><span class="val">${fmt(reimbEst)}</span></div>
+    <div class="totals-row"><span class="label">Addl Revenue Needed (B&C)</span><span class="val">${fmt(addlRev)}</span></div>
+    <div class="totals-row big"><span class="label">Total Revenue Required</span><span class="val">${fmt(reimbEst+addlRev)}</span></div></div>`;}
+  html+='</div></div>';
+  document.getElementById('sp-meals').innerHTML=html;
 }
-
-async function saveMealField(monthKey, field, val) {
-  const data = monthlyDataCache[monthKey + '_meals'] || {};
-  data[field] = parseInt(val) || 0;
-  monthlyDataCache[monthKey + '_meals'] = data;
-  try {
-    await api('/api/monthly-data', { method: 'POST', body: {
-      fiscal_year_id: activeFY.id, month_key: monthKey, data_type: 'meals', data
-    }});
-    renderMealsPanel();
-  } catch (e) { showToast('Save error: ' + e.message, 'err'); }
-}
+async function saveMealField(mk,field,val){const data=monthlyDataCache[mk+'_meals']||{};data[field]=parseInt(val)||0;monthlyDataCache[mk+'_meals']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'meals',data}});renderMeals();}catch(e){showToast('Save error','err');}}
 
 // ═══════════════════════════════════════════════════
-// MONTH DOCS SUB-PANEL
+// CDC ELIGIBILITY
 // ═══════════════════════════════════════════════════
-function renderMonthDocs() {
-  const m = currentMonth;
-  const monthDocs = documents.filter(d => d.month_key === m);
-
-  document.getElementById('sp-monthdocs').innerHTML = `
-    <div class="card">
-      <div class="card-hdr"><h3>📁 Documents — ${monthLabel(m)} ${fyMonthYear(m)}</h3></div>
-      <div class="card-body">
-        ${monthDocs.length > 0 ? `
-          <ul class="doc-list">
-            ${monthDocs.map(d => `
-              <li>
-                <span class="doc-icon">📄</span>
-                <span class="doc-name">${d.filename}</span>
-                <span style="font-size:0.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${d.doc_type}</span>
-                <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
-                <div class="doc-actions">
-                  <a href="/api/documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
-                  <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:4px 8px">🗑️</button>
-                </div>
-              </li>
-            `).join('')}
-          </ul>
-        ` : '<p style="color:var(--muted);text-align:center;padding:20px">No documents uploaded for this month yet.</p>'}
-        <div style="margin-top:16px">
-          <div class="upload-zone">
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg,.xlsx,.csv,.docx" onchange="uploadMonthDoc('${m}','other',this)">
-            <div class="uz-icon">📎</div>
-            <div class="uz-label">Upload any additional document for ${monthLabel(m)}</div>
-          </div>
-        </div>
+function renderCDC(){
+  const m=currentMonth,data=monthlyDataCache[m+'_cdc']||{};
+  document.getElementById('sp-cdc').innerHTML=`<div class="card"><div class="card-hdr"><h3>🏥 CDC Eligibility — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Enter the CDC qualifying children count per center. If ≥25% of enrolled children qualify, use CDC percentage for CACFP eligibility. Otherwise, HEIS (Household Eligibility Income Statement) is required.</p>
+    ${['niles','peace'].map(c=>{const d=data[c]||{};const att=monthlyDataCache[m+'_attendance']||{};const enrolled=att[c]?.enrolled||0;const pct=enrolled>0?((d.qualifying||0)/enrolled*100):0;
+      return `<h4 style="margin:16px 0 10px;color:var(--navy)">${c==='niles'?'Niles':'Peace Boulevard'}</h4>
+      <div class="form-grid">
+        <div class="form-group"><label>CDC Qualifying Children</label><input type="number" value="${d.qualifying||''}" onchange="saveCDCField('${m}','${c}','qualifying',this.value)"></div>
+        <div class="form-group"><label>Total Enrolled (from Attendance)</label><input type="number" value="${enrolled}" readonly style="background:var(--bg)"></div>
       </div>
+      <div class="alert ${pct>=25?'alert-ok':'alert-warn'}"><span style="font-size:1.2rem">${pct>=25?'✅':'⚠️'}</span>
+        <div><strong>${pct.toFixed(1)}% qualify</strong> — ${pct>=25?'Meets 25% threshold. CDC eligibility applies.':'Below 25% threshold. HEIS forms may be needed.'}</div></div>`;}).join('')}
+    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('cdc_statement',m)?'done':''}"><input type="file" accept=".pdf,.png,.jpg" onchange="uploadMonthDoc('${m}','cdc_statement',this)"><div class="uz-icon">🏥</div><div class="uz-label">Upload CDC Statement(s)</div><div class="uz-file">${getDocNameSimple('cdc_statement',m)}</div></div></div>
+  </div></div>`;
+}
+async function saveCDCField(mk,center,field,val){const data=monthlyDataCache[mk+'_cdc']||{};if(!data[center])data[center]={};data[center][field]=parseInt(val)||0;monthlyDataCache[mk+'_cdc']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'cdc',data}});renderCDC();}catch(e){showToast('Save error','err');}}
+
+// ═══════════════════════════════════════════════════
+// FOOD COSTS
+// ═══════════════════════════════════════════════════
+function renderFoodCosts(){
+  const m=currentMonth,data=monthlyDataCache[m+'_foodcosts']||{};
+  document.getElementById('sp-foodcosts').innerHTML=`<div class="card"><div class="card-hdr"><h3>🧾 Food Costs — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    <div class="form-grid">
+      <div class="form-group"><label>Monthly Food Cost Total ($)</label><input type="number" step="0.01" value="${data.total||''}" onchange="saveFoodCostField('${m}','total',this.value)" placeholder="From receipts/invoices"></div>
+      <div class="form-group"><label>Notes</label><input type="text" value="${data.notes||''}" onchange="saveFoodCostField('${m}','notes',this.value)" placeholder="e.g. GFS, Sysco"></div>
     </div>
-  `;
+    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('food_receipts',m)?'done':''}"><input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadMonthDoc('${m}','food_receipts',this)"><div class="uz-icon">🧾</div><div class="uz-label">Upload food receipts/invoices</div><div class="uz-file">${getDocNameSimple('food_receipts',m)}</div></div></div>
+  </div></div>`;
+}
+async function saveFoodCostField(mk,field,val){const data=monthlyDataCache[mk+'_foodcosts']||{};data[field]=field==='notes'?val:(parseFloat(val)||0);monthlyDataCache[mk+'_foodcosts']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'foodcosts',data}});}catch(e){showToast('Save error','err');}}
+
+// ═══════════════════════════════════════════════════
+// CLAIMS
+// ═══════════════════════════════════════════════════
+function renderClaims(){
+  const m=currentMonth,data=monthlyDataCache[m+'_claims']||{};
+  document.getElementById('sp-claims').innerHTML=`<div class="card"><div class="card-hdr"><h3>📋 CACFP Claim — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    <div class="form-grid">
+      <div class="form-group"><label>Meal Reimbursement ($)</label><input type="number" step="0.01" value="${data.meal_reimbursement||''}" onchange="saveClaimField('${m}','meal_reimbursement',this.value)"></div>
+      <div class="form-group"><label>Cash-in-Lieu ($)</label><input type="number" step="0.01" value="${data.cash_in_lieu||''}" onchange="saveClaimField('${m}','cash_in_lieu',this.value)"></div>
+      <div class="form-group"><label>Total Reimbursement ($)</label><input type="number" step="0.01" value="${data.total_reimbursement||''}" onchange="saveClaimField('${m}','total_reimbursement',this.value)"></div>
+    </div>
+    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('claims_listing',m)?'done':''}"><input type="file" accept=".pdf,.png,.jpg" onchange="uploadMonthDoc('${m}','claims_listing',this)"><div class="uz-icon">📸</div><div class="uz-label">Upload Claims Listing from MIND</div><div class="uz-file">${getDocNameSimple('claims_listing',m)}</div></div></div>
+  </div></div>`;
+}
+async function saveClaimField(mk,field,val){const data=monthlyDataCache[mk+'_claims']||{};data[field]=parseFloat(val)||0;monthlyDataCache[mk+'_claims']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'claims',data}});}catch(e){showToast('Save error','err');}}
+
+// ═══════════════════════════════════════════════════
+// MONTH DOCS
+// ═══════════════════════════════════════════════════
+function renderMonthDocs(){
+  const m=currentMonth,mDocs=documents.filter(d=>d.month_key===m);
+  document.getElementById('sp-monthdocs').innerHTML=`<div class="card"><div class="card-hdr"><h3>📁 Documents — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    ${mDocs.length>0?`<ul class="doc-list">${mDocs.map(d=>`<li><span style="font-size:1.2rem">📄</span><span class="doc-name">${d.filename}</span>
+      <span style="font-size:.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${d.doc_type}</span>
+      <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
+      <div class="doc-actions"><a href="/api/documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
+      <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`).join('')}</ul>`
+      :'<p style="color:var(--muted);text-align:center;padding:20px">No documents for this month.</p>'}
+    <div style="margin-top:16px"><div class="upload-zone"><input type="file" onchange="uploadMonthDoc('${m}','other',this)"><div class="uz-icon">📎</div><div class="uz-label">Upload additional document</div></div></div>
+  </div></div>`;
 }
 
-function getDocNameSimple(docType, monthKey) {
-  const doc = documents.find(d => d.doc_type === docType && d.month_key === monthKey);
-  return doc ? '✅ ' + doc.filename : '';
+async function uploadMonthDoc(mk,docType,input){if(!input.files[0])return;
+  const fd=new FormData();fd.append('file',input.files[0]);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type',docType);
+  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);renderSubPanel();showToast('✅ Uploaded!','ok');}catch(e){showToast('Error: '+e.message,'err');}}
+
+async function uploadTimeDist(center,mk,type,input){if(!input.files[0])return;
+  const fd=new FormData();fd.append('file',input.files[0]);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','time_distribution_'+type);fd.append('metadata',JSON.stringify({center}));
+  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);renderStaffCosts();showToast('✅ Document saved for audit!','ok');}catch(e){showToast('Error: '+e.message,'err');}}
+
+async function deleteDoc(id){if(!confirm('Delete?'))return;
+  try{await api(`/api/documents/${id}`,{method:'DELETE'});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);renderSubPanel();showToast('Deleted','ok');}catch(e){showToast('Error','err');}}
+
+// ═══════════════════════════════════════════════════
+// BATCH PDF UPLOAD + OCR (Time & Attendance)
+// ═══════════════════════════════════════════════════
+let batchResults=[];
+
+async function startBatchUpload(center,monthKey){
+  const input=document.createElement('input');input.type='file';input.accept='.pdf';
+  input.onchange=async()=>{
+    if(!input.files[0])return;
+    const file=input.files[0];
+    showToast('Processing PDF — this may take a minute...','');
+    try{
+      const arrayBuf=await file.arrayBuffer();
+      const pdf=await pdfjsLib.getDocument({data:arrayBuf}).promise;
+      const numPages=pdf.numPages;
+      batchResults=[];
+
+      // Store original PDF for audit
+      const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',monthKey);fd.append('doc_type','batch_time_forms');fd.append('metadata',JSON.stringify({center,pages:numPages}));
+      await api('/api/documents/upload',{method:'POST',body:fd});
+      documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+
+      // Process each page
+      for(let i=1;i<=numPages;i++){
+        const page=await pdf.getPage(i);
+        const viewport=page.getViewport({scale:2});
+        const canvas=document.createElement('canvas');
+        canvas.width=viewport.width;canvas.height=viewport.height;
+        const ctx=canvas.getContext('2d');
+        await page.render({canvasContext:ctx,viewport}).promise;
+
+        // OCR the page
+        const worker=await Tesseract.createWorker('eng');
+        const{data}=await worker.recognize(canvas);
+        await worker.terminate();
+
+        const extracted=parseTimeAttendancePage(data.text);
+        extracted.pageNum=i;
+        extracted.rawText=data.text;
+
+        // Auto-match to staff
+        const centerStaff=staffList.filter(s=>s.center===center);
+        if(extracted.name){
+          const match=centerStaff.find(s=>s.name.toLowerCase().includes(extracted.name.toLowerCase())||extracted.name.toLowerCase().includes(s.name.toLowerCase().split(' ')[1]||'ZZZZZ'));
+          if(match){extracted.matchedStaffId=match.id;extracted.matchedName=match.name;extracted.status='matched';}
+          else{extracted.status='unrecognized';}
+        }else{extracted.status='no_name';}
+
+        // Check for signatures
+        extracted.alerts=[];
+        if(!data.text.match(/signature|signed/i)&&data.confidence<60)extracted.alerts.push('Possible missing signature');
+        if(extracted.totalHours===null)extracted.alerts.push('Could not extract total hours');
+        if(data.confidence<40)extracted.alerts.push('Low confidence — may be unreadable');
+
+        batchResults.push(extracted);
+      }
+      showBatchReview(center,monthKey);
+    }catch(e){showToast('PDF processing error: '+e.message,'err');console.error(e);}
+  };input.click();
 }
 
-async function uploadMonthDoc(monthKey, docType, input) {
-  if (!input.files[0]) return;
-  const formData = new FormData();
-  formData.append('file', input.files[0]);
-  formData.append('fiscal_year_id', activeFY.id);
-  formData.append('month_key', monthKey);
-  formData.append('doc_type', docType);
-  try {
-    await api('/api/documents/upload', { method: 'POST', body: formData });
-    documents = await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
-    renderMonthSubPanel();
-    showToast('✅ Document uploaded!', 'ok');
-  } catch (e) { showToast('Upload error: ' + e.message, 'err'); }
+function parseTimeAttendancePage(text){
+  const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+  let name=null,monthYear=null,totalCACFP_FS=null,totalCACFP_Admin=null,hourlyRate=null,totalHours=null;
+
+  for(const line of lines){
+    // Name — usually near top after "Name"
+    if(!name){const nm=line.match(/name\s*[:\-_]?\s*([A-Z][a-z]+\s+[A-Z][a-z]+)/i);if(nm)name=nm[1].trim();}
+    if(!name&&/^[A-Z][a-z]+\s+[A-Z][a-z]+$/.test(line)&&!line.match(/month|year|date|time|total|cacfp|hours/i))name=line;
+    // Month/Year
+    if(!monthYear){const my=line.match(/month\s*\/?\s*year\s*[:\-_]?\s*(.+)/i);if(my)monthYear=my[1].trim();}
+    // Hourly rate
+    const rateM=line.match(/hourly\s*rate\s*\$?\s*(\d+\.?\d*)/i);if(rateM)hourlyRate=parseFloat(rateM[1]);
+    if(!hourlyRate){const rateM2=line.match(/\$\s*(\d{2,3}\.\d{2})/);if(rateM2&&parseFloat(rateM2[1])>8&&parseFloat(rateM2[1])<80)hourlyRate=parseFloat(rateM2[1]);}
+    // CACFP hours totals (Food Service and Admin columns)
+    const fsMatch=line.match(/food\s*service\s*labor\s*time?\s*[:\-]?\s*(\d+\.?\d*)/i);if(fsMatch)totalCACFP_FS=parseFloat(fsMatch[1]);
+    const admMatch=line.match(/administrative\s*time?\s*[:\-]?\s*(\d+\.?\d*)/i);if(admMatch)totalCACFP_Admin=parseFloat(admMatch[1]);
+    // Generic total hours
+    const totM=line.match(/total[s]?\s*[:\-]?\s*(\d+\.?\d*)/i);if(totM&&!totalHours)totalHours=parseFloat(totM[1]);
+  }
+
+  // Fallback: try to find CACFP hours from numbers at bottom of form
+  if(totalCACFP_FS===null){
+    const allNums=text.match(/\d+\.?\d*/g);
+    if(allNums){const nums=allNums.map(Number).filter(n=>n>1&&n<250);
+      if(nums.length>0)totalHours=nums[nums.length-1];}
+  }
+
+  return{name,monthYear,totalCACFP_FS,totalCACFP_Admin,hourlyRate,totalHours};
 }
 
-async function deleteDoc(id) {
-  if (!confirm('Delete this document?')) return;
-  try {
-    await api(`/api/documents/${id}`, { method: 'DELETE' });
-    documents = await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
-    renderMonthSubPanel();
-    showToast('Document deleted', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
+function showBatchReview(center,monthKey){
+  const centerStaff=staffList.filter(s=>s.center===center);
+  const label=center==='niles'?'Niles':'Peace Boulevard';
+
+  let html=`<h3 style="margin-bottom:4px">📑 Batch Scan Results — ${label}, ${ML[monthKey]} ${fyYear(monthKey)}</h3>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">${batchResults.length} pages scanned. Review matches and fix any flagged items before saving.</p>`;
+
+  const matched=batchResults.filter(r=>r.status==='matched').length;
+  const flagged=batchResults.filter(r=>r.status!=='matched').length;
+  const alertCount=batchResults.reduce((s,r)=>s+r.alerts.length,0);
+
+  html+=`<div style="display:flex;gap:12px;margin-bottom:16px">
+    <div class="alert alert-ok" style="flex:1;margin:0"><strong>${matched}</strong> auto-matched</div>
+    ${flagged>0?`<div class="alert alert-warn" style="flex:1;margin:0"><strong>${flagged}</strong> need review</div>`:''}
+    ${alertCount>0?`<div class="alert alert-err" style="flex:1;margin:0"><strong>${alertCount}</strong> alerts</div>`:''}
+  </div>`;
+
+  html+='<div class="batch-results">';
+  for(const r of batchResults){
+    const staffOpts=centerStaff.map(s=>`<option value="${s.id}" ${r.matchedStaffId===s.id?'selected':''}>${s.name}</option>`).join('');
+    html+=`<div class="batch-row ${r.status==='matched'?'matched':r.status==='unrecognized'?'flagged':'pending'}">
+      <div class="page-num">${r.pageNum}</div>
+      <div class="info">
+        <div class="name">${r.name||'<em>Name not detected</em>'}</div>
+        <div class="detail">FS: ${r.totalCACFP_FS!==null?r.totalCACFP_FS+'h':'?'} | Admin: ${r.totalCACFP_Admin!==null?r.totalCACFP_Admin+'h':'?'} | Rate: ${r.hourlyRate?'$'+r.hourlyRate:'?'}</div>
+        ${r.alerts.length>0?'<div style="color:var(--error);font-size:.8rem;margin-top:2px">⚠️ '+r.alerts.join(', ')+'</div>':''}
+      </div>
+      <select onchange="batchResults[${batchResults.indexOf(r)}].matchedStaffId=parseInt(this.value)||null" style="width:150px">
+        <option value="">— Select staff —</option>
+        <option value="NEW">+ Add as new</option>
+        ${staffOpts}
+      </select>
+      <span class="status-icon">${r.status==='matched'?'✅':r.status==='unrecognized'?'🔍':'❓'}</span>
+    </div>`;
+  }
+  html+='</div>';
+  html+=`<div style="margin-top:16px;display:flex;gap:8px">
+    <button class="btn btn-success" onclick="saveBatchResults('${center}','${monthKey}')">✅ Save All Matched Results</button>
+    <button class="btn btn-outline" onclick="closeWizard()">Cancel</button>
+  </div>`;
+
+  document.getElementById('wizBody').innerHTML=html;
+  document.getElementById('wizProgress').innerHTML='';
+  document.getElementById('wizStepLabel').textContent='Batch Review';
+  document.getElementById('wizBack').style.display='none';
+  document.getElementById('wizNext').style.display='none';
+  document.getElementById('wizardOverlay').classList.add('show');
 }
+
+async function saveBatchResults(center,monthKey){
+  let saved=0,errors=0;
+  for(const r of batchResults){
+    if(!r.matchedStaffId||r.matchedStaffId==='')continue;
+    // If "NEW", create staff
+    if(r.matchedStaffId==='NEW'&&r.name){
+      try{const newS=await api('/api/staff',{method:'POST',body:{name:r.name,center,hourly_rate:r.hourlyRate||0}});r.matchedStaffId=newS.id;}catch(e){errors++;continue;}
+    }
+    const fsH=r.totalCACFP_FS||0,admH=r.totalCACFP_Admin||0,rate=r.hourlyRate||staffList.find(s=>s.id==r.matchedStaffId)?.hourly_rate||0;
+    try{await api('/api/staff-time',{method:'POST',body:{staff_id:r.matchedStaffId,fiscal_year_id:activeFY.id,month_key:monthKey,food_service_hours:fsH,admin_hours:admH,hourly_rate_used:rate}});saved++;}
+    catch(e){errors++;}
+  }
+  staffList=await api('/api/staff');await reloadTime();
+  closeWizard();renderStaffCosts();renderDashboard();
+  showToast(`✅ ${saved} staff entries saved${errors>0?', '+errors+' errors':''}!`,'ok');
+}
+
+// ═══════════════════════════════════════════════════
+// MONTHLY UPLOAD WIZARD
+// ═══════════════════════════════════════════════════
+const WIZ_STEPS=[
+  {id:'wiz_timeforms_fs',label:'Food Service Time Forms',icon:'📄',desc:'Upload the batch PDF of food service Time & Attendance forms (one page per employee). The app will scan each page, extract names and hours, and auto-match to your staff roster.',accept:'.pdf',docType:'batch_time_forms_fs'},
+  {id:'wiz_timeforms_admin',label:'Admin Time Forms',icon:'📄',desc:'Upload the batch PDF of administrative Time & Attendance forms (if applicable this month).',accept:'.pdf,.png,.jpg,.jpeg',docType:'batch_time_forms_admin'},
+  {id:'wiz_attendance',label:'Attendance Report',icon:'📊',desc:'Upload the monthly attendance CSV or enter attendance figures.',accept:'.csv',docType:'attendance_csv'},
+  {id:'wiz_mealcounts',label:'Meal Count Report',icon:'🍽️',desc:'Upload CACFP Detailed meal count CSV or enter meal counts by category.',accept:'.csv',docType:'meal_counts_csv'},
+  {id:'wiz_cdc',label:'CDC Statement',icon:'🏥',desc:'Upload the CDC statement(s) for this month to calculate eligibility percentages.',accept:'.pdf,.png,.jpg',docType:'cdc_statement'},
+  {id:'wiz_foodcost',label:'Food Receipts/Invoices',icon:'🧾',desc:'Upload food cost receipts or invoices for this month.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts'},
+  {id:'wiz_claims',label:'CACFP Claims Listing',icon:'📸',desc:'Upload the Claims Listing screenshot from MIND after certifying the claim.',accept:'.pdf,.png,.jpg,.jpeg',docType:'claims_listing'},
+];
+let wizStep=0,wizMonthKey=null;
+
+function startWizard(){
+  wizStep=0;wizMonthKey=currentMonth;
+  document.getElementById('wizTitle').textContent='🪄 Monthly Upload Wizard — '+ML[wizMonthKey]+' '+fyYear(wizMonthKey);
+  renderWizStep();
+  document.getElementById('wizardOverlay').classList.add('show');
+}
+
+function renderWizStep(){
+  const step=WIZ_STEPS[wizStep];
+  const total=WIZ_STEPS.length;
+  // Progress
+  document.getElementById('wizProgress').innerHTML=WIZ_STEPS.map((_,i)=>
+    `<div class="wiz-step ${i<wizStep?'done':i===wizStep?'current':''}"></div>`).join('');
+  document.getElementById('wizStepLabel').textContent=`Step ${wizStep+1} of ${total}`;
+  document.getElementById('wizBack').style.display=wizStep>0?'inline-flex':'none';
+  document.getElementById('wizNext').style.display='inline-flex';
+  document.getElementById('wizNext').textContent=wizStep===total-1?'✅ Finish':'Next →';
+
+  const existing=documents.some(d=>d.doc_type===step.docType&&d.month_key===wizMonthKey);
+  document.getElementById('wizBody').innerHTML=`
+    <div style="text-align:center;margin-bottom:20px"><span style="font-size:3rem">${step.icon}</span>
+      <h3 style="margin-top:8px">${step.label}</h3>
+      <p style="color:var(--muted);font-size:.9rem;margin-top:8px;max-width:500px;margin-left:auto;margin-right:auto">${step.desc}</p>
+    </div>
+    <div class="upload-zone ${existing?'done':''}" id="wiz-upload-zone" style="max-width:400px;margin:0 auto">
+      <input type="file" accept="${step.accept}" onchange="wizUploadFile(this)">
+      <div class="uz-icon">${step.icon}</div>
+      <div class="uz-label">Click or drag to upload</div>
+      <div class="uz-file" id="wiz-upload-status">${existing?'✅ Already uploaded — upload again to replace':''}</div>
+    </div>
+    <div id="wizExtraContent"></div>
+    <p style="font-size:.8rem;color:var(--muted);text-align:center;margin-top:12px">You can skip any step — click Next to continue</p>`;
+}
+
+async function wizUploadFile(input){
+  if(!input.files[0])return;
+  const step=WIZ_STEPS[wizStep];
+  const file=input.files[0];
+  document.getElementById('wiz-upload-status').textContent='⏳ Uploading...';
+
+  // Upload document
+  const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type',step.docType);
+  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){showToast('Upload failed','err');return;}
+
+  document.getElementById('wiz-upload-zone').classList.add('done');
+  document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' uploaded!';
+
+  // Special processing for batch Time forms
+  if(step.id==='wiz_timeforms_fs'&&file.name.endsWith('.pdf')){
+    document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' saved — now scanning pages...';
+    document.getElementById('wizExtraContent').innerHTML='<div class="alert alert-warn" style="margin-top:16px"><span>⏳</span><div>Scanning '+file.name+'... This may take 1-2 minutes for large PDFs.</div></div>';
+    try{
+      const buf=await file.arrayBuffer();const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+      batchResults=[];
+      for(let i=1;i<=pdf.numPages;i++){
+        document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-warn" style="margin-top:16px"><span>⏳</span><div>Scanning page ${i} of ${pdf.numPages}...</div></div>`;
+        const pg=await pdf.getPage(i);const vp=pg.getViewport({scale:2});
+        const cvs=document.createElement('canvas');cvs.width=vp.width;cvs.height=vp.height;
+        await pg.render({canvasContext:cvs.getContext('2d'),viewport:vp}).promise;
+        const worker=await Tesseract.createWorker('eng');
+        const{data}=await worker.recognize(cvs);await worker.terminate();
+        const ext=parseTimeAttendancePage(data.text);ext.pageNum=i;ext.rawText=data.text;
+        const centerStaff=staffList.filter(s=>s.center==='niles'); // Default to niles for wizard
+        if(ext.name){const match=centerStaff.find(s=>s.name.toLowerCase().includes(ext.name.toLowerCase())||ext.name.toLowerCase().includes((s.name.split(' ')[1]||'ZZZ').toLowerCase()));
+          if(match){ext.matchedStaffId=match.id;ext.matchedName=match.name;ext.status='matched';}else ext.status='unrecognized';}
+        else ext.status='no_name';
+        ext.alerts=[];
+        if(data.confidence<60)ext.alerts.push('Possible missing signature or low quality');
+        if(ext.totalCACFP_FS===null&&ext.totalHours===null)ext.alerts.push('Could not extract hours');
+        batchResults.push(ext);
+      }
+      const matched=batchResults.filter(r=>r.status==='matched').length;
+      const flagged=batchResults.length-matched;
+      const alerts=batchResults.reduce((s,r)=>s+r.alerts.length,0);
+      document.getElementById('wizExtraContent').innerHTML=`
+        <div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${pdf.numPages} pages scanned!</strong> ${matched} auto-matched, ${flagged} need review${alerts>0?', '+alerts+' alerts':''}. Click Next to review and save.</div></div>`;
+    }catch(e){document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-err" style="margin-top:16px"><span>❌</span><div>OCR error: ${e.message}. You can enter data manually in Staff Costs tab.</div></div>`;}
+  }
+  showToast('✅ '+step.label+' uploaded!','ok');
+}
+
+function wizNext(){
+  // If we just finished batch scan, show review
+  if(WIZ_STEPS[wizStep]?.id==='wiz_timeforms_fs'&&batchResults.length>0){
+    showBatchReview('niles',wizMonthKey);return;}
+  wizStep++;
+  if(wizStep>=WIZ_STEPS.length){closeWizard();renderSubPanel();renderDashboard();showToast('🪄 Monthly wizard complete!','ok');return;}
+  renderWizStep();
+}
+function wizPrev(){if(wizStep>0){wizStep--;renderWizStep();}}
+function closeWizard(){document.getElementById('wizardOverlay').classList.remove('show');batchResults=[];
+  document.getElementById('wizBack').style.display='';document.getElementById('wizNext').style.display='';}
 
 // ═══════════════════════════════════════════════════
 // REVENUE TRACKING
 // ═══════════════════════════════════════════════════
-function renderRevenuePage() {
-  // Rates display
-  const R = RATES_2025_2026;
-  document.getElementById('ratesDisplay').innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-      ${['breakfast','lunch','snack'].map(mt => `
-        <div>
-          <h4 style="font-size:0.9rem;text-transform:capitalize;margin-bottom:8px">${mt} (7/1/25 – 6/30/26)</h4>
-          <table class="rates-table">
-            <thead><tr><th>Category</th><th>Reimb. Rate</th><th>Addl Revenue</th></tr></thead>
-            <tbody>
-              <tr><td class="cat-a">A (Free)</td><td>${fmt(R[mt].A)}</td><td>N/A</td></tr>
-              <tr><td class="cat-b">B (Reduced)</td><td>${fmt(R[mt].B)}</td><td>${fmt(R[mt].addlB)}</td></tr>
-              <tr><td class="cat-c">C (Paid)</td><td>${fmt(R[mt].C)}</td><td>${fmt(R[mt].addlC)}</td></tr>
-            </tbody>
-          </table>
-        </div>
-      `).join('')}
-    </div>
-  `;
+function renderRevenuePage(){
+  const R=RATES;
+  document.getElementById('ratesDisplay').innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">${['breakfast','lunch','snack'].map(mt=>
+    `<div><h4 style="font-size:.85rem;text-transform:capitalize;margin-bottom:8px">${mt}</h4>
+    <table class="rates-table"><thead><tr><th>Cat</th><th>Reimb</th><th>Addl Rev</th></tr></thead><tbody>
+      <tr><td style="color:var(--success);font-weight:600">A</td><td>${fmt(R[mt].A)}</td><td>N/A</td></tr>
+      <tr><td style="color:var(--gold);font-weight:600">B</td><td>${fmt(R[mt].B)}</td><td>${fmt(R[mt].addlB)}</td></tr>
+      <tr><td style="color:var(--error);font-weight:600">C</td><td>${fmt(R[mt].C)}</td><td>${fmt(R[mt].addlC)}</td></tr>
+    </tbody></table></div>`).join('')}</div>`;
 
-  // Revenue entries list
-  let html = '';
-  if (revenueEntries.length === 0) {
-    html = '<p style="text-align:center;color:var(--muted);padding:20px">No revenue entries yet. Click "+ Add Revenue Entry" above.</p>';
-  } else {
-    html = `<table class="rev-table">
-      <thead><tr><th>Month</th><th>Type</th><th>Description</th><th style="text-align:right">Amount</th><th></th></tr></thead>
-      <tbody>
-        ${revenueEntries.map(r => `
-          <tr>
-            <td>${monthLabel(r.month_key)}</td>
-            <td>${r.revenue_type.replace(/_/g,' ')}</td>
-            <td>${r.description || ''}</td>
-            <td class="amt">${fmt(r.amount)}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="deleteRevenue(${r.id})" style="padding:2px 6px">🗑️</button></td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>`;
-  }
-  document.getElementById('revenueBody').innerHTML = html;
+  document.getElementById('revenueBody').innerHTML=revenueEntries.length===0?'<p style="text-align:center;color:var(--muted);padding:20px">No entries yet.</p>'
+    :`<table class="rev-table"><thead><tr><th>Month</th><th>Type</th><th>Description</th><th style="text-align:right">Amount</th><th></th></tr></thead><tbody>
+    ${revenueEntries.map(r=>`<tr><td>${ML[r.month_key]||r.month_key}</td><td>${r.revenue_type.replace(/_/g,' ')}</td><td>${r.description||''}</td><td class="amt">${fmt(r.amount)}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="deleteRevenue(${r.id})" style="padding:2px 6px">🗑️</button></td></tr>`).join('')}</tbody></table>`;
 
-  // Revenue summary
-  const totByType = {};
-  let grandTotal = 0;
-  revenueEntries.forEach(r => {
-    const t = r.revenue_type.replace(/_/g, ' ');
-    totByType[t] = (totByType[t] || 0) + parseFloat(r.amount);
-    grandTotal += parseFloat(r.amount);
-  });
-
-  const cacfpReimb = parseFloat(yerData?.cacfp_reimbursement) || 0;
-  document.getElementById('revenueSummary').innerHTML = `
-    <div class="yer-line"><span>CACFP Reimbursement (from YER)</span><span class="val">${fmt(cacfpReimb)}</span></div>
-    ${Object.entries(totByType).map(([t,v]) => `<div class="yer-line"><span>${t}</span><span class="val">${fmt(v)}</span></div>`).join('')}
-    <div class="yer-line total"><span>Total NFSA Revenue</span><span class="val">${fmt(cacfpReimb + grandTotal)}</span></div>
-  `;
+  const totByType={};let gt=0;
+  revenueEntries.forEach(r=>{const t=r.revenue_type.replace(/_/g,' ');totByType[t]=(totByType[t]||0)+parseFloat(r.amount);gt+=parseFloat(r.amount);});
+  const cr=parseFloat(yerData?.cacfp_reimbursement)||0;
+  document.getElementById('revenueSummary').innerHTML=`
+    <div class="yer-line"><span>CACFP Reimbursement (from YER)</span><span class="val">${fmt(cr)}</span></div>
+    ${Object.entries(totByType).map(([t,v])=>`<div class="yer-line"><span>${t}</span><span class="val">${fmt(v)}</span></div>`).join('')}
+    <div class="yer-line total"><span>Total NFSA Revenue</span><span class="val">${fmt(cr+gt)}</span></div>`;
 }
 
-function showAddRevenueModal() {
-  const sel = document.getElementById('revMonth');
-  sel.innerHTML = MONTHS_ORDER.map(m => `<option value="${m}">${monthLabel(m)} ${fyMonthYear(m)}</option>`).join('');
-  sel.value = currentMonth || MONTHS_ORDER[0];
-  document.getElementById('revAmount').value = '';
-  document.getElementById('revDesc').value = '';
-  openModal('addRevenueModal');
+function showAddRevenueModal(){
+  document.getElementById('revMonth').innerHTML=MO.map(m=>`<option value="${m}">${ML[m]} ${fyYear(m)}</option>`).join('');
+  document.getElementById('revMonth').value=currentMonth||MO[0];
+  document.getElementById('revAmount').value='';document.getElementById('revDesc').value='';openModal('addRevenueModal');
 }
 
-async function addRevenueEntry() {
-  const month_key = document.getElementById('revMonth').value;
-  const revenue_type = document.getElementById('revType').value;
-  const amount = parseFloat(document.getElementById('revAmount').value) || 0;
-  const description = document.getElementById('revDesc').value;
-  if (!amount) return showToast('Enter an amount', 'err');
-  try {
-    await api('/api/revenue', { method: 'POST', body: {
-      fiscal_year_id: activeFY.id, month_key, revenue_type, amount, description, source: revenue_type
-    }});
-    revenueEntries = await api(`/api/revenue?fiscal_year_id=${activeFY.id}`);
-    closeModal('addRevenueModal');
-    renderRevenuePage();
-    renderDashboard();
-    showToast('✅ Revenue entry added!', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
+async function addRevenueEntry(){
+  const mk=document.getElementById('revMonth').value,type=document.getElementById('revType').value,
+    amount=parseFloat(document.getElementById('revAmount').value)||0,desc=document.getElementById('revDesc').value;
+  if(!amount)return showToast('Enter an amount','err');
+  try{await api('/api/revenue',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,revenue_type:type,amount,description:desc,source:type}});
+    revenueEntries=await api(`/api/revenue?fiscal_year_id=${activeFY.id}`);closeModal('addRevenueModal');renderRevenuePage();renderDashboard();showToast('✅ Revenue added!','ok');}
+  catch(e){showToast('Error: '+e.message,'err');}
 }
 
-async function deleteRevenue(id) {
-  if (!confirm('Delete this revenue entry?')) return;
-  try {
-    await api(`/api/revenue/${id}`, { method: 'DELETE' });
-    revenueEntries = await api(`/api/revenue?fiscal_year_id=${activeFY.id}`);
-    renderRevenuePage();
-    renderDashboard();
-    showToast('Revenue entry deleted', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
+async function deleteRevenue(id){if(!confirm('Delete?'))return;
+  try{await api(`/api/revenue/${id}`,{method:'DELETE'});revenueEntries=await api(`/api/revenue?fiscal_year_id=${activeFY.id}`);renderRevenuePage();renderDashboard();}catch(e){showToast('Error','err');}}
 
 // ═══════════════════════════════════════════════════
 // PROGRAM DOCUMENTS
 // ═══════════════════════════════════════════════════
-function renderProgramDocs() {
-  // Core docs
-  let coreHtml = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">';
-  for (const dt of CORE_DOC_TYPES) {
-    const existing = programDocs.find(d => d.doc_type === dt.key);
-    coreHtml += `
-      <div class="upload-zone ${existing ? 'done' : ''}" style="padding:16px">
-        <input type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" onchange="uploadProgramDoc('${dt.key}','${dt.label}',this)">
-        <div class="uz-icon">${dt.icon}</div>
-        <div style="font-weight:600;font-size:0.85rem">${dt.label}</div>
-        <div class="uz-file">${existing ? '✅ ' + existing.filename + ' <br><small>' + new Date(existing.uploaded_at).toLocaleDateString() + '</small>' : ''}</div>
-        ${existing ? `<div style="margin-top:8px"><a href="/api/program-documents/${existing.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank" onclick="event.stopPropagation()">⬇️ Download</a></div>` : ''}
-      </div>
-    `;
-  }
-  coreHtml += '</div>';
-  document.getElementById('progDocsCore').innerHTML = coreHtml;
+function renderProgramDocs(){
+  let cHtml='<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">';
+  for(const dt of CORE_DOCS){const ex=programDocs.find(d=>d.doc_type===dt.key);
+    cHtml+=`<div class="upload-zone ${ex?'done':''}" style="padding:16px"><input type="file" accept=".pdf,.png,.jpg,.docx" onchange="uploadProgDoc('${dt.key}','${dt.label}',this)">
+      <div class="uz-icon">${dt.icon}</div><div style="font-weight:600;font-size:.85rem">${dt.label}</div>
+      <div class="uz-file">${ex?'✅ '+ex.filename:''}</div>
+      ${ex?`<div style="margin-top:8px"><a href="/api/program-documents/${ex.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank" onclick="event.stopPropagation()">⬇️</a></div>`:''}</div>`;}
+  cHtml+='</div>';document.getElementById('progDocsCore').innerHTML=cHtml;
 
-  // Other docs
-  const otherDocs = programDocs.filter(d => !CORE_DOC_TYPES.some(c => c.key === d.doc_type));
-  let otherHtml = '';
-  if (otherDocs.length > 0) {
-    otherHtml = `<ul class="doc-list">
-      ${otherDocs.map(d => `
-        <li>
-          <span class="doc-icon">📎</span>
-          <span class="doc-name">${d.label || d.filename}</span>
-          <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
-          <div class="doc-actions">
-            <a href="/api/program-documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
-            <button class="btn btn-sm btn-danger" onclick="deleteProgramDoc(${d.id})" style="padding:4px 8px">🗑️</button>
-          </div>
-        </li>
-      `).join('')}
-    </ul>`;
-  } else {
-    otherHtml = '<p style="color:var(--muted);text-align:center;padding:16px">No additional documents yet.</p>';
-  }
-  document.getElementById('progDocsOther').innerHTML = otherHtml;
+  const other=programDocs.filter(d=>!CORE_DOCS.some(c=>c.key===d.doc_type));
+  document.getElementById('progDocsOther').innerHTML=other.length>0?`<ul class="doc-list">${other.map(d=>
+    `<li><span style="font-size:1.2rem">📎</span><span class="doc-name">${d.label||d.filename}</span><span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
+    <div class="doc-actions"><a href="/api/program-documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
+    <button class="btn btn-sm btn-danger" onclick="deleteProgDoc(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`).join('')}</ul>`
+    :'<p style="color:var(--muted);text-align:center;padding:16px">No additional documents.</p>';
 }
 
-async function uploadProgramDoc(docType, label, input) {
-  if (!input.files[0]) return;
-  const formData = new FormData();
-  formData.append('file', input.files[0]);
-  formData.append('fiscal_year_id', activeFY.id);
-  formData.append('doc_type', docType);
-  formData.append('label', label);
-  try {
-    await api('/api/program-documents/upload', { method: 'POST', body: formData });
-    programDocs = await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);
-    renderProgramDocs();
-    renderDashboard();
-    showToast('✅ Document uploaded!', 'ok');
-  } catch (e) { showToast('Upload error: ' + e.message, 'err'); }
-}
+async function uploadProgDoc(dt,label,input){if(!input.files[0])return;
+  const fd=new FormData();fd.append('file',input.files[0]);fd.append('fiscal_year_id',activeFY.id);fd.append('doc_type',dt);fd.append('label',label);
+  try{await api('/api/program-documents/upload',{method:'POST',body:fd});programDocs=await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);renderProgramDocs();renderDashboard();showToast('✅ Uploaded!','ok');}catch(e){showToast('Error','err');}}
 
-function showAddOtherDocModal() {
-  // Simple prompt approach
-  const label = prompt('Document label (e.g. "Site Review Letter 2025"):');
-  if (!label) return;
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.pdf,.png,.jpg,.jpeg,.docx,.xlsx';
-  input.onchange = () => {
-    if (input.files[0]) {
-      const formData = new FormData();
-      formData.append('file', input.files[0]);
-      formData.append('fiscal_year_id', activeFY.id);
-      formData.append('doc_type', 'other_' + Date.now());
-      formData.append('label', label);
-      api('/api/program-documents/upload', { method: 'POST', body: formData }).then(async () => {
-        programDocs = await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);
-        renderProgramDocs();
-        showToast('✅ Document uploaded!', 'ok');
-      }).catch(e => showToast('Error: ' + e.message, 'err'));
-    }
-  };
-  input.click();
-}
+function showAddOtherDocModal(){const label=prompt('Document label:');if(!label)return;
+  const input=document.createElement('input');input.type='file';input.accept='.pdf,.png,.jpg,.docx,.xlsx';
+  input.onchange=()=>{if(!input.files[0])return;const fd=new FormData();fd.append('file',input.files[0]);fd.append('fiscal_year_id',activeFY.id);fd.append('doc_type','other_'+Date.now());fd.append('label',label);
+    api('/api/program-documents/upload',{method:'POST',body:fd}).then(async()=>{programDocs=await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);renderProgramDocs();showToast('✅ Uploaded!','ok');}).catch(e=>showToast('Error','err'));};input.click();}
 
-async function deleteProgramDoc(id) {
-  if (!confirm('Delete this document?')) return;
-  try {
-    await api(`/api/program-documents/${id}`, { method: 'DELETE' });
-    programDocs = await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);
-    renderProgramDocs();
-    showToast('Document deleted', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
+async function deleteProgDoc(id){if(!confirm('Delete?'))return;
+  try{await api(`/api/program-documents/${id}`,{method:'DELETE'});programDocs=await api(`/api/program-documents?fiscal_year_id=${activeFY.id}`);renderProgramDocs();}catch(e){showToast('Error','err');}}
 
 // ═══════════════════════════════════════════════════
 // YEAR END REPORT
 // ═══════════════════════════════════════════════════
-function renderYER() {
-  if (!activeFY) return;
-  document.getElementById('yerFyBadge').textContent = activeFY.label;
+function renderYER(){
+  if(!activeFY)return;document.getElementById('yerFyBadge').textContent=activeFY.label;
+  const tSal=salaryTotals.reduce((s,r)=>s+(parseFloat(r.food_service_cost)||0),0);
+  const tAdm=salaryTotals.reduce((s,r)=>s+(parseFloat(r.admin_cost)||0),0);
+  const ben=tSal*BEN_RATE;const fc=parseFloat(yerData?.food_cost)||0;
+  const cr=parseFloat(yerData?.cacfp_reimbursement)||0;
+  const pRev=revenueEntries.reduce((s,r)=>s+(parseFloat(r.amount)||0),0);
+  const tRev=cr+pRev;const tExp=fc+tSal+ben+tAdm;const fb=tRev-tExp;
+  const fm=tExp>cr?tExp-cr:0;
 
-  const totalSal = salaryTotals.reduce((s, r) => s + (parseFloat(r.food_service_cost) || 0), 0);
-  const totalAdmin = salaryTotals.reduce((s, r) => s + (parseFloat(r.admin_cost) || 0), 0);
-  const benefits = totalSal * BENEFITS_RATE;
-  const foodCost = parseFloat(yerData?.food_cost) || 0;
-  const cacfpReimb = parseFloat(yerData?.cacfp_reimbursement) || 0;
-  const programRevenue = revenueEntries.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
-  const totalRevenue = cacfpReimb + programRevenue;
-  const totalExpenses = foodCost + totalSal + benefits + totalAdmin;
-  const fundBalance = totalRevenue - totalExpenses;
-  const fundMod = totalExpenses > cacfpReimb ? totalExpenses - cacfpReimb : 0;
+  let salDet='';for(const m of MO){const r=salaryTotals.find(r2=>r2.month_key===m);const f=parseFloat(r?.food_service_cost)||0,a=parseFloat(r?.admin_cost)||0;
+    if(f>0||a>0)salDet+=`<div class="yer-line"><span style="padding-left:20px">${ML[m]} ${fyYear(m)}</span><span class="val">${fmt(f)} / ${fmt(a)}</span></div>`;}
 
-  // Monthly salary detail
-  let salaryDetail = '';
-  for (const m of MONTHS_ORDER) {
-    const row = salaryTotals.find(r => r.month_key === m);
-    const fsCost = parseFloat(row?.food_service_cost) || 0;
-    const admCost = parseFloat(row?.admin_cost) || 0;
-    if (fsCost > 0 || admCost > 0) {
-      salaryDetail += `<div class="yer-line"><span style="padding-left:20px">${monthLabel(m)} ${fyMonthYear(m)}</span><span class="val">${fmt(fsCost)} / ${fmt(admCost)}</span></div>`;
-    }
-  }
-
-  document.getElementById('yerBody').innerHTML = `
+  document.getElementById('yerBody').innerHTML=`
     <div class="form-grid" style="margin-bottom:24px">
-      <div class="form-group">
-        <label>Food & Supplies Cost (from QuickBooks P&L)</label>
-        <input type="number" step="0.01" value="${foodCost || ''}" onchange="saveYERField('food_cost',this.value)" placeholder="e.g. 205337.56">
-      </div>
-      <div class="form-group">
-        <label>CACFP Reimbursement (from MIND Line 3a)</label>
-        <input type="number" step="0.01" value="${cacfpReimb || ''}" onchange="saveYERField('cacfp_reimbursement',this.value)" placeholder="e.g. 91727.69">
-      </div>
+      <div class="form-group"><label>Food & Supplies Cost (P&L)</label><input type="number" step="0.01" value="${fc||''}" onchange="saveYERField('food_cost',this.value)"></div>
+      <div class="form-group"><label>CACFP Reimbursement (MIND Line 3a)</label><input type="number" step="0.01" value="${cr||''}" onchange="saveYERField('cacfp_reimbursement',this.value)"></div>
     </div>
-
-    <div class="yer-section">
-      <h3>📊 REVENUE</h3>
-      <div class="yer-line"><span>CACFP Reimbursement (MIND Line 3a)</span><span class="val">${fmt(cacfpReimb)}</span></div>
-      <div class="yer-line"><span>Program Meal Revenue (B & C from tuition)</span><span class="val">${fmt(programRevenue)}</span></div>
-      <div class="yer-line total"><span>Total Revenue</span><span class="val">${fmt(totalRevenue)}</span></div>
-    </div>
-
-    <div class="yer-section">
-      <h3>📊 EXPENSES</h3>
-      <div class="yer-line"><span>Food & Supplies (Account 64100)</span><span class="val">${fmt(foodCost)}</span></div>
-      <div class="yer-line"><span>Food Service Salaries</span><span class="val">${fmt(totalSal)}</span></div>
-      ${salaryDetail}
-      <div class="yer-line"><span>Employee Benefits (7.65%)</span><span class="val">${fmt(benefits)}</span></div>
-      <div class="yer-line"><span>Administrative Costs</span><span class="val">${fmt(totalAdmin)}</span></div>
-      <div class="yer-line total"><span>Total Expenses</span><span class="val">${fmt(totalExpenses)}</span></div>
-    </div>
-
-    <div class="yer-section">
-      <h3>📊 FUND BALANCE</h3>
-      <div class="yer-line"><span>Total Revenue</span><span class="val">${fmt(totalRevenue)}</span></div>
-      <div class="yer-line"><span>Total Expenses</span><span class="val">(${fmt(totalExpenses)})</span></div>
-      <div class="yer-line total"><span>Net Fund Balance</span><span class="val" style="color:${fundBalance >= 0 ? 'var(--success)' : 'var(--error)'}">${fundBalance < 0 ? '-' : ''}${fmt(fundBalance)}</span></div>
-    </div>
-
-    ${fundMod > 0 ? `
-    <div class="yer-section">
-      <h3>📊 FUND MODIFICATION</h3>
-      <div class="yer-line"><span>Expenses exceeding CACFP reimbursement</span><span class="val">${fmt(fundMod)}</span></div>
-      <p style="font-size:0.85rem;color:var(--muted);margin-top:8px">This amount must be covered by tuition/subsidy revenue documented to the NFSA with journal entries showing the transfer of funds.</p>
-    </div>
-    ` : ''}
-
-    <div class="form-group" style="margin-top:16px">
-      <label>Notes</label>
-      <textarea rows="3" onchange="saveYERField('notes',this.value)" placeholder="Additional notes for the YER submission...">${yerData?.notes || ''}</textarea>
-    </div>
-  `;
+    <div class="yer-section"><h3>📊 REVENUE</h3>
+      <div class="yer-line"><span>CACFP Reimbursement</span><span class="val">${fmt(cr)}</span></div>
+      <div class="yer-line"><span>Program Meal Revenue (B&C from tuition)</span><span class="val">${fmt(pRev)}</span></div>
+      <div class="yer-line total"><span>Total Revenue</span><span class="val">${fmt(tRev)}</span></div></div>
+    <div class="yer-section"><h3>📊 EXPENSES</h3>
+      <div class="yer-line"><span>Food & Supplies</span><span class="val">${fmt(fc)}</span></div>
+      <div class="yer-line"><span>Food Service Salaries</span><span class="val">${fmt(tSal)}</span></div>
+      ${salDet}
+      <div class="yer-line"><span>Benefits (7.65%)</span><span class="val">${fmt(ben)}</span></div>
+      <div class="yer-line"><span>Admin Costs</span><span class="val">${fmt(tAdm)}</span></div>
+      <div class="yer-line total"><span>Total Expenses</span><span class="val">${fmt(tExp)}</span></div></div>
+    <div class="yer-section"><h3>📊 FUND BALANCE</h3>
+      <div class="yer-line"><span>Total Revenue</span><span class="val">${fmt(tRev)}</span></div>
+      <div class="yer-line"><span>Total Expenses</span><span class="val">(${fmt(tExp)})</span></div>
+      <div class="yer-line total"><span>Net Fund Balance</span><span class="val" style="color:${fb>=0?'var(--success)':'var(--error)'}">${fb<0?'-':''}${fmt(fb)}</span></div></div>
+    ${fm>0?`<div class="yer-section"><h3>📊 FUND MODIFICATION</h3><div class="yer-line"><span>Expenses exceeding reimbursement</span><span class="val">${fmt(fm)}</span></div>
+      <p style="font-size:.85rem;color:var(--muted);margin-top:8px">Must be covered by tuition/subsidy revenue with journal entries documenting fund transfers.</p></div>`:''}
+    <div class="form-group" style="margin-top:16px"><label>Notes</label><textarea rows="3" onchange="saveYERField('notes',this.value)">${yerData?.notes||''}</textarea></div>`;
 }
 
-async function saveYERField(field, val) {
-  try {
-    const body = { fiscal_year_id: activeFY.id };
-    body[field] = field === 'notes' ? val : (parseFloat(val) || 0);
-    await api('/api/yer', { method: 'POST', body });
-    yerData = await api(`/api/yer?fiscal_year_id=${activeFY.id}`);
-    renderYER();
-    renderDashboard();
-    renderRevenuePage();
-  } catch (e) { showToast('Save error: ' + e.message, 'err'); }
-}
+async function saveYERField(field,val){try{const body={fiscal_year_id:activeFY.id};body[field]=field==='notes'?val:(parseFloat(val)||0);
+  await api('/api/yer',{method:'POST',body});yerData=await api(`/api/yer?fiscal_year_id=${activeFY.id}`);renderYER();renderDashboard();renderRevenuePage();}catch(e){showToast('Save error','err');}}
 
-async function downloadGL() {
-  try {
-    const res = await fetch('/api/generate-gl', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Access-PIN': PIN },
-      body: JSON.stringify({ fiscal_year_id: activeFY.id })
-    });
-    if (!res.ok) throw new Error('Generate failed');
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `NFSA_General_Ledger_${activeFY.label}.docx`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('✅ General Ledger downloaded!', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
-
-function showYERSummaryModal() {
-  // Show a simplified view for MIND data entry
-  alert('CNP-YER Summary Sheet feature coming soon — use the Year End Report section for now.');
-}
+async function downloadGL(){try{const r=await fetch('/api/generate-gl',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},body:JSON.stringify({fiscal_year_id:activeFY.id})});
+  if(!r.ok)throw new Error('Failed');const b=await r.blob();const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`NFSA_GL_${activeFY.label}.docx`;a.click();URL.revokeObjectURL(u);showToast('✅ GL downloaded!','ok');}catch(e){showToast('Error','err');}}
 
 // ═══════════════════════════════════════════════════
 // NEW FISCAL YEAR
 // ═══════════════════════════════════════════════════
-function showNewYearModal() {
-  if (activeFY) {
-    const nextStart = activeFY.end_year;
-    const nextEnd = nextStart + 1;
-    document.getElementById('newFyLabel').value = `${nextStart}-${nextEnd}`;
-    document.getElementById('newFyStart').value = nextStart;
-    document.getElementById('newFyEnd').value = nextEnd;
-  }
-  openModal('newYearModal');
-}
+function showNewYearModal(){if(activeFY){const s=activeFY.end_year;document.getElementById('newFyLabel').value=s+'-'+(s+1);document.getElementById('newFyStart').value=s;document.getElementById('newFyEnd').value=s+1;}openModal('newYearModal');}
 
-async function createNewYear() {
-  const label = document.getElementById('newFyLabel').value.trim();
-  const start_year = parseInt(document.getElementById('newFyStart').value);
-  const end_year = parseInt(document.getElementById('newFyEnd').value);
-  if (!label || !start_year || !end_year) return showToast('Fill in all fields', 'err');
-  try {
-    const fy = await api('/api/fiscal-years', { method: 'POST', body: { label, start_year, end_year } });
-    fiscalYears = await api('/api/fiscal-years');
-    activeFY = fy;
-    renderFYSelector();
-    document.getElementById('fySelect').value = fy.id;
-    closeModal('newYearModal');
-    await loadFYData();
-    showToast('✅ Fiscal year ' + label + ' created!', 'ok');
-  } catch (e) { showToast('Error: ' + e.message, 'err'); }
-}
+async function createNewYear(){const label=document.getElementById('newFyLabel').value.trim(),sy=parseInt(document.getElementById('newFyStart').value),ey=parseInt(document.getElementById('newFyEnd').value);
+  if(!label||!sy||!ey)return showToast('Fill all fields','err');
+  try{const fy=await api('/api/fiscal-years',{method:'POST',body:{label,start_year:sy,end_year:ey}});fiscalYears=await api('/api/fiscal-years');activeFY=fy;renderFYSelector();document.getElementById('fySelect').value=fy.id;closeModal('newYearModal');await loadFYData();showToast('✅ '+label+' created!','ok');}catch(e){showToast('Error','err');}}
 
 // ═══════════════════════════════════════════════════
 // UTILITIES
 // ═══════════════════════════════════════════════════
-function openModal(id) { document.getElementById(id).classList.add('show'); }
-function closeModal(id) { document.getElementById(id).classList.remove('show'); }
-
-function showToast(msg, type) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show' + (type === 'ok' ? ' ok' : type === 'err' ? ' err' : '');
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), 3000);
-}
-
-// Close modals on overlay click
-document.querySelectorAll('.modal-overlay').forEach(m => {
-  m.addEventListener('click', e => { if (e.target === m) m.classList.remove('show'); });
-});
-
-// Auto-focus PIN
+function openModal(id){document.getElementById(id).classList.add('show');}
+function closeModal(id){document.getElementById(id).classList.remove('show');}
+function showToast(msg,type){const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(type==='ok'?' ok':type==='err'?' err':'');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),3000);}
+document.querySelectorAll('.modal-overlay').forEach(m=>{m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('show');});});
 document.getElementById('pinInput').focus();
 </script>
 </body>
