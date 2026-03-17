@@ -1549,73 +1549,354 @@ function viewGeneratedReport(type,mk){
   w.document.write(html);w.document.close();
 }
 
-function printMonthlyPackage(mk){
-  const w=window.open('','_blank','width=900,height=700');
-  let html=`<!DOCTYPE html><html><head><title>Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</title>
-    <style>body{font-family:'DM Sans',Arial,sans-serif;padding:30px;color:#1A202C;font-size:12px}
-    h1{font-size:18px;color:#1B2A4A;border-bottom:3px solid #C5972C;padding-bottom:8px;text-align:center}
-    h2{font-size:15px;color:#1B2A4A;margin-top:24px;border-bottom:1px solid #E2E8F0;padding-bottom:4px}
-    h3{font-size:13px;color:#2A3D66;margin-top:16px}
-    table{width:100%;border-collapse:collapse;margin:8px 0;font-size:11px}
-    th{background:#1B2A4A;color:#fff;padding:5px 6px;text-align:left}
-    td{padding:3px 6px;border-bottom:1px solid #E2E8F0}
-    .total-row{font-weight:700;background:#F4F6F9}
-    .section{page-break-inside:avoid;margin-bottom:16px}
-    @media print{body{padding:15px;font-size:11px}h1{font-size:16px}}</style></head><body>`;
-  html+=`<h1>The Children's Center, Inc.<br>Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</h1>
-    <p style="text-align:center;color:#718096">Sponsor #990004457 | Generated ${new Date().toLocaleDateString()}</p>`;
+async function printMonthlyPackage(mk){
+  showToast('Building complete CACFP documentation package...','');
 
-  // STAFF COSTS
-  const stTotals=salaryTotals.find(r=>r.month_key===mk);
-  if(stTotals){
-    const fs=parseFloat(stTotals.food_service_cost)||0,ad=parseFloat(stTotals.admin_cost)||0;
-    html+=`<div class="section"><h2>1. Staff Costs</h2>
-      <p>Food Service Salaries: <strong>$${fs.toFixed(2)}</strong> | Benefits (7.65%): <strong>$${(fs*BEN_RATE).toFixed(2)}</strong> | Admin: <strong>$${ad.toFixed(2)}</strong></p>
-      <p><strong>Total Cost to NFSA: $${(fs+fs*BEN_RATE+ad).toFixed(2)}</strong></p></div>`;
+  // Fetch uploaded document images for embedding
+  const mDocs=documents.filter(d=>d.month_key===mk);
+  const docImages={};
+  for(const doc of mDocs){
+    if(doc.mime_type?.startsWith('image/')){
+      try{
+        const resp=await fetch(`/api/documents/${doc.id}/download?pin=${PIN}`);
+        const blob=await resp.blob();
+        const b64=await new Promise(r=>{const rd=new FileReader();rd.onload=()=>r(rd.result);rd.readAsDataURL(blob);});
+        docImages[doc.id]=b64;
+      }catch(e){}
+    }
   }
 
-  // ATTENDANCE
+  const w=window.open('','_blank','width=1000,height=800');
+  let html=`<!DOCTYPE html><html><head><title>Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:Arial,sans-serif;padding:20px;color:#1A202C;font-size:11px}
+      h1{font-size:16px;color:#1B2A4A;border-bottom:3px solid #C5972C;padding-bottom:6px;text-align:center;margin-bottom:4px}
+      .subtitle{text-align:center;color:#718096;font-size:10px;margin-bottom:16px}
+      h2{font-size:14px;color:#fff;background:#1B2A4A;padding:6px 10px;margin:20px 0 8px;page-break-after:avoid}
+      h3{font-size:12px;color:#2A3D66;margin:12px 0 6px;border-bottom:1px solid #C5972C;padding-bottom:3px}
+      h4{font-size:11px;color:#1B2A4A;margin:8px 0 4px}
+      table{width:100%;border-collapse:collapse;margin:6px 0;font-size:10px}
+      th{background:#1B2A4A;color:#fff;padding:4px 5px;text-align:left;font-size:9px}
+      td{padding:3px 5px;border-bottom:1px solid #E2E8F0}
+      .total-row{font-weight:700;background:#F0F0F0}
+      .grand-row{font-weight:700;background:#1B2A4A;color:#fff}
+      .section{margin-bottom:12px}
+      .page-break{page-break-before:always}
+      .toc{margin:16px 0;font-size:11px}
+      .toc-item{padding:3px 0;display:flex;justify-content:space-between;border-bottom:1px dotted #ccc}
+      .doc-embed{max-width:100%;border:1px solid #ccc;margin:8px 0;page-break-inside:avoid}
+      .doc-embed img{max-width:100%;height:auto}
+      .doc-note{background:#FFF8ED;border:1px solid #C5972C;padding:8px;border-radius:4px;font-size:10px;margin:6px 0}
+      .stat-box{display:inline-block;background:#F4F6F9;padding:4px 10px;margin:2px 4px;border-radius:3px;font-size:10px}
+      .stat-box strong{color:#1B2A4A}
+      .x-counted{color:#2D7D46;font-weight:700}
+      .x-excluded{color:#C0392B;font-weight:900;text-decoration:line-through;background:#FFEBEE}
+      .empty-cell{color:#ddd}
+      @media print{body{padding:10px;font-size:10px}h1{font-size:14px}h2{font-size:12px;padding:4px 8px}.page-break{page-break-before:always}}
+    </style></head><body>`;
+
+  // ── COVER PAGE ──
+  html+=`<h1>The Children's Center, Inc.</h1>
+    <div class="subtitle">Complete CACFP Documentation Package<br>${ML[mk]} ${fyYear(mk)} | Sponsor #990004457 | Generated ${new Date().toLocaleDateString()}</div>`;
+
+  // ── TABLE OF CONTENTS ──
+  html+=`<div class="toc"><h4>Table of Contents</h4>
+    <div class="toc-item"><span>1. CACFP Claim Submission</span></div>
+    <div class="toc-item"><span>2. Claim Preparation Summary</span></div>
+    <div class="toc-item"><span>3. Staff Costs — Niles & Peace Boulevard</span></div>
+    <div class="toc-item"><span>4. Attendance & ADA — Niles</span></div>
+    <div class="toc-item"><span>5. Attendance & ADA — Peace Boulevard</span></div>
+    <div class="toc-item"><span>6. Adjusted Daily Meal Counts — Niles</span></div>
+    <div class="toc-item"><span>7. Adjusted Daily Meal Counts — Peace Boulevard</span></div>
+    <div class="toc-item"><span>8. Meal Count Summary</span></div>
+    <div class="toc-item"><span>9. CDC Eligibility — Niles</span></div>
+    <div class="toc-item"><span>10. CDC Eligibility — Peace Boulevard</span></div>
+    <div class="toc-item"><span>11. Food Costs & Receipts</span></div>
+  </div>`;
+
+  // ══════════════════════════════════════════════════
+  // 1. CACFP CLAIM SCREENSHOT
+  // ══════════════════════════════════════════════════
+  html+=`<h2 class="page-break">1. CACFP Claim Submission</h2>`;
+  const claimDoc=mDocs.find(d=>d.doc_type==='claims_listing');
+  if(claimDoc&&docImages[claimDoc.id]){
+    html+=`<div class="doc-embed"><img src="${docImages[claimDoc.id]}" alt="Claims Listing"></div>`;
+  }else if(claimDoc){
+    html+=`<div class="doc-note">📄 Claims Listing uploaded: <strong>${claimDoc.filename}</strong> (${new Date(claimDoc.uploaded_at).toLocaleDateString()})<br>PDF documents must be printed separately from the Documents tab.</div>`;
+  }else{
+    html+=`<div class="doc-note">⚠️ Claims Listing screenshot not yet uploaded.</div>`;
+  }
+
+  // ══════════════════════════════════════════════════
+  // 2. CLAIM PREPARATION
+  // ══════════════════════════════════════════════════
+  html+=`<h2 class="page-break">2. Claim Preparation Summary</h2>`;
   const att=monthlyDataCache[mk+'_attendance']||{};
-  html+=`<div class="section"><h2>2. Attendance</h2>`;
-  for(const c of ['niles','peace']){const d=att[c];if(!d)continue;
-    html+=`<h3>${cl(c)}</h3><p>Enrolled: ${d.enrolled} | ADA: ${d.ada} | Operating Days: ${d.days} | ADA Calc: ${d.totalPresent||'?'} ÷ ${d.days} = ${d.ada}</p>`;}
-  html+=`</div>`;
-
-  // MEAL COUNTS
   const meals=monthlyDataCache[mk+'_meals']||{};
-  html+=`<div class="section"><h2>3. Meal Counts (3-Meal Rule Applied)</h2>`;
-  for(const c of ['niles','peace']){const d=meals[c];if(!d)continue;
-    html+=`<h3>${cl(c)}</h3>`;
-    if(d.excluded4thMeal)html+=`<p style="color:#C0392B">${d.excluded4thMeal} PM snacks excluded by 3-meal rule</p>`;
-    html+=`<table><tr><th>Cat</th><th>Breakfast</th><th>Lunch</th><th>Snack</th></tr>
-      <tr><td>A</td><td>${d.breakfast_A||0}</td><td>${d.lunch_A||0}</td><td>${d.snack_A||0}</td></tr>
-      <tr><td>B</td><td>${d.breakfast_B||0}</td><td>${d.lunch_B||0}</td><td>${d.snack_B||0}</td></tr>
-      <tr><td>C</td><td>${d.breakfast_C||0}</td><td>${d.lunch_C||0}</td><td>${d.snack_C||0}</td></tr></table>`;}
-  html+=`</div>`;
-
-  // CDC
   const cdc=monthlyDataCache[mk+'_cdc']||{};
-  html+=`<div class="section"><h2>4. CDC Eligibility</h2>`;
-  for(const c of ['niles','peace']){const d=cdc[c];if(!d)continue;const en=att[c]?.enrolled||0;const pct=en>0?((d.qualifying||0)/en*100):0;
-    html+=`<h3>${cl(c)}</h3><p>Qualifying: ${d.qualifying||0} of ${en} enrolled (${pct.toFixed(1)}%) — ${pct>=25?'MEETS':'Does not meet'} 25% threshold</p>`;}
-  html+=`</div>`;
-
-  // FOOD COSTS
   const fc=monthlyDataCache[mk+'_foodcosts']||{};
-  html+=`<div class="section"><h2>5. Food Costs</h2><p>Total: <strong>$${(fc.total||0).toFixed(2)}</strong></p>`;
-  if(fc.receipts?.length>0){html+=`<table><tr><th>Receipt</th><th>Vendor</th><th>Amount</th></tr>
-    ${fc.receipts.map(r=>`<tr><td>${r.filename}</td><td>${r.vendor||''}</td><td>$${(r.amount||0).toFixed(2)}</td></tr>`).join('')}
-    <tr class="total-row"><td colspan="2">Total</td><td>$${(fc.total||0).toFixed(2)}</td></tr></table>`;}
-  html+=`</div>`;
+  const stData=salaryTotals.find(r=>r.month_key===mk);
+  const fsCost=parseFloat(stData?.food_service_cost)||0;
+  const admCost=parseFloat(stData?.admin_cost)||0;
+  const benefits=fsCost*BEN_RATE;
+  const foodCost=parseFloat(fc.total)||0;
+  const totalExp=foodCost+fsCost+benefits+admCost;
+  const niAtt=att.niles||{};const peAtt=att.peace||{};
+  const combinedADA=Math.round(((niAtt.ada||0)+(peAtt.ada||0))*10)/10;
+  const daysFS=Math.max(niAtt.days||0,peAtt.days||0);
 
-  // CLAIM
-  const cl2=monthlyDataCache[mk+'_claims']||{};
-  html+=`<div class="section"><h2>6. CACFP Claim Figures</h2>
-    <p>Meal Reimbursement: $${(cl2.meal_reimbursement||0).toFixed(2)} | CIL: $${(cl2.cash_in_lieu||0).toFixed(2)} | Total: $${(cl2.total_reimbursement||0).toFixed(2)}</p></div>`;
+  html+=`<h4>Sponsor Summary</h4>
+    <div class="stat-box">Days Food Service: <strong>${daysFS}</strong></div>
+    <div class="stat-box">Combined ADA: <strong>${combinedADA}</strong></div>
+    <div class="stat-box">Centers: <strong>2</strong></div>
+    <div class="stat-box">Total Enrollment: <strong>${(niAtt.enrolled||0)+(peAtt.enrolled||0)}</strong></div>`;
 
-  html+=`</body></html>`;
+  html+=`<h4>Program Expenditures</h4>
+    <table><tr><th>Category</th><th style="text-align:right">Amount</th></tr>
+    <tr><td>Food Costs</td><td style="text-align:right">${fmt(foodCost)}</td></tr>
+    <tr><td>Food Service Salaries</td><td style="text-align:right">${fmt(fsCost)}</td></tr>
+    <tr><td>Employee Benefits (7.65%)</td><td style="text-align:right">${fmt(benefits)}</td></tr>
+    <tr><td>Administrative Costs</td><td style="text-align:right">${fmt(admCost)}</td></tr>
+    <tr class="grand-row"><td>Total Expenditures</td><td style="text-align:right">${fmt(totalExp)}</td></tr></table>`;
+
+  // Per-center claim detail
+  for(const c of ['niles','peace']){
+    const a=att[c]||{};const m2=meals[c]||{};const cd=cdc[c]||{};const cap=c==='niles'?105:164;
+    const pct=a.enrolled>0?((cd.qualifying||0)/a.enrolled*100):0;
+    html+=`<h4>${cl(c)}</h4>
+      <div class="stat-box">Enrolled: <strong>${a.enrolled||0}</strong></div>
+      <div class="stat-box">Capacity: <strong>${cap}</strong></div>
+      <div class="stat-box">Enrolled/Cap: <strong>${Math.min(a.enrolled||0,cap)}</strong></div>
+      <div class="stat-box">Days: <strong>${a.days||0}</strong></div>
+      <div class="stat-box">ADA: <strong>${a.ada||0}</strong></div>
+      <div class="stat-box">Monthly Att Total: <strong>${a.totalPresent||0}</strong></div>
+      <div class="stat-box">CDC Qualifying: <strong>${cd.qualifying||0} (${pct.toFixed(1)}%)</strong></div>
+      <table><tr><th>Meal</th><th>Cat A</th><th>Cat B</th><th>Cat C</th><th>Total</th></tr>
+        <tr><td>Breakfast</td><td>${m2.breakfast_A||0}</td><td>${m2.breakfast_B||0}</td><td>${m2.breakfast_C||0}</td><td>${(m2.breakfast_A||0)+(m2.breakfast_B||0)+(m2.breakfast_C||0)}</td></tr>
+        <tr><td>Lunch</td><td>${m2.lunch_A||0}</td><td>${m2.lunch_B||0}</td><td>${m2.lunch_C||0}</td><td>${(m2.lunch_A||0)+(m2.lunch_B||0)+(m2.lunch_C||0)}</td></tr>
+        <tr><td>Snack</td><td>${m2.snack_A||0}</td><td>${m2.snack_B||0}</td><td>${m2.snack_C||0}</td><td>${(m2.snack_A||0)+(m2.snack_B||0)+(m2.snack_C||0)}</td></tr></table>`;
+  }
+
+  // ══════════════════════════════════════════════════
+  // 3. STAFF COSTS
+  // ══════════════════════════════════════════════════
+  html+=`<h2 class="page-break">3. Staff Costs</h2>`;
+  // Uploaded staff cost documents
+  const staffDocs=mDocs.filter(d=>d.doc_type?.includes('time_distribution')||d.doc_type?.includes('batch_time'));
+  if(staffDocs.length>0){
+    html+=`<h4>Uploaded Time Distribution Documents</h4>`;
+    for(const sd of staffDocs){
+      if(docImages[sd.id])html+=`<div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
+      else html+=`<div class="doc-note">📄 ${sd.filename} (${sd.doc_type}) — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}</div>`;
+    }
+  }
+  // Staff cost totals
+  if(stData){
+    html+=`<h4>Staff Cost Summary</h4>
+      <table><tr><th>Category</th><th style="text-align:right">Amount</th></tr>
+        <tr><td>Food Service Salaries</td><td style="text-align:right">${fmt(fsCost)}</td></tr>
+        <tr><td>Employee Benefits (7.65%)</td><td style="text-align:right">${fmt(benefits)}</td></tr>
+        <tr><td>Administrative Costs</td><td style="text-align:right">${fmt(admCost)}</td></tr>
+        <tr class="grand-row"><td>Total Staff Cost to NFSA</td><td style="text-align:right">${fmt(fsCost+benefits+admCost)}</td></tr></table>`;
+    // Per-staff detail
+    const monthEntries=staffTimeEntries.filter(e=>e.month_key===mk);
+    if(monthEntries.length>0){
+      for(const center of ['niles','peace']){
+        const cEntries=monthEntries.filter(e=>staffList.find(s=>s.id==e.staff_id)?.center===center);
+        if(cEntries.length===0)continue;
+        html+=`<h4>${cl(center)} Staff Detail</h4>
+          <table><tr><th>Name</th><th>Rate</th><th>FS Hours</th><th>FS Earned</th><th>Admin Hours</th><th>Admin Earned</th></tr>`;
+        let cFS=0,cAdm=0;
+        for(const e of cEntries){
+          const s=staffList.find(s2=>s2.id==e.staff_id);
+          const fsE=(parseFloat(e.food_service_hours)||0)*(parseFloat(e.hourly_rate_used)||0);
+          const adE=(parseFloat(e.admin_hours)||0)*(parseFloat(e.hourly_rate_used)||0);
+          cFS+=fsE;cAdm+=adE;
+          html+=`<tr><td>${s?.name||'Unknown'}</td><td>$${(parseFloat(e.hourly_rate_used)||0).toFixed(2)}</td>
+            <td>${e.food_service_hours||0}</td><td>${fmt(fsE)}</td>
+            <td>${e.admin_hours||0}</td><td>${fmt(adE)}</td></tr>`;
+        }
+        html+=`<tr class="total-row"><td colspan="3">Total ${cl(center)}</td><td>${fmt(cFS)}</td><td></td><td>${fmt(cAdm)}</td></tr></table>`;
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════
+  // 4–5. ATTENDANCE PER CENTER
+  // ══════════════════════════════════════════════════
+  let sectionNum=4;
+  for(const c of ['niles','peace']){
+    const a=att[c];
+    html+=`<h2 class="page-break">${sectionNum}. Attendance & ADA — ${cl(c)}</h2>`;
+    // Uploaded attendance doc
+    const attDoc=mDocs.find(d=>d.doc_type===('attendance_csv_'+c));
+    if(attDoc){
+      if(docImages[attDoc.id])html+=`<div class="doc-embed"><img src="${docImages[attDoc.id]}" alt="${attDoc.filename}"></div>`;
+      else html+=`<div class="doc-note">📄 Attendance Overview uploaded: ${attDoc.filename}</div>`;
+    }
+    if(a){
+      html+=`<h4>ADA Calculation</h4>
+        <div class="stat-box">Enrolled: <strong>${a.enrolled}</strong></div>
+        <div class="stat-box">Operating Days: <strong>${a.days}</strong></div>
+        <div class="stat-box">Total Child-Days Present: <strong>${a.totalPresent}</strong></div>
+        <div class="stat-box">ADA: <strong>${a.totalPresent} ÷ ${a.days} = ${a.ada}</strong></div>
+        <div class="stat-box">ADA %: <strong>${a.enrolled>0?((a.ada/a.enrolled)*100).toFixed(1):'0'}%</strong></div>`;
+      if(a.childData){
+        html+=`<h4>Daily Attendance Breakdown</h4>
+          <table><tr><th>Name</th><th>Classroom</th><th>Present</th><th>Absent</th></tr>
+          ${a.childData.map(ch=>`<tr><td>${ch.name}</td><td>${ch.classroom}</td><td>${ch.present}</td><td>${ch.absent}</td></tr>`).join('')}</table>`;
+      }
+    }else{html+=`<div class="doc-note">⚠️ No attendance data uploaded for ${cl(c)}.</div>`;}
+    sectionNum++;
+  }
+
+  // ══════════════════════════════════════════════════
+  // 6–7. ADJUSTED DAILY MEAL COUNTS PER CENTER
+  // ══════════════════════════════════════════════════
+  for(const c of ['niles','peace']){
+    const d=meals[c];
+    html+=`<h2 class="page-break">${sectionNum}. Adjusted Daily Meal Counts — ${cl(c)}</h2>`;
+    if(d&&d.children&&d.dayLabels){
+      if(d.excluded4thMeal)html+=`<p style="color:#C0392B;margin-bottom:6px"><strong>${d.excluded4thMeal} PM snacks excluded by 3-meal rule</strong></p>`;
+      const days=d.dayLabels;
+      const shortDays=days.map(dl=>{const p=dl.split(' ');return p.length>=2?p[0].slice(0,2)+' '+p[p.length-1]:dl;});
+      // Build full daily grid
+      html+=`<p style="font-size:9px;color:#666;margin-bottom:4px"><strong>X</strong>=counted | <span style="color:#C0392B;text-decoration:line-through">X</span>=excluded (3-meal rule) | ·=not served</p>`;
+      html+=`<table style="font-size:8px"><tr><th style="min-width:90px;font-size:7px">Child / Meal</th><th style="font-size:7px">Cat</th>`;
+      for(const dl of shortDays)html+=`<th style="font-size:6px;padding:2px 1px;text-align:center">${dl}</th>`;
+      html+=`<th style="font-size:7px">Orig</th><th style="font-size:7px;background:#2D7D46">Adj</th></tr>`;
+
+      const catTotals={A:{bk:0,ln:0,sn:0},B:{bk:0,ln:0,sn:0},C:{bk:0,ln:0,sn:0}};
+
+      for(const ch of d.children){
+        if(!ch.dailyDetail)continue;
+        html+=`<tr style="background:#E8EDF3"><td colspan="2" style="font-weight:700;font-size:8px;border-top:1px solid #1B2A4A">${ch.name}</td>`;
+        for(let i=0;i<days.length;i++)html+=`<td style="border-top:1px solid #1B2A4A"></td>`;
+        html+=`<td style="border-top:1px solid #1B2A4A"></td><td style="border-top:1px solid #1B2A4A;background:#E8F5E9"></td></tr>`;
+
+        const mTypes=[{k:'bk',l:'Bkfst',orig:ch.breakfast},{k:'am',l:'AM Snk',orig:ch.amSnack},{k:'ln',l:'Lunch',orig:ch.lunch},{k:'pm',l:'PM Snk',orig:ch.pmSnack+ch.pmExcluded}];
+        for(const mt of mTypes){
+          html+=`<tr><td style="padding-left:8px;font-size:7px;color:#555">${mt.l}</td>`;
+          html+=mt.k==='bk'?`<td style="font-weight:700;color:${ch.cat==='A'?'#2D7D46':ch.cat==='B'?'#C5972C':'#C0392B'};font-size:8px">${ch.cat}</td>`:'<td></td>';
+          let adj=0;
+          for(let i=0;i<days.length;i++){
+            const dd=ch.dailyDetail[i];
+            if(mt.k==='pm'){
+              if(dd.pmX)html+=`<td class="x-excluded" style="text-align:center;font-size:7px;padding:1px">X</td>`;
+              else if(dd.pm){html+=`<td class="x-counted" style="text-align:center;font-size:7px;padding:1px">X</td>`;adj++;}
+              else html+=`<td class="empty-cell" style="text-align:center;font-size:7px;padding:1px">·</td>`;
+            }else{
+              if(dd[mt.k]){html+=`<td class="x-counted" style="text-align:center;font-size:7px;padding:1px">X</td>`;adj++;}
+              else html+=`<td class="empty-cell" style="text-align:center;font-size:7px;padding:1px">·</td>`;
+            }
+          }
+          html+=`<td style="background:#F5F5F5;font-weight:700;text-align:center;font-size:8px">${mt.orig}</td>`;
+          html+=`<td style="background:#E8F5E9;font-weight:700;text-align:center;font-size:8px;color:#2D7D46">${adj}</td></tr>`;
+          // Accumulate totals
+          if(mt.k==='bk')catTotals[ch.cat].bk+=adj;
+          if(mt.k==='ln')catTotals[ch.cat].ln+=adj;
+          if(mt.k==='am'||mt.k==='pm')catTotals[ch.cat].sn+=adj;
+        }
+      }
+      // Category totals
+      html+=`<tr class="grand-row"><td colspan="${days.length+4}" style="text-align:center;padding:4px">CLAIMABLE TOTALS BY CATEGORY</td></tr>`;
+      for(const cat of ['A','B','C']){
+        const cl3=cat==='A'?'Category A (Free)':cat==='B'?'Category B (Reduced)':'Category C (Paid)';
+        const ct=catTotals[cat];
+        html+=`<tr class="total-row"><td colspan="2">${cl3}</td>`;
+        for(let i=0;i<days.length;i++)html+=`<td></td>`;
+        html+=`<td></td><td style="background:#E8F5E9;font-weight:700;text-align:center">${ct.bk+ct.ln+ct.sn}</td></tr>`;
+        html+=`<tr><td style="padding-left:12px;font-size:8px">Breakfast: ${ct.bk} | Lunch: ${ct.ln} | Snack: ${ct.sn}</td><td colspan="${days.length+3}"></td></tr>`;
+      }
+      const grand=Object.values(catTotals).reduce((s,ct)=>s+ct.bk+ct.ln+ct.sn,0);
+      html+=`<tr class="grand-row"><td colspan="2">GRAND TOTAL</td>`;
+      for(let i=0;i<days.length;i++)html+=`<td></td>`;
+      html+=`<td></td><td style="text-align:center;font-size:10px">${grand}</td></tr></table>`;
+    }else{html+=`<div class="doc-note">⚠️ No meal count data for ${cl(c)}.</div>`;}
+    sectionNum++;
+  }
+
+  // ══════════════════════════════════════════════════
+  // 8. MEAL COUNT SUMMARY
+  // ══════════════════════════════════════════════════
+  html+=`<h2 class="page-break">${sectionNum}. Meal Count Summary — Combined</h2>`;
+  for(const c of ['niles','peace']){
+    const d=meals[c];if(!d)continue;
+    html+=`<h4>${cl(c)}</h4>
+      <table><tr><th>Cat</th><th>Breakfast</th><th>Lunch</th><th>Snack (AM+PM)</th><th>Total</th></tr>
+      <tr><td>A (Free)</td><td>${d.breakfast_A||0}</td><td>${d.lunch_A||0}</td><td>${d.snack_A||0}</td><td>${(d.breakfast_A||0)+(d.lunch_A||0)+(d.snack_A||0)}</td></tr>
+      <tr><td>B (Reduced)</td><td>${d.breakfast_B||0}</td><td>${d.lunch_B||0}</td><td>${d.snack_B||0}</td><td>${(d.breakfast_B||0)+(d.lunch_B||0)+(d.snack_B||0)}</td></tr>
+      <tr><td>C (Paid)</td><td>${d.breakfast_C||0}</td><td>${d.lunch_C||0}</td><td>${d.snack_C||0}</td><td>${(d.breakfast_C||0)+(d.lunch_C||0)+(d.snack_C||0)}</td></tr></table>`;
+    if(d.children){
+      html+=`<table><tr><th>Child</th><th>Cat</th><th>Bkfst</th><th>AM Snk</th><th>Lunch</th><th>PM Snk</th><th>Excluded</th><th>Total</th></tr>
+      ${d.children.map(ch=>`<tr><td>${ch.name}</td><td>${ch.cat}</td><td>${ch.breakfast}</td><td>${ch.amSnack}</td><td>${ch.lunch}</td><td>${ch.pmSnack}</td><td style="color:#C0392B">${ch.pmExcluded>0?'-'+ch.pmExcluded:''}</td><td>${ch.totalCounted}</td></tr>`).join('')}</table>`;
+    }
+  }
+  sectionNum++;
+
+  // ══════════════════════════════════════════════════
+  // 9–10. CDC ELIGIBILITY PER CENTER
+  // ══════════════════════════════════════════════════
+  for(const c of ['niles','peace']){
+    const cd=cdc[c];
+    html+=`<h2 class="page-break">${sectionNum}. CDC Eligibility — ${cl(c)}</h2>`;
+    // Uploaded CDC documents
+    const cdcDocs=mDocs.filter(d=>d.doc_type===('cdc_statement_'+c));
+    if(cdcDocs.length>0){
+      html+=`<h4>Uploaded CDC Statements</h4>`;
+      for(const sd of cdcDocs){
+        if(docImages[sd.id])html+=`<div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
+        else html+=`<div class="doc-note">📄 ${sd.filename} — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}</div>`;
+      }
+    }
+    if(cd){
+      const en=(att[c]||{}).enrolled||0;const pct=en>0?((cd.qualifying||0)/en*100):0;
+      html+=`<h4>Eligibility Report</h4>
+        <div class="stat-box">Total on statements: <strong>${cd.totalOnStatement||0}</strong></div>
+        <div class="stat-box">No Authorization: <strong>${cd.noAuth||0}</strong></div>
+        <div class="stat-box">$0 Paid: <strong>${cd.zeroPaid||0}</strong></div>
+        <div class="stat-box">Duplicates removed: <strong>${cd.deduplicatedCount||0}</strong></div>
+        <div class="stat-box" style="background:${pct>=25?'#E8F5E9':'#FFEBEE'}">Qualifying: <strong>${cd.qualifying||0} of ${en} enrolled (${pct.toFixed(1)}%) — ${pct>=25?'MEETS':'DOES NOT MEET'} 25%</strong></div>
+        <div class="stat-box">Total CDC Payments: <strong>${fmt(cd.totalPaid||0)}</strong></div>`;
+      if(cd.qualifyingChildren){
+        html+=`<table><tr><th>Child Name</th><th>Child ID</th><th style="text-align:right">Amount Paid</th></tr>
+          ${cd.qualifyingChildren.map(ch=>`<tr><td>${ch.name}</td><td>${ch.childId}</td><td style="text-align:right">${fmt(ch.amountPaid)}</td></tr>`).join('')}
+          <tr class="total-row"><td colspan="2">Total</td><td style="text-align:right">${fmt(cd.totalPaid||0)}</td></tr></table>`;
+      }
+    }else{html+=`<div class="doc-note">⚠️ No CDC data for ${cl(c)}.</div>`;}
+    sectionNum++;
+  }
+
+  // ══════════════════════════════════════════════════
+  // 11. FOOD COSTS
+  // ══════════════════════════════════════════════════
+  html+=`<h2 class="page-break">${sectionNum}. Food Costs & Receipts</h2>`;
+  html+=`<div class="stat-box" style="font-size:12px">Monthly Total: <strong>${fmt(fc.total||0)}</strong></div>`;
+  if(fc.receipts?.length>0){
+    html+=`<table><tr><th>Receipt / Invoice</th><th>Vendor</th><th style="text-align:right">Amount</th></tr>
+      ${fc.receipts.map(r=>`<tr><td>${r.filename}</td><td>${r.vendor||''}</td><td style="text-align:right">${fmt(r.amount||0)}</td></tr>`).join('')}
+      <tr class="grand-row"><td colspan="2">Total Food Costs</td><td style="text-align:right">${fmt(fc.total||0)}</td></tr></table>`;
+  }
+  // Uploaded receipt images
+  const receiptDocs=mDocs.filter(d=>d.doc_type==='food_receipt');
+  if(receiptDocs.length>0){
+    html+=`<h4>Uploaded Receipts</h4>`;
+    for(const rd of receiptDocs){
+      if(docImages[rd.id])html+=`<div class="doc-embed"><img src="${docImages[rd.id]}" alt="${rd.filename}" style="max-height:400px"></div>`;
+      else html+=`<div class="doc-note">📄 ${rd.filename} — print separately from Documents tab</div>`;
+    }
+  }
+
+  html+=`<div style="margin-top:30px;text-align:center;color:#718096;font-size:9px;border-top:1px solid #ccc;padding-top:8px">
+    Complete CACFP Documentation Package — The Children's Center, Inc. — Sponsor #990004457<br>
+    ${ML[mk]} ${fyYear(mk)} — Generated ${new Date().toLocaleString()}<br>
+    This document contains uploaded source materials and system-generated analytical reports.
+  </div></body></html>`;
+
   w.document.write(html);w.document.close();
-  setTimeout(()=>w.print(),500);
+  showToast('✅ Complete documentation package ready!','ok');
+  setTimeout(()=>w.print(),1000);
 }
 
 function printMealAttendanceSheet(mk,center){
