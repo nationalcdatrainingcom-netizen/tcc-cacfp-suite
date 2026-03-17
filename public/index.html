@@ -708,15 +708,17 @@ function renderAttendance(){
   document.getElementById('sp-attendance').innerHTML=html;
 }
 
-async function parseAttendanceCSV(mk,center,input){
-  if(!input.files[0])return;
+async function parseAttendanceCSV(mk,center,input,skipUpload){
+  if(!input.files||!input.files[0])return;
   const file=input.files[0];
   const text=await file.text();
   const lines=text.split('\n').map(l=>l.replace(/^\uFEFF/,'')); // strip BOM
 
-  // Upload for storage
-  const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','attendance_csv_'+center);fd.append('metadata',JSON.stringify({center}));
-  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+  // Upload for storage (skip if caller already uploaded)
+  if(!skipUpload){
+    const fd2=new FormData();fd2.append('file',file);fd2.append('fiscal_year_id',activeFY.id);fd2.append('month_key',mk);fd2.append('doc_type','attendance_csv_'+center);fd2.append('metadata',JSON.stringify({center}));
+    try{await api('/api/documents/upload',{method:'POST',body:fd2});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+  }
 
   // Parse header to find day columns
   const headerLine=lines.find(l=>l.startsWith('Classroom,'));
@@ -873,15 +875,17 @@ function renderMeals(){
   document.getElementById('sp-meals').innerHTML=html;
 }
 
-async function parseMealCSV(mk,center,input){
-  if(!input.files[0])return;
+async function parseMealCSV(mk,center,input,skipUpload){
+  if(!input.files||!input.files[0])return;
   const file=input.files[0];
   const text=await file.text();
   const lines=text.split('\n').map(l=>l.replace(/^\uFEFF/,''));
 
-  // Upload for storage
-  const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','meal_counts_csv_'+center);fd.append('metadata',JSON.stringify({center}));
-  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+  // Upload for storage (skip if caller already uploaded)
+  if(!skipUpload){
+    const fd2=new FormData();fd2.append('file',file);fd2.append('fiscal_year_id',activeFY.id);fd2.append('month_key',mk);fd2.append('doc_type','meal_counts_csv_'+center);fd2.append('metadata',JSON.stringify({center}));
+    try{await api('/api/documents/upload',{method:'POST',body:fd2});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+  }
 
   // Find header row with day columns
   const headerIdx=lines.findIndex(l=>l.startsWith('First name,'));
@@ -1044,14 +1048,16 @@ function renderCDC(){
   document.getElementById('sp-cdc').innerHTML=html;
 }
 
-async function parseCDCPDFs(mk,center,input){
+async function parseCDCPDFs(mk,center,input,skipUpload){
   if(!input.files||input.files.length===0)return;
   const files=Array.from(input.files);
 
-  // Upload all files for storage
-  for(const file of files){
-    const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','cdc_statement_'+center);fd.append('metadata',JSON.stringify({center}));
-    try{await api('/api/documents/upload',{method:'POST',body:fd});}catch(e){}
+  // Upload all files for storage (skip if caller already uploaded)
+  if(!skipUpload){
+    for(const file of files){
+      const fd3=new FormData();fd3.append('file',file);fd3.append('fiscal_year_id',activeFY.id);fd3.append('month_key',mk);fd3.append('doc_type','cdc_statement_'+center);fd3.append('metadata',JSON.stringify({center}));
+      try{await api('/api/documents/upload',{method:'POST',body:fd3});}catch(e){}
+    }
   }
   documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
 
@@ -2138,9 +2144,12 @@ async function wizUploadFile(input){
   const stepId=step.id;
 
   if(stepId.startsWith('wiz_attendance_')){
-    // Create a fake input element with the file to pass to parser
+    // Upload first, then parse
+    const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type','attendance_csv_'+center);fd.append('metadata',JSON.stringify({center}));
+    try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+    // Now parse (skipUpload=true since we just uploaded)
     const fakeInput={files:[file]};
-    await parseAttendanceCSV(wizMonthKey,center,fakeInput);
+    await parseAttendanceCSV(wizMonthKey,center,fakeInput,true);
     document.getElementById('wiz-upload-zone').classList.add('done');
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
     const d=(monthlyDataCache[wizMonthKey+'_attendance']||{})[center]||{};
@@ -2150,8 +2159,12 @@ async function wizUploadFile(input){
   }
 
   if(stepId.startsWith('wiz_mealcounts_')){
+    // Upload first, then parse
+    const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type','meal_counts_csv_'+center);fd.append('metadata',JSON.stringify({center}));
+    try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+    // Now parse
     const fakeInput={files:[file]};
-    await parseMealCSV(wizMonthKey,center,fakeInput);
+    await parseMealCSV(wizMonthKey,center,fakeInput,true);
     document.getElementById('wiz-upload-zone').classList.add('done');
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
     const d=(monthlyDataCache[wizMonthKey+'_meals']||{})[center]||{};
@@ -2161,8 +2174,12 @@ async function wizUploadFile(input){
   }
 
   if(stepId.startsWith('wiz_cdc_')){
+    // Upload first, then parse
+    const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type','cdc_statement_'+center);fd.append('metadata',JSON.stringify({center}));
+    try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+    // Now parse
     const fakeInput={files:[file]};
-    await parseCDCPDFs(wizMonthKey,center,fakeInput);
+    await parseCDCPDFs(wizMonthKey,center,fakeInput,true);
     document.getElementById('wiz-upload-zone').classList.add('done');
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
     const d=(monthlyDataCache[wizMonthKey+'_cdc']||{})[center]||{};
