@@ -486,21 +486,35 @@ function renderDashboard(){
     <div class="stat-card ${fb>=0?'green':'red'}"><div class="stat-label">Est. Fund Balance</div><div class="stat-val">${fb<0?'-':''}${fmt(fb)}</div></div>`;
 
   let progHtml='<div class="month-bar">';
-  for(const m of MO){const has=salaryTotals.some(r=>r.month_key===m)||Object.keys(monthlyDataCache).some(k=>k.startsWith(m+'_'));
-    progHtml+=`<div class="month-btn ${has?'has-data':''}" style="cursor:default">${ML[m].slice(0,3)}</div>`;}
-  progHtml+='</div><p style="font-size:.85rem;color:var(--muted);margin-top:12px">'+mr+' of 12 months with staff data</p>';
+  const claimedCount=MO.filter(m=>(monthlyDataCache[m+'_claimed']||{}).claimed).length;
+  for(const m of MO){
+    const claimed=(monthlyDataCache[m+'_claimed']||{}).claimed;
+    const hasAny=salaryTotals.some(r=>r.month_key===m)||Object.keys(monthlyDataCache).some(k=>k.startsWith(m+'_'));
+    progHtml+=`<div class="month-btn ${claimed?'has-data':hasAny?'partial':''}" style="cursor:default${hasAny&&!claimed?';border-color:var(--gold)':''}">${ML[m].slice(0,3)}</div>`;}
+  progHtml+=`</div><p style="font-size:.85rem;color:var(--muted);margin-top:12px">${claimedCount} of 12 months claimed</p>`;
   document.getElementById('dashProgress').innerHTML=progHtml;
+
+  // YER Checklist — items require ALL 12 months, not just any
+  const allMonthsHaveStaff=MO.every(m=>salaryTotals.some(r=>r.month_key===m&&(parseFloat(r.food_service_cost)||0)>0));
+  const allMonthsHaveTimeForms=MO.every(m=>['niles','peace'].every(c=>documents.some(d=>(d.doc_type?.startsWith('time_distribution_fs')||d.doc_type?.startsWith('batch_time_forms'))&&d.month_key===m&&d.metadata?.center===c)));
+  const allMonthsHaveAttendance=MO.every(m=>{const att=monthlyDataCache[m+'_attendance']||{};return att.niles?.enrolled>0&&att.peace?.enrolled>0;});
+  const allMonthsHaveMeals=MO.every(m=>{const meals=monthlyDataCache[m+'_meals']||{};return (meals.niles?.children?.length>0||parseInt(meals.niles?.breakfast_A||0)>0)&&(meals.peace?.children?.length>0||parseInt(meals.peace?.breakfast_A||0)>0);});
+  const allMonthsHaveCDC=MO.every(m=>{const cdc=monthlyDataCache[m+'_cdc']||{};return (cdc.niles?.qualifying||0)>0&&(cdc.peace?.qualifying||0)>0;});
+  const allMonthsHaveFood=MO.every(m=>(monthlyDataCache[m+'_foodcosts']||{}).total>0);
+  const allMonthsClaimed=MO.every(m=>(monthlyDataCache[m+'_claimed']||{}).claimed);
 
   const checks=[
     {label:'Staff roster populated',done:staffList.length>0,tag:'YER'},
-    {label:'Time distribution forms uploaded',done:documents.some(d=>d.doc_type?.startsWith('time_distribution')),tag:'Audit'},
-    {label:'Monthly salary totals (all 12)',done:salaryTotals.length>=12,tag:'YER'},
-    {label:'CACFP reimbursement entered',done:cr>0,tag:'YER'},
-    {label:'Food cost entered',done:fc>0,tag:'YER'},
+    {label:'Time distribution forms uploaded (all 12 months, both centers)',done:allMonthsHaveTimeForms,tag:'Audit'},
+    {label:'Monthly salary totals — all 12 months',done:allMonthsHaveStaff,tag:'YER'},
+    {label:'Attendance data — all 12 months, both centers',done:allMonthsHaveAttendance,tag:'Claim'},
+    {label:'Meal counts — all 12 months, both centers',done:allMonthsHaveMeals,tag:'Claim'},
+    {label:'CDC eligibility — all 12 months, both centers',done:allMonthsHaveCDC,tag:'Claim'},
+    {label:'Food costs — all 12 months',done:allMonthsHaveFood,tag:'YER'},
+    {label:'All 12 months claimed',done:allMonthsClaimed,tag:'Claim'},
+    {label:'CACFP reimbursement entered (YER)',done:cr>0,tag:'YER'},
+    {label:'Food cost entered (YER)',done:fc>0,tag:'YER'},
     {label:'Revenue documented (B & C meals)',done:revenueEntries.length>0,tag:'YER (new)'},
-    {label:'Attendance data entered',done:Object.keys(monthlyDataCache).some(k=>k.includes('_attendance')),tag:'Claim'},
-    {label:'Meal counts entered',done:Object.keys(monthlyDataCache).some(k=>k.includes('_meals')),tag:'Claim'},
-    {label:'CDC eligibility uploaded',done:Object.keys(monthlyDataCache).some(k=>k.includes('_cdc')),tag:'Claim'},
     {label:'Sponsor Application uploaded',done:programDocs.some(d=>d.doc_type==='application'),tag:'Program'},
     {label:'MDE Approval Email uploaded',done:programDocs.some(d=>d.doc_type==='approval_email'),tag:'Program'},
   ];
@@ -817,9 +831,13 @@ function renderMeals(){
           }).join('')}
           </div></details>`;
       }
-      html+=`<p style="margin-top:8px;font-size:.75rem;color:var(--muted)">*PM Snacks excluded (✗) on days where 3 meals already served. Max 3 meals/snacks per child per day for CACFP reimbursement.</p>`;}
+      html+=`<p style="margin-top:8px;font-size:.75rem;color:var(--muted)">*PM Snacks excluded (✗) on days where 3 meals already served. Max 3 meals/snacks per child per day for CACFP reimbursement.</p>`;
 
-    html+='</div></div>';
+      // Printable CSV-style reproduction button
+      if(d.dayLabels&&d.children[0]?.dailyDetail){
+        html+=`<div style="margin-top:12px"><button class="btn btn-sm btn-primary" onclick="printMealAttendanceSheet('${m}','${c}')">🖨️ Print Meal Attendance Sheet — ${cLabel} (original format with crossed-off meals)</button></div>`;
+      }
+    }
   }
 
   // Combined totals and revenue
@@ -1586,6 +1604,115 @@ function printMonthlyPackage(mk){
     <p>Meal Reimbursement: $${(cl2.meal_reimbursement||0).toFixed(2)} | CIL: $${(cl2.cash_in_lieu||0).toFixed(2)} | Total: $${(cl2.total_reimbursement||0).toFixed(2)}</p></div>`;
 
   html+=`</body></html>`;
+  w.document.write(html);w.document.close();
+  setTimeout(()=>w.print(),500);
+}
+
+function printMealAttendanceSheet(mk,center){
+  const d=(monthlyDataCache[mk+'_meals']||{})[center];
+  if(!d||!d.children||!d.dayLabels)return showToast('No meal data to print','err');
+  const cLabel=cl(center);
+  const shortDays=d.dayLabels.map(dl=>{const p=dl.split(' ');return p.length>=2?p[0].slice(0,3)+' '+p[p.length-1]:dl;});
+
+  const w=window.open('','_blank','width=1200,height=800');
+  let html=`<!DOCTYPE html><html><head><title>Meal Attendance — ${cLabel} — ${ML[mk]} ${fyYear(mk)}</title>
+    <style>
+      body{font-family:Arial,sans-serif;font-size:9px;padding:10px;color:#333}
+      h1{font-size:14px;text-align:center;margin-bottom:2px}
+      h2{font-size:11px;text-align:center;color:#666;margin-bottom:10px}
+      table{border-collapse:collapse;width:100%;margin-bottom:6px}
+      th,td{border:1px solid #ccc;padding:2px 3px;text-align:center;font-size:8px}
+      th{background:#1B2A4A;color:#fff;font-weight:600}
+      .name-cell{text-align:left;font-weight:600;padding-left:6px;white-space:nowrap;background:#f8f8f8}
+      .meal-label{text-align:left;padding-left:12px;font-size:7px;color:#666}
+      .counted{background:#e8f5e9;color:#2e7d32}
+      .excluded{background:#ffebee;color:#c62828;font-weight:700;text-decoration:line-through}
+      .not-served{color:#ddd}
+      .total-col{background:#f0f0f0;font-weight:700}
+      .cat-a{color:#2D7D46}.cat-b{color:#C5972C}.cat-c{color:#C0392B}
+      .child-header{background:#e3e8f0}
+      .summary-row{background:#1B2A4A;color:#fff;font-weight:700}
+      @media print{body{padding:5px;font-size:8px}th,td{font-size:7px;padding:1px 2px}}
+    </style></head><body>`;
+
+  html+=`<h1>The Children's Center — ${cLabel}</h1>
+    <h2>CACFP Meal Attendance — ${ML[mk]} ${fyYear(mk)} — 3-Meal Rule Applied</h2>
+    <p style="font-size:8px;color:#666;text-align:center;margin-bottom:8px">
+      ✓ = meal served &amp; counted | <span style="color:#c62828;text-decoration:line-through">✗</span> = 4th meal excluded (3-meal rule) | blank = not served
+      <br>Sponsor #990004457 | Generated ${new Date().toLocaleDateString()}
+    </p>`;
+
+  // Build the full table — one row per child per meal type
+  html+=`<table><thead><tr>
+    <th style="text-align:left;min-width:120px">Child</th>
+    <th style="min-width:30px">Cat</th>
+    <th style="text-align:left;min-width:50px">Meal</th>
+    ${shortDays.map(dl=>`<th style="min-width:22px;font-size:6px">${dl}</th>`).join('')}
+    <th style="min-width:28px">Total</th>
+  </tr></thead><tbody>`;
+
+  const mealLabels=['Bkfst','AM Snk','Lunch','PM Snk'];
+  const mealKeys=['bk','am','ln','pm'];
+  let grandTotals={bk:0,am:0,ln:0,pm:0};
+  let catTotals={A:{bk:0,am:0,ln:0,pm:0},B:{bk:0,am:0,ln:0,pm:0},C:{bk:0,am:0,ln:0,pm:0}};
+
+  for(const ch of d.children){
+    if(!ch.dailyDetail)continue;
+    const counts={bk:ch.breakfast,am:ch.amSnack,ln:ch.lunch,pm:ch.pmSnack};
+
+    for(let mi=0;mi<4;mi++){
+      const mk2=mealKeys[mi];
+      const isFirst=mi===0;
+      html+=`<tr${isFirst?' class="child-header"':''}>`;
+      if(isFirst){
+        html+=`<td class="name-cell" rowspan="4">${ch.name}</td>
+          <td rowspan="4" class="${ch.cat==='A'?'cat-a':ch.cat==='B'?'cat-b':'cat-c'}" style="font-weight:700">${ch.cat}</td>`;
+      }
+      html+=`<td class="meal-label">${mealLabels[mi]}</td>`;
+
+      let rowCount=0;
+      for(const dd of ch.dailyDetail){
+        if(mk2==='pm'){
+          if(dd.pmX){html+=`<td class="excluded">✗</td>`;} // crossed off
+          else if(dd.pm){html+=`<td class="counted">✓</td>`;rowCount++;}
+          else{html+=`<td class="not-served"></td>`;}
+        }else{
+          const served=dd[mk2];
+          if(served){html+=`<td class="counted">✓</td>`;rowCount++;}
+          else{html+=`<td class="not-served"></td>`;}
+        }
+      }
+
+      const total=mk2==='pm'?ch.pmSnack:counts[mk2];
+      html+=`<td class="total-col">${total}</td></tr>`;
+      grandTotals[mk2]+=total;
+      catTotals[ch.cat][mk2]+=total;
+    }
+  }
+
+  // Summary rows
+  html+=`<tr class="summary-row"><td colspan="3" style="text-align:left;padding-left:6px">TOTAL CLAIMABLE MEALS</td>
+    ${shortDays.map(()=>`<td></td>`).join('')}
+    <td></td></tr>`;
+  for(const cat of ['A','B','C']){
+    const ct=catTotals[cat];
+    const catLabel=cat==='A'?'Cat A (Free)':cat==='B'?'Cat B (Reduced)':'Cat C (Paid)';
+    html+=`<tr style="background:#f0f0f0;font-weight:600"><td colspan="2" style="text-align:left;padding-left:6px">${catLabel}</td>
+      <td>Bkfst</td>${shortDays.map(()=>'<td></td>').join('')}<td class="total-col">${ct.bk}</td></tr>
+      <tr style="background:#f0f0f0"><td colspan="2"></td><td>Lunch</td>${shortDays.map(()=>'<td></td>').join('')}<td class="total-col">${ct.ln}</td></tr>
+      <tr style="background:#f0f0f0"><td colspan="2"></td><td>Snack</td>${shortDays.map(()=>'<td></td>').join('')}<td class="total-col">${ct.am+ct.pm}</td></tr>`;
+  }
+
+  const totalMeals=grandTotals.bk+grandTotals.am+grandTotals.ln+grandTotals.pm;
+  html+=`<tr class="summary-row"><td colspan="2" style="text-align:left;padding-left:6px">GRAND TOTAL</td>
+    <td></td>${shortDays.map(()=>'<td></td>').join('')}<td>${totalMeals}</td></tr>`;
+
+  if(d.excluded4thMeal){
+    html+=`<tr><td colspan="${shortDays.length+4}" style="text-align:left;padding:6px;color:#c62828;font-size:9px">
+      ⚠️ ${d.excluded4thMeal} PM snacks excluded by the 3-meal rule (max 3 meals/snacks per child per day for CACFP reimbursement)</td></tr>`;
+  }
+
+  html+=`</tbody></table></body></html>`;
   w.document.write(html);w.document.close();
   setTimeout(()=>w.print(),500);
 }
