@@ -1153,10 +1153,10 @@ function renderFoodCosts(){
   const total=receipts.reduce((s,r)=>s+(parseFloat(r.amount)||0),0)||(parseFloat(data.total)||0);
 
   let html=`<div class="card"><div class="card-hdr"><h3>🧾 Food Costs — ${ML[m]} ${fyYear(m)}</h3><span class="badge">${fmt(total)}</span></div><div class="card-body">
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Upload food vendor receipts (JA Foods, Amazon, Sam's Club, grocery stores, etc.). Each receipt total is extracted and added to the monthly total.</p>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Upload food vendor receipts & invoices (JA Foods, Amazon, Sam's Club, grocery stores, etc.). Each receipt total is extracted and added to the monthly total.</p>
     <div class="upload-zone" id="fc-uz">
       <input type="file" accept=".pdf,.png,.jpg,.jpeg" multiple onchange="uploadFoodReceipts('${m}',this)">
-      <div class="uz-icon">🧾</div><div class="uz-label">Upload receipts (select multiple)</div>
+      <div class="uz-icon">🧾</div><div class="uz-label">Upload receipts & invoices (select multiple)</div>
     </div>`;
 
   if(receipts.length>0){
@@ -1188,13 +1188,36 @@ async function uploadFoodReceipts(mk,input){
     const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','food_receipt');
     try{await api('/api/documents/upload',{method:'POST',body:fd});}catch(e){continue;}
 
-    // OCR for total if image
-    let extractedAmount=0;
-    if(file.type.startsWith('image/')||file.name.match(/\.(png|jpg|jpeg)$/i)){
-      try{const worker=await Tesseract.createWorker('eng');const{data:ocrData}=await worker.recognize(file);await worker.terminate();
-        extractedAmount=extractReceiptTotal(ocrData.text);}catch(e){}
+    let extractedAmount=0,extractedVendor='',extractionText='';
+
+    // PDF — use pdf.js text extraction (works for digital invoices like JA Foods)
+    if(file.name.toLowerCase().endsWith('.pdf')){
+      try{
+        const buf=await file.arrayBuffer();
+        const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+        let fullText='';
+        for(let p=1;p<=pdf.numPages;p++){
+          const page=await pdf.getPage(p);
+          const tc=await page.getTextContent();
+          fullText+=tc.items.map(i=>i.str).join(' ')+'\n';
+        }
+        extractionText=fullText;
+        extractedAmount=extractReceiptTotal(fullText);
+        extractedVendor=extractVendorName(fullText,file.name);
+      }catch(e){console.error('PDF extract error:',e);}
     }
-    data.receipts.push({filename:file.name,amount:extractedAmount,vendor:'',uploadedAt:new Date().toISOString()});
+    // Images — use Tesseract OCR
+    else if(file.type.startsWith('image/')||file.name.match(/\.(png|jpg|jpeg)$/i)){
+      try{
+        const worker=await Tesseract.createWorker('eng');
+        const{data:ocrData}=await worker.recognize(file);await worker.terminate();
+        extractionText=ocrData.text;
+        extractedAmount=extractReceiptTotal(ocrData.text);
+        extractedVendor=extractVendorName(ocrData.text,file.name);
+      }catch(e){}
+    }
+
+    data.receipts.push({filename:file.name,amount:extractedAmount,vendor:extractedVendor,uploadedAt:new Date().toISOString()});
   }
 
   // Recalculate total
@@ -1203,7 +1226,7 @@ async function uploadFoodReceipts(mk,input){
   documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
   try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'foodcosts',data}});}catch(e){}
   renderFoodCosts();
-  showToast(`✅ ${input.files.length} receipt(s) added!`,'ok');
+  showToast(`✅ ${input.files.length} receipt(s)/invoice(s) added!`,'ok');
 }
 
 function updateReceipt(mk,idx,field,val){
@@ -2548,25 +2571,27 @@ async function wizUploadReceipts(input){
     const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type','food_receipt');
     try{await api('/api/documents/upload',{method:'POST',body:fd});}catch(e){wizReceiptItems.push({name:file.name,total:0,status:'upload_failed'});continue;}
 
-    // Try OCR to extract total
-    let extractedTotal=0,status='scanned';
-    if(file.type.startsWith('image/')||file.name.match(/\.(png|jpg|jpeg)$/i)){
+    // Try to extract total and vendor
+    let extractedTotal=0,status='scanned',extractedVendor='';
+    if(file.name.toLowerCase().endsWith('.pdf')){
+      try{
+        const buf=await file.arrayBuffer();const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+        let fullText='';
+        for(let p=1;p<=pdf.numPages;p++){
+          const page=await pdf.getPage(p);
+          const tc=await page.getTextContent();
+          fullText+=tc.items.map(i=>i.str).join(' ')+'\n';
+        }
+        extractedTotal=extractReceiptTotal(fullText);
+        extractedVendor=extractVendorName(fullText,file.name);
+        if(extractedTotal===0)status='no_total';
+      }catch(e){status='ocr_failed';}
+    }else if(file.type.startsWith('image/')||file.name.match(/\.(png|jpg|jpeg)$/i)){
       try{
         const worker=await Tesseract.createWorker('eng');
         const{data}=await worker.recognize(file);await worker.terminate();
         extractedTotal=extractReceiptTotal(data.text);
-        if(extractedTotal===0)status='no_total';
-      }catch(e){status='ocr_failed';}
-    }else if(file.name.toLowerCase().endsWith('.pdf')){
-      try{
-        const buf=await file.arrayBuffer();const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-        // Scan first page for total
-        const pg=await pdf.getPage(1);const vp=pg.getViewport({scale:2});
-        const cvs=document.createElement('canvas');cvs.width=vp.width;cvs.height=vp.height;
-        await pg.render({canvasContext:cvs.getContext('2d'),viewport:vp}).promise;
-        const worker=await Tesseract.createWorker('eng');
-        const{data}=await worker.recognize(cvs);await worker.terminate();
-        extractedTotal=extractReceiptTotal(data.text);
+        extractedVendor=extractVendorName(data.text,file.name);
         if(extractedTotal===0)status='no_total';
       }catch(e){status='ocr_failed';}
     }else{status='manual';}
@@ -2589,17 +2614,63 @@ async function wizUploadReceipts(input){
 }
 
 function extractReceiptTotal(text){
-  // Look for total/grand total/amount due patterns
   const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
   let best=0;
+  // Pass 1: Look for labeled totals (Total, Balance Due, Amount Due, Grand Total, etc.)
   for(const line of lines){
-    const totalMatch=line.match(/(?:total|amount\s*due|grand\s*total|balance\s*due|total\s*paid|order\s*total)[:\s]*\$?\s*(\d{1,6}[.,]\d{2})/i);
-    if(totalMatch){const val=parseFloat(totalMatch[1].replace(',',''));if(val>best)best=val;}
+    // Match "Total $1,353.03" or "Balance Due $1,353.03" patterns
+    const totalMatch=line.match(/(?:balance\s*due|total\s*due|amount\s*due|grand\s*total|net\s*total|total\s*paid|order\s*total|(?:^|\s)total)[\s:]*\$?\s*([\d,]+\.\d{2})/i);
+    if(totalMatch){const val=parseFloat(totalMatch[1].replace(/,/g,''));if(val>best)best=val;}
   }
-  // Fallback: find largest dollar amount
-  if(best===0){const amounts=text.match(/\$\s*(\d{1,6}\.\d{2})/g);
-    if(amounts){for(const a of amounts){const v=parseFloat(a.replace(/[$\s,]/g,''));if(v>best&&v<50000)best=v;}}}
+  // Pass 2: Look for dollar amounts with $ sign
+  if(best===0){
+    const amounts=[...text.matchAll(/\$\s*([\d,]+\.\d{2})/g)].map(m=>parseFloat(m[1].replace(/,/g,'')));
+    // Take the largest amount (likely the total)
+    for(const a of amounts){if(a>best&&a<100000)best=a;}
+  }
+  // Pass 3: Look for standalone large numbers near "total" or "balance"
+  if(best===0){
+    const nearTotal=text.match(/(?:total|balance|due|amount)[^$\d]{0,20}([\d,]+\.\d{2})/gi);
+    if(nearTotal){
+      for(const m of nearTotal){const nums=m.match(/([\d,]+\.\d{2})/);if(nums){const v=parseFloat(nums[1].replace(/,/g,''));if(v>best)best=v;}}
+    }
+  }
   return Math.round(best*100)/100;
+}
+
+function extractVendorName(text,filename){
+  // Try to detect vendor from known patterns
+  const knownVendors=[
+    {pattern:/JA\s*Food\s*(?:service)?|J\s*&\s*R\s*Packaging/i,name:'JA Foodservice'},
+    {pattern:/Amazon|AMZN/i,name:'Amazon'},
+    {pattern:/Sam'?s\s*Club|SAMS\s*CLUB/i,name:"Sam's Club"},
+    {pattern:/Walmart|WAL-?MART/i,name:'Walmart'},
+    {pattern:/Costco/i,name:'Costco'},
+    {pattern:/Aldi|ALDI/i,name:'Aldi'},
+    {pattern:/Meijer/i,name:'Meijer'},
+    {pattern:/Kroger/i,name:'Kroger'},
+    {pattern:/GFS|Gordon\s*Food/i,name:'Gordon Food Service'},
+    {pattern:/Sysco/i,name:'Sysco'},
+    {pattern:/US\s*Foods|USFoods/i,name:'US Foods'},
+    {pattern:/Dollar\s*(?:Tree|General)/i,name:'Dollar Store'},
+    {pattern:/Target/i,name:'Target'},
+    {pattern:/Save-?A-?Lot/i,name:'Save-A-Lot'},
+    {pattern:/Food\s*(?:Lion|4\s*Less)/i,name:'Food Lion'},
+    {pattern:/Piggly/i,name:'Piggly Wiggly'},
+    {pattern:/Martin'?s/i,name:"Martin's"},
+    {pattern:/Harding'?s/i,name:"Harding's"},
+  ];
+  for(const v of knownVendors){
+    if(text.match(v.pattern))return v.name;
+  }
+  // Try from filename
+  for(const v of knownVendors){
+    if(filename.match(v.pattern))return v.name;
+  }
+  // Try to find "Bill To" / "Ship To" or company name at top
+  const billFrom=text.match(/(?:from|sold\s*by|vendor|company)[:\s]+([A-Z][A-Za-z\s&'.]+?)(?:\n|,|\d)/i);
+  if(billFrom)return billFrom[1].trim().substring(0,30);
+  return '';
 }
 
 function renderReceiptList(){
