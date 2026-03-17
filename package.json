@@ -1,7 +1,7 @@
 {
   "name": "tcc-cacfp-suite",
-  "version": "3.0.0",
-  "description": "TCC CACFP Management Suite v3",
+  "version": "4.0.0",
+  "description": "TCC CACFP Management Suite v4 — Staff Time Distribution OCR, Revenue Tracking, Multi-Year",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "dependencies": {
