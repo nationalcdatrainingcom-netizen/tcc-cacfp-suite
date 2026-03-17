@@ -887,7 +887,6 @@ async function saveBatchResults(center,monthKey){
   let saved=0,errors=0;
   for(const r of batchResults){
     if(!r.matchedStaffId||r.matchedStaffId==='')continue;
-    // If "NEW", create staff
     if(r.matchedStaffId==='NEW'&&r.name){
       try{const newS=await api('/api/staff',{method:'POST',body:{name:r.name,center,hourly_rate:r.hourlyRate||0}});r.matchedStaffId=newS.id;}catch(e){errors++;continue;}
     }
@@ -896,26 +895,34 @@ async function saveBatchResults(center,monthKey){
     catch(e){errors++;}
   }
   staffList=await api('/api/staff');await reloadTime();
-  closeWizard();renderStaffCosts();renderDashboard();
+  batchResults=[];
   showToast(`✅ ${saved} staff entries saved${errors>0?', '+errors+' errors':''}!`,'ok');
+  // Advance to next wizard step instead of closing
+  wizStep++;
+  if(wizStep>=WIZ_STEPS.length){closeWizard();renderStaffCosts();renderDashboard();showToast('🪄 Monthly wizard complete!','ok');return;}
+  document.getElementById('wizBack').style.display='';document.getElementById('wizNext').style.display='';
+  renderWizStep();
 }
 
 // ═══════════════════════════════════════════════════
 // MONTHLY UPLOAD WIZARD
 // ═══════════════════════════════════════════════════
 const WIZ_STEPS=[
-  {id:'wiz_timeforms_fs',label:'Food Service Time Forms',icon:'📄',desc:'Upload the batch PDF of food service Time & Attendance forms (one page per employee). The app will scan each page, extract names and hours, and auto-match to your staff roster.',accept:'.pdf',docType:'batch_time_forms_fs'},
-  {id:'wiz_timeforms_admin',label:'Admin Time Forms',icon:'📄',desc:'Upload the batch PDF of administrative Time & Attendance forms (if applicable this month).',accept:'.pdf,.png,.jpg,.jpeg',docType:'batch_time_forms_admin'},
-  {id:'wiz_attendance',label:'Attendance Report',icon:'📊',desc:'Upload the monthly attendance CSV or enter attendance figures.',accept:'.csv',docType:'attendance_csv'},
-  {id:'wiz_mealcounts',label:'Meal Count Report',icon:'🍽️',desc:'Upload CACFP Detailed meal count CSV or enter meal counts by category.',accept:'.csv',docType:'meal_counts_csv'},
-  {id:'wiz_cdc',label:'CDC Statement',icon:'🏥',desc:'Upload the CDC statement(s) for this month to calculate eligibility percentages.',accept:'.pdf,.png,.jpg',docType:'cdc_statement'},
-  {id:'wiz_foodcost',label:'Food Receipts/Invoices',icon:'🧾',desc:'Upload food cost receipts or invoices for this month.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts'},
-  {id:'wiz_claims',label:'CACFP Claims Listing',icon:'📸',desc:'Upload the Claims Listing screenshot from MIND after certifying the claim.',accept:'.pdf,.png,.jpg,.jpeg',docType:'claims_listing'},
+  {id:'wiz_timeforms_fs_niles',label:'Food Service Time Forms — Niles',icon:'📄',center:'niles',desc:'Upload the batch PDF of Niles food service Time & Attendance forms (one page per employee). The app will scan each page, extract names and hours, and auto-match to your Niles staff roster.',accept:'.pdf',docType:'batch_time_forms_fs_niles',isBatchOCR:true},
+  {id:'wiz_timeforms_fs_peace',label:'Food Service Time Forms — Peace Blvd',icon:'📄',center:'peace',desc:'Upload the batch PDF of Peace Boulevard food service Time & Attendance forms (one page per employee).',accept:'.pdf',docType:'batch_time_forms_fs_peace',isBatchOCR:true},
+  {id:'wiz_timeforms_admin',label:'Admin Time Distribution (Both Locations)',icon:'📄',center:'both',desc:'Upload the administrative Time & Attendance form for the CACFP coordinator. This covers admin time for both Niles and Peace Boulevard.',accept:'.pdf,.png,.jpg,.jpeg',docType:'time_distribution_admin'},
+  {id:'wiz_attendance_niles',label:'Attendance Report — Niles',icon:'📊',center:'niles',desc:'Upload the Niles monthly attendance CSV or enter attendance figures.',accept:'.csv',docType:'attendance_csv_niles'},
+  {id:'wiz_attendance_peace',label:'Attendance Report — Peace Blvd',icon:'📊',center:'peace',desc:'Upload the Peace Boulevard monthly attendance CSV or enter attendance figures.',accept:'.csv',docType:'attendance_csv_peace'},
+  {id:'wiz_mealcounts_niles',label:'Meal Count Report — Niles',icon:'🍽️',center:'niles',desc:'Upload the Niles CACFP Detailed meal count CSV or enter meal counts by category.',accept:'.csv',docType:'meal_counts_csv_niles'},
+  {id:'wiz_mealcounts_peace',label:'Meal Count Report — Peace Blvd',icon:'🍽️',center:'peace',desc:'Upload the Peace Boulevard CACFP Detailed meal count CSV or enter meal counts by category.',accept:'.csv',docType:'meal_counts_csv_peace'},
+  {id:'wiz_cdc_niles',label:'CDC Statement — Niles',icon:'🏥',center:'niles',desc:'Upload the Niles CDC statement for this month to calculate eligibility percentage.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_niles'},
+  {id:'wiz_cdc_peace',label:'CDC Statement — Peace Blvd',icon:'🏥',center:'peace',desc:'Upload the Peace Boulevard CDC statement for this month.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_peace'},
+  {id:'wiz_foodcost',label:'Food Receipts & Invoices (All Locations)',icon:'🧾',center:'both',desc:'Upload all food vendor receipts and invoices for this month. Include receipts from JA Foods, Amazon, Sam\'s Club, grocery stores, and any other food suppliers. You can upload multiple files — each receipt total will be extracted and added to the monthly food cost.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts',isMultiUpload:true},
 ];
-let wizStep=0,wizMonthKey=null;
+let wizStep=0,wizMonthKey=null,wizReceiptTotal=0,wizReceiptItems=[];
 
 function startWizard(){
-  wizStep=0;wizMonthKey=currentMonth;
+  wizStep=0;wizMonthKey=currentMonth;wizReceiptTotal=0;wizReceiptItems=[];
   document.getElementById('wizTitle').textContent='🪄 Monthly Upload Wizard — '+ML[wizMonthKey]+' '+fyYear(wizMonthKey);
   renderWizStep();
   document.getElementById('wizardOverlay').classList.add('show');
@@ -924,7 +931,6 @@ function startWizard(){
 function renderWizStep(){
   const step=WIZ_STEPS[wizStep];
   const total=WIZ_STEPS.length;
-  // Progress
   document.getElementById('wizProgress').innerHTML=WIZ_STEPS.map((_,i)=>
     `<div class="wiz-step ${i<wizStep?'done':i===wizStep?'current':''}"></div>`).join('');
   document.getElementById('wizStepLabel').textContent=`Step ${wizStep+1} of ${total}`;
@@ -933,6 +939,28 @@ function renderWizStep(){
   document.getElementById('wizNext').textContent=wizStep===total-1?'✅ Finish':'Next →';
 
   const existing=documents.some(d=>d.doc_type===step.docType&&d.month_key===wizMonthKey);
+
+  // Multi-upload receipts step
+  if(step.isMultiUpload){
+    document.getElementById('wizBody').innerHTML=`
+      <div style="text-align:center;margin-bottom:20px"><span style="font-size:3rem">${step.icon}</span>
+        <h3 style="margin-top:8px">${step.label}</h3>
+        <p style="color:var(--muted);font-size:.9rem;margin-top:8px;max-width:550px;margin-left:auto;margin-right:auto">${step.desc}</p>
+      </div>
+      <div class="upload-zone" id="wiz-upload-zone" style="max-width:400px;margin:0 auto">
+        <input type="file" accept="${step.accept}" multiple onchange="wizUploadReceipts(this)">
+        <div class="uz-icon">${step.icon}</div>
+        <div class="uz-label">Click to upload receipts (select multiple)</div>
+        <div class="uz-file" id="wiz-upload-status"></div>
+      </div>
+      <div id="wizExtraContent">
+        <div id="wizReceiptList" style="margin-top:16px"></div>
+        ${wizReceiptItems.length>0?renderReceiptList():''}
+      </div>
+      <p style="font-size:.8rem;color:var(--muted);text-align:center;margin-top:12px">Upload as many receipts as needed. Each will be scanned for the total. Click Next when done.</p>`;
+    return;
+  }
+
   document.getElementById('wizBody').innerHTML=`
     <div style="text-align:center;margin-bottom:20px"><span style="font-size:3rem">${step.icon}</span>
       <h3 style="margin-top:8px">${step.label}</h3>
@@ -952,17 +980,19 @@ async function wizUploadFile(input){
   if(!input.files[0])return;
   const step=WIZ_STEPS[wizStep];
   const file=input.files[0];
+  const center=step.center||'niles';
   document.getElementById('wiz-upload-status').textContent='⏳ Uploading...';
 
   // Upload document
   const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type',step.docType);
+  if(center!=='both')fd.append('metadata',JSON.stringify({center}));
   try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){showToast('Upload failed','err');return;}
 
   document.getElementById('wiz-upload-zone').classList.add('done');
   document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' uploaded!';
 
   // Special processing for batch Time forms
-  if(step.id==='wiz_timeforms_fs'&&file.name.endsWith('.pdf')){
+  if(step.isBatchOCR&&file.name.toLowerCase().endsWith('.pdf')){
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' saved — now scanning pages...';
     document.getElementById('wizExtraContent').innerHTML='<div class="alert alert-warn" style="margin-top:16px"><span>⏳</span><div>Scanning '+file.name+'... This may take 1-2 minutes for large PDFs.</div></div>';
     try{
@@ -976,12 +1006,13 @@ async function wizUploadFile(input){
         const worker=await Tesseract.createWorker('eng');
         const{data}=await worker.recognize(cvs);await worker.terminate();
         const ext=parseTimeAttendancePage(data.text);ext.pageNum=i;ext.rawText=data.text;
-        const centerStaff=staffList.filter(s=>s.center==='niles'); // Default to niles for wizard
+        const centerStaff=staffList.filter(s=>s.center===center);
         if(ext.name){const match=centerStaff.find(s=>s.name.toLowerCase().includes(ext.name.toLowerCase())||ext.name.toLowerCase().includes((s.name.split(' ')[1]||'ZZZ').toLowerCase()));
           if(match){ext.matchedStaffId=match.id;ext.matchedName=match.name;ext.status='matched';}else ext.status='unrecognized';}
         else ext.status='no_name';
         ext.alerts=[];
-        if(data.confidence<60)ext.alerts.push('Possible missing signature or low quality');
+        if(!data.text.match(/signature|signed/i)&&data.confidence<55)ext.alerts.push('Possible missing signature');
+        if(data.confidence<40)ext.alerts.push('Low quality — may be unreadable');
         if(ext.totalCACFP_FS===null&&ext.totalHours===null)ext.alerts.push('Could not extract hours');
         batchResults.push(ext);
       }
@@ -995,10 +1026,111 @@ async function wizUploadFile(input){
   showToast('✅ '+step.label+' uploaded!','ok');
 }
 
+// Receipt multi-upload with OCR for totals
+async function wizUploadReceipts(input){
+  if(!input.files||input.files.length===0)return;
+  const files=Array.from(input.files);
+  document.getElementById('wiz-upload-status').textContent=`⏳ Processing ${files.length} receipt(s)...`;
+
+  for(const file of files){
+    // Upload for audit storage
+    const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type','food_receipt');
+    try{await api('/api/documents/upload',{method:'POST',body:fd});}catch(e){wizReceiptItems.push({name:file.name,total:0,status:'upload_failed'});continue;}
+
+    // Try OCR to extract total
+    let extractedTotal=0,status='scanned';
+    if(file.type.startsWith('image/')||file.name.match(/\.(png|jpg|jpeg)$/i)){
+      try{
+        const worker=await Tesseract.createWorker('eng');
+        const{data}=await worker.recognize(file);await worker.terminate();
+        extractedTotal=extractReceiptTotal(data.text);
+        if(extractedTotal===0)status='no_total';
+      }catch(e){status='ocr_failed';}
+    }else if(file.name.toLowerCase().endsWith('.pdf')){
+      try{
+        const buf=await file.arrayBuffer();const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+        // Scan first page for total
+        const pg=await pdf.getPage(1);const vp=pg.getViewport({scale:2});
+        const cvs=document.createElement('canvas');cvs.width=vp.width;cvs.height=vp.height;
+        await pg.render({canvasContext:cvs.getContext('2d'),viewport:vp}).promise;
+        const worker=await Tesseract.createWorker('eng');
+        const{data}=await worker.recognize(cvs);await worker.terminate();
+        extractedTotal=extractReceiptTotal(data.text);
+        if(extractedTotal===0)status='no_total';
+      }catch(e){status='ocr_failed';}
+    }else{status='manual';}
+
+    wizReceiptItems.push({name:file.name,total:extractedTotal,status});
+    wizReceiptTotal=wizReceiptItems.reduce((s,r)=>s+r.total,0);
+    document.getElementById('wizReceiptList').innerHTML=renderReceiptList();
+  }
+
+  documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+  document.getElementById('wiz-upload-zone').classList.add('done');
+  document.getElementById('wiz-upload-status').textContent=`✅ ${files.length} receipt(s) uploaded! Upload more or click Next.`;
+
+  // Save running total to monthly food costs
+  const fcData=monthlyDataCache[wizMonthKey+'_foodcosts']||{};
+  fcData.total=wizReceiptTotal;
+  monthlyDataCache[wizMonthKey+'_foodcosts']=fcData;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:wizMonthKey,data_type:'foodcosts',data:fcData}});}catch(e){}
+  showToast(`✅ ${files.length} receipt(s) processed!`,'ok');
+}
+
+function extractReceiptTotal(text){
+  // Look for total/grand total/amount due patterns
+  const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+  let best=0;
+  for(const line of lines){
+    const totalMatch=line.match(/(?:total|amount\s*due|grand\s*total|balance\s*due|total\s*paid|order\s*total)[:\s]*\$?\s*(\d{1,6}[.,]\d{2})/i);
+    if(totalMatch){const val=parseFloat(totalMatch[1].replace(',',''));if(val>best)best=val;}
+  }
+  // Fallback: find largest dollar amount
+  if(best===0){const amounts=text.match(/\$\s*(\d{1,6}\.\d{2})/g);
+    if(amounts){for(const a of amounts){const v=parseFloat(a.replace(/[$\s,]/g,''));if(v>best&&v<50000)best=v;}}}
+  return Math.round(best*100)/100;
+}
+
+function renderReceiptList(){
+  if(wizReceiptItems.length===0)return '';
+  let html='<table class="staff-table"><thead><tr><th>Receipt</th><th>Extracted Total</th><th>Status</th><th></th></tr></thead><tbody>';
+  wizReceiptItems.forEach((r,i)=>{
+    html+=`<tr>
+      <td style="font-weight:500">${r.name}</td>
+      <td><input type="number" step="0.01" value="${r.total||''}" onchange="updateReceiptTotal(${i},this.value)" style="width:100px;font-family:'JetBrains Mono',monospace"></td>
+      <td>${r.status==='scanned'?'<span style="color:var(--success)">✅ Scanned</span>':r.status==='no_total'?'<span style="color:var(--gold)">⚠️ Enter manually</span>':r.status==='ocr_failed'?'<span style="color:var(--error)">❌ OCR failed</span>':'<span style="color:var(--muted)">📝 Manual</span>'}</td>
+      <td><button class="btn-remove" onclick="removeReceiptItem(${i})">✕</button></td></tr>`;
+  });
+  html+=`</tbody><tfoot><tr style="background:var(--navy);color:#fff"><td style="padding:10px 12px;font-weight:700">MONTHLY TOTAL</td>
+    <td style="padding:10px 12px;font-family:'JetBrains Mono',monospace;font-weight:700">${fmt(wizReceiptTotal)}</td>
+    <td colspan="2" style="padding:10px 12px;font-size:.8rem;opacity:.7">${wizReceiptItems.length} receipt(s)</td></tr></tfoot></table>`;
+  return html;
+}
+
+function updateReceiptTotal(idx,val){
+  wizReceiptItems[idx].total=parseFloat(val)||0;
+  wizReceiptTotal=wizReceiptItems.reduce((s,r)=>s+r.total,0);
+  document.getElementById('wizReceiptList').innerHTML=renderReceiptList();
+  // Update food cost data
+  const fcData=monthlyDataCache[wizMonthKey+'_foodcosts']||{};fcData.total=wizReceiptTotal;monthlyDataCache[wizMonthKey+'_foodcosts']=fcData;
+  api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:wizMonthKey,data_type:'foodcosts',data:fcData}}).catch(()=>{});
+}
+
+function removeReceiptItem(idx){
+  wizReceiptItems.splice(idx,1);wizReceiptTotal=wizReceiptItems.reduce((s,r)=>s+r.total,0);
+  document.getElementById('wizReceiptList').innerHTML=renderReceiptList();
+}
+
 function wizNext(){
-  // If we just finished batch scan, show review
-  if(WIZ_STEPS[wizStep]?.id==='wiz_timeforms_fs'&&batchResults.length>0){
-    showBatchReview('niles',wizMonthKey);return;}
+  const step=WIZ_STEPS[wizStep];
+  // If we just finished a batch scan step, show review for that center
+  if(step?.isBatchOCR&&batchResults.length>0){
+    showBatchReview(step.center,wizMonthKey);return;}
+  // If we just finished receipts, save the total
+  if(step?.isMultiUpload&&wizReceiptTotal>0){
+    const fcData=monthlyDataCache[wizMonthKey+'_foodcosts']||{};fcData.total=wizReceiptTotal;monthlyDataCache[wizMonthKey+'_foodcosts']=fcData;
+    api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:wizMonthKey,data_type:'foodcosts',data:fcData}}).catch(()=>{});
+  }
   wizStep++;
   if(wizStep>=WIZ_STEPS.length){closeWizard();renderSubPanel();renderDashboard();showToast('🪄 Monthly wizard complete!','ok');return;}
   renderWizStep();
