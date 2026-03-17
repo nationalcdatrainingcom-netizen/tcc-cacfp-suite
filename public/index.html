@@ -521,6 +521,7 @@ function isMonthComplete(m){
   const fc=monthlyDataCache[m+'_foodcosts']||{};
   const stData=salaryTotals.find(r=>r.month_key===m);
   const completion=monthlyDataCache[m+'_completion']||{};
+  const claimed=monthlyDataCache[m+'_claimed']||{};
 
   const hasNilesAtt=att.niles?.enrolled>0;
   const hasPeaceAtt=att.peace?.enrolled>0;
@@ -530,20 +531,20 @@ function isMonthComplete(m){
   const hasPeaceCDC=(cdc.peace?.qualifying||0)>0;
   const hasFood=(fc.total||0)>0;
   const hasStaff=stData&&(parseFloat(stData.food_service_cost)||0)>0;
-  const hasAdmin=stData&&(parseFloat(stData.admin_cost)||0)>=0; // Admin can be 0 some months
 
   return {hasNilesAtt,hasPeaceAtt,hasNilesMeals,hasPeaceMeals,hasNilesCDC,hasPeaceCDC,hasFood,hasStaff,
     allData:hasNilesAtt&&hasPeaceAtt&&hasNilesMeals&&hasPeaceMeals&&hasNilesCDC&&hasPeaceCDC&&hasFood&&hasStaff,
-    markedComplete:!!completion.complete};
+    markedComplete:!!completion.complete,
+    claimed:!!claimed.claimed};
 }
 
 function renderMonthBar(){
   document.getElementById('monthBar').innerHTML=MO.map(m=>{
     const comp=isMonthComplete(m);
     const hasAnyData=salaryTotals.some(r=>r.month_key===m)||Object.keys(monthlyDataCache).some(k=>k.startsWith(m+'_'));
-    const isComplete=comp.markedComplete;
-    const hasPartial=hasAnyData&&!isComplete;
-    return `<div class="month-btn ${m===currentMonth?'active':''} ${isComplete?'has-data':hasPartial?'partial':''}" onclick="selectMonth('${m}')" style="${hasPartial?'border-color:var(--gold)':''}">${ML[m].slice(0,3)} ${fyYear(m)}</div>`;
+    const isClaimed=comp.claimed;
+    const hasPartial=hasAnyData&&!isClaimed;
+    return `<div class="month-btn ${m===currentMonth?'active':''} ${isClaimed?'has-data':hasPartial?'partial':''}" onclick="selectMonth('${m}')" style="${hasPartial&&!isClaimed?'border-color:var(--gold)':''}">${ML[m].slice(0,3)} ${fyYear(m)}</div>`;
   }).join('');
 }
 function selectMonth(m){currentMonth=m;renderMonthBar();renderSubPanel();}
@@ -785,19 +786,38 @@ function renderMeals(){
     html+='</tbody></table>';
 
     if(d.excluded4thMeal){
-      html+=`<div class="alert alert-warn" style="margin-top:12px"><span>⚠️</span><div><strong>${d.excluded4thMeal} 4th meals excluded</strong> by the 3-meal rule. ${d.excludedSnackCount||0} PM snacks were crossed off on days where Breakfast + AM Snack + Lunch were already served.</div></div>`;}
+      html+=`<div class="alert alert-warn" style="margin-top:12px"><span>⚠️</span><div><strong>${d.excluded4thMeal} 4th meals excluded</strong> by the 3-meal rule. PM snacks crossed off on days where Breakfast + AM Snack + Lunch were already served.</div></div>`;}
 
     if(hasDetail){
-      html+=`<details style="margin-top:12px"><summary style="font-size:.85rem;cursor:pointer;color:var(--navy);font-weight:600">📋 View detailed meal count report (${d.children.length} children, 3-meal rule applied)</summary>
-        <div style="max-height:300px;overflow:auto;font-size:.75rem;margin-top:8px">
-          <table class="staff-table"><thead><tr><th>Name</th><th>Category</th><th>Bkfst</th><th>AM Snk</th><th>Lunch</th><th style="color:var(--error)">PM Snk*</th><th>Counted</th></tr></thead><tbody>
+      // Monthly summary table
+      html+=`<details style="margin-top:12px" open><summary style="font-size:.85rem;cursor:pointer;color:var(--navy);font-weight:600">📋 Monthly Summary (${d.children.length} children)</summary>
+        <div style="max-height:250px;overflow:auto;font-size:.75rem;margin-top:8px">
+          <table class="staff-table"><thead><tr><th>Name</th><th>Cat</th><th>Bkfst</th><th>AM Snk</th><th>Lunch</th><th style="color:var(--error)">PM Snk*</th><th>Total</th></tr></thead><tbody>
           ${d.children.map(ch=>`<tr><td>${ch.name}</td><td style="font-weight:600;color:${ch.cat==='A'?'var(--success)':ch.cat==='B'?'var(--gold)':'var(--error)'}">Cat ${ch.cat}</td>
             <td>${ch.breakfast}</td><td>${ch.amSnack}</td><td>${ch.lunch}</td>
             <td style="color:${ch.pmExcluded>0?'var(--error)':'inherit'}">${ch.pmSnack}${ch.pmExcluded>0?' <s>(-'+ch.pmExcluded+')</s>':''}</td>
             <td>${ch.totalCounted}</td></tr>`).join('')}
-          </tbody></table>
-          <p style="margin-top:8px;font-size:.75rem;color:var(--muted)">*PM Snacks are excluded (crossed off) on days where 3 meals were already served (Breakfast + AM Snack + Lunch). Only 3 meals/snacks per child per day may be claimed for CACFP reimbursement.</p>
-        </div></details>`;}
+          </tbody></table></div></details>`;
+
+      // Daily detail with crossed-off meals
+      if(d.dayLabels&&d.children[0]?.dailyDetail){
+        const shortDays=d.dayLabels.map(dl=>{const p=dl.split(' ');return p.length>=2?p[0].slice(0,3)+' '+p[p.length-1]:dl;});
+        html+=`<details style="margin-top:12px"><summary style="font-size:.85rem;cursor:pointer;color:var(--navy);font-weight:600">📅 Daily Meal Attendance — Full Audit Detail (${d.children.length} children × ${shortDays.length} days)</summary>
+          <div style="overflow:auto;font-size:.7rem;margin-top:8px">
+          <p style="font-size:.75rem;color:var(--muted);margin-bottom:8px"><span style="color:var(--success)">✓</span> = counted for reimbursement &nbsp; <span style="color:var(--error);font-weight:700">✗</span> = excluded (4th meal, 3-meal rule) &nbsp; <span style="color:#ccc">·</span> = not served</p>
+          ${d.children.map(ch=>{
+            if(!ch.dailyDetail)return '';
+            return `<div style="margin:6px 0 2px;font-weight:600;font-size:.75rem">${ch.name} <span style="color:${ch.cat==='A'?'var(--success)':ch.cat==='B'?'var(--gold)':'var(--error)'}">Cat ${ch.cat}</span></div>
+              <table style="border-collapse:collapse;font-size:.65rem;width:100%"><tr style="background:var(--navy);color:#fff"><td style="padding:2px 4px;font-weight:600">Meal</td>${shortDays.map(dl=>`<td style="padding:2px 3px;text-align:center;font-size:.6rem">${dl}</td>`).join('')}<td style="padding:2px 4px">Tot</td></tr>
+              <tr><td style="padding:1px 4px">Bkfst</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;padding:1px;${dd.bk?'color:var(--success)':'color:#ddd'}">${dd.bk?'✓':'·'}</td>`).join('')}<td style="padding:1px 4px;font-weight:600">${ch.breakfast}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:1px 4px">AM Snk</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;padding:1px;${dd.am?'color:var(--success)':'color:#ddd'}">${dd.am?'✓':'·'}</td>`).join('')}<td style="padding:1px 4px;font-weight:600">${ch.amSnack}</td></tr>
+              <tr><td style="padding:1px 4px">Lunch</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;padding:1px;${dd.ln?'color:var(--success)':'color:#ddd'}">${dd.ln?'✓':'·'}</td>`).join('')}<td style="padding:1px 4px;font-weight:600">${ch.lunch}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:1px 4px">PM Snk</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;padding:1px;${dd.pmX?'color:var(--error);font-weight:700':dd.pm?'color:var(--success)':'color:#ddd'}">${dd.pmX?'✗':dd.pm?'✓':'·'}</td>`).join('')}<td style="padding:1px 4px;font-weight:600">${ch.pmSnack}${ch.pmExcluded>0?'<span style="color:var(--error)">(-'+ch.pmExcluded+')</span>':''}</td></tr>
+              </table>`;
+          }).join('')}
+          </div></details>`;
+      }
+      html+=`<p style="margin-top:8px;font-size:.75rem;color:var(--muted)">*PM Snacks excluded (✗) on days where 3 meals already served. Max 3 meals/snacks per child per day for CACFP reimbursement.</p>`;}
 
     html+='</div></div>';
   }
@@ -1306,10 +1326,40 @@ function renderClaims(){
           <div class="uz-file">${getDocNameSimple('claims_listing',m)}</div>
         </div>
       </div>
+
+      <!-- MARK AS CLAIMED -->
+      ${(()=>{
+        const claimed=monthlyDataCache[m+'_claimed']||{};
+        if(claimed.claimed){
+          return `<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${ML[m]} ${fyYear(m)} — Claim Submitted</strong><br>
+            <span style="font-size:.8rem">Marked as claimed on ${claimed.claimedAt||'N/A'}${claimed.claimedBy?' by '+claimed.claimedBy:''}</span></div></div>
+            <button class="btn btn-sm btn-outline" style="margin-top:8px" onclick="unmarkClaimed('${m}')">↩️ Reopen Claim</button>`;
+        } else {
+          return `<div style="margin-top:16px;text-align:center;padding:20px;background:var(--bg);border-radius:8px">
+            <p style="font-size:.9rem;color:var(--muted);margin-bottom:12px">After you have submitted this claim in MIND and uploaded the Claims Listing screenshot:</p>
+            <button class="btn btn-success" onclick="markClaimed('${m}')" style="font-size:1rem;padding:14px 28px">✅ Mark ${ML[m]} as Claimed</button>
+          </div>`;
+        }
+      })()}
     </div></div>`;
 }
 async function saveClaimField(mk,field,val){const data=monthlyDataCache[mk+'_claims']||{};data[field]=parseFloat(val)||0;monthlyDataCache[mk+'_claims']=data;
   try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'claims',data}});}catch(e){showToast('Save error','err');}}
+
+async function markClaimed(mk){
+  const claimed={claimed:true,claimedAt:new Date().toLocaleDateString(),claimedBy:'Mary Wardlaw'};
+  monthlyDataCache[mk+'_claimed']=claimed;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'claimed',data:claimed}});}catch(e){}
+  renderClaims();renderMonthBar();renderDashboard();
+  showToast(`✅ ${ML[mk]} marked as claimed!`,'ok');
+}
+
+async function unmarkClaimed(mk){
+  monthlyDataCache[mk+'_claimed']={claimed:false};
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'claimed',data:{claimed:false}}});}catch(e){}
+  renderClaims();renderMonthBar();renderDashboard();
+  showToast(`${ML[mk]} claim reopened`,'ok');
+}
 
 // ═══════════════════════════════════════════════════
 // MONTH DOCS — Two sections + Print Package
@@ -1901,9 +1951,46 @@ async function wizUploadFile(input){
   const step=WIZ_STEPS[wizStep];
   const file=input.files[0];
   const center=step.center||'niles';
-  document.getElementById('wiz-upload-status').textContent='⏳ Uploading...';
+  document.getElementById('wiz-upload-status').textContent='⏳ Processing...';
 
-  // Upload document
+  // For attendance, meals, and CDC — use the actual parsers which both upload AND parse
+  const stepId=step.id;
+
+  if(stepId.startsWith('wiz_attendance_')){
+    // Create a fake input element with the file to pass to parser
+    const fakeInput={files:[file]};
+    await parseAttendanceCSV(wizMonthKey,center,fakeInput);
+    document.getElementById('wiz-upload-zone').classList.add('done');
+    document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
+    const d=(monthlyDataCache[wizMonthKey+'_attendance']||{})[center]||{};
+    document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${d.enrolled||0} children enrolled, ADA ${d.ada||0}, ${d.days||0} operating days</strong></div></div>`;
+    showToast('✅ '+step.label+' processed!','ok');
+    return;
+  }
+
+  if(stepId.startsWith('wiz_mealcounts_')){
+    const fakeInput={files:[file]};
+    await parseMealCSV(wizMonthKey,center,fakeInput);
+    document.getElementById('wiz-upload-zone').classList.add('done');
+    document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
+    const d=(monthlyDataCache[wizMonthKey+'_meals']||{})[center]||{};
+    document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${d.children?.length||0} children, ${d.excluded4thMeal||0} 4th meals excluded by 3-meal rule</strong></div></div>`;
+    showToast('✅ '+step.label+' processed!','ok');
+    return;
+  }
+
+  if(stepId.startsWith('wiz_cdc_')){
+    const fakeInput={files:[file]};
+    await parseCDCPDFs(wizMonthKey,center,fakeInput);
+    document.getElementById('wiz-upload-zone').classList.add('done');
+    document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
+    const d=(monthlyDataCache[wizMonthKey+'_cdc']||{})[center]||{};
+    document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${d.qualifying||0} qualifying children from ${d.totalOnStatement||0} entries</strong></div></div>`;
+    showToast('✅ '+step.label+' processed!','ok');
+    return;
+  }
+
+  // Default: just upload document (admin time forms, etc.)
   const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('doc_type',step.docType);
   if(center!=='both')fd.append('metadata',JSON.stringify({center}));
   try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){showToast('Upload failed','err');return;}
