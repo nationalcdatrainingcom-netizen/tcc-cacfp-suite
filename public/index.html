@@ -59,6 +59,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .month-btn.has-data{border-color:var(--success)}
 .month-btn.has-data::after{content:'✓';margin-left:4px;color:var(--success);font-size:.7rem}
 .month-btn.active.has-data::after{color:var(--gold)}
+.month-btn.partial{border-color:var(--gold)}
+.month-btn.partial::after{content:'◐';margin-left:4px;color:var(--gold);font-size:.7rem}
 
 /* SUB TABS */
 .sub-tabs{display:flex;gap:4px;margin-bottom:20px;background:var(--bg);padding:4px;border-radius:8px;flex-wrap:wrap}
@@ -512,10 +514,36 @@ function renderDashboard(){
 // ═══════════════════════════════════════════════════
 // MONTH BAR & SUB PANELS
 // ═══════════════════════════════════════════════════
+function isMonthComplete(m){
+  const att=monthlyDataCache[m+'_attendance']||{};
+  const meals=monthlyDataCache[m+'_meals']||{};
+  const cdc=monthlyDataCache[m+'_cdc']||{};
+  const fc=monthlyDataCache[m+'_foodcosts']||{};
+  const stData=salaryTotals.find(r=>r.month_key===m);
+  const completion=monthlyDataCache[m+'_completion']||{};
+
+  const hasNilesAtt=att.niles?.enrolled>0;
+  const hasPeaceAtt=att.peace?.enrolled>0;
+  const hasNilesMeals=meals.niles?.children?.length>0||parseInt(meals.niles?.breakfast_A||0)+parseInt(meals.niles?.lunch_A||0)>0;
+  const hasPeaceMeals=meals.peace?.children?.length>0||parseInt(meals.peace?.breakfast_A||0)+parseInt(meals.peace?.lunch_A||0)>0;
+  const hasNilesCDC=(cdc.niles?.qualifying||0)>0;
+  const hasPeaceCDC=(cdc.peace?.qualifying||0)>0;
+  const hasFood=(fc.total||0)>0;
+  const hasStaff=stData&&(parseFloat(stData.food_service_cost)||0)>0;
+  const hasAdmin=stData&&(parseFloat(stData.admin_cost)||0)>=0; // Admin can be 0 some months
+
+  return {hasNilesAtt,hasPeaceAtt,hasNilesMeals,hasPeaceMeals,hasNilesCDC,hasPeaceCDC,hasFood,hasStaff,
+    allData:hasNilesAtt&&hasPeaceAtt&&hasNilesMeals&&hasPeaceMeals&&hasNilesCDC&&hasPeaceCDC&&hasFood&&hasStaff,
+    markedComplete:!!completion.complete};
+}
+
 function renderMonthBar(){
   document.getElementById('monthBar').innerHTML=MO.map(m=>{
-    const has=salaryTotals.some(r=>r.month_key===m)||Object.keys(monthlyDataCache).some(k=>k.startsWith(m+'_'));
-    return `<div class="month-btn ${m===currentMonth?'active':''} ${has?'has-data':''}" onclick="selectMonth('${m}')">${ML[m].slice(0,3)} ${fyYear(m)}</div>`;
+    const comp=isMonthComplete(m);
+    const hasAnyData=salaryTotals.some(r=>r.month_key===m)||Object.keys(monthlyDataCache).some(k=>k.startsWith(m+'_'));
+    const isComplete=comp.markedComplete;
+    const hasPartial=hasAnyData&&!isComplete;
+    return `<div class="month-btn ${m===currentMonth?'active':''} ${isComplete?'has-data':hasPartial?'partial':''}" onclick="selectMonth('${m}')" style="${hasPartial?'border-color:var(--gold)':''}">${ML[m].slice(0,3)} ${fyYear(m)}</div>`;
   }).join('');
 }
 function selectMonth(m){currentMonth=m;renderMonthBar();renderSubPanel();}
@@ -634,7 +662,7 @@ function renderAttendance(){
     html+=`<div class="card"><div class="card-hdr"><h3>📊 ${cl} — Attendance ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
       <div class="upload-zone ${d.enrolled?'done':''}" id="att-uz-${c}">
         <input type="file" accept=".csv" onchange="parseAttendanceCSV('${m}','${c}',this)">
-        <div class="uz-icon">📊</div><div class="uz-label">Upload ${cl} Attendance CSV from Playground App</div>
+        <div class="uz-icon">📊</div><div class="uz-label">Upload ${cl} Attendance Overview from Playground App</div>
         <div class="uz-file" id="att-file-${c}">${d._filename?'✅ '+d._filename:''}</div>
       </div>
       <div class="form-grid" style="margin-top:16px">
@@ -741,7 +769,7 @@ function renderMeals(){
       ${hasDetail?`<span class="badge">${d.children.length} children</span>`:''}</div><div class="card-body">
       <div class="upload-zone ${hasDetail?'done':''}" id="meal-uz-${c}">
         <input type="file" accept=".csv" onchange="parseMealCSV('${m}','${c}',this)">
-        <div class="uz-icon">🍽️</div><div class="uz-label">Upload ${cLabel} CACFP Detailed CSV from Playground App</div>
+        <div class="uz-icon">🍽️</div><div class="uz-label">Upload ${cLabel} CACFP Detailed report from Playground App</div>
         <div class="uz-file">${d._filename?'✅ '+d._filename:''}</div>
       </div>`;
 
@@ -885,7 +913,16 @@ async function parseMealCSV(mk,center,input){
 
       children.push({name:childName,classroom,cat:category,
         breakfast:mealCounts.breakfast,amSnack:mealCounts.amSnack,
-        lunch:mealCounts.lunch,pmSnack:pmCounted,pmExcluded,totalCounted});
+        lunch:mealCounts.lunch,pmSnack:pmCounted,pmExcluded,totalCounted,
+        dailyDetail:dayIndices.map((di,idx)=>{
+          const hasBk=mealDays.breakfast.includes(idx);
+          const hasAM=mealDays.amSnack.includes(idx);
+          const hasLn=mealDays.lunch.includes(idx);
+          const hasPM=mealDays.pmSnack.includes(idx);
+          const prior=[hasBk,hasAM,hasLn].filter(Boolean).length;
+          const pmCounted2=hasPM&&prior<3;
+          return {bk:hasBk,am:hasAM,ln:hasLn,pm:hasPM,pmX:hasPM&&!pmCounted2};
+        })});
     }else{i++;}
   }
 
@@ -900,8 +937,11 @@ async function parseMealCSV(mk,center,input){
     if(ch.pmExcluded>0)excludedSnackCount++;
   }
 
+  // Get day labels for report headers
+  const dayLabels=dayIndices.map(di=>cols[di]?.trim()||'');
+
   const data=monthlyDataCache[mk+'_meals']||{};
-  data[center]={...totals,children,excluded4thMeal:totalExcluded,excludedSnackCount,_filename:file.name};
+  data[center]={...totals,children,excluded4thMeal:totalExcluded,excludedSnackCount,_filename:file.name,dayLabels};
   monthlyDataCache[mk+'_meals']=data;
   try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'meals',data}});}catch(e){}
   renderMeals();
@@ -927,12 +967,15 @@ function renderCDC(){
     const att=monthlyDataCache[m+'_attendance']||{};const enrolled=att[c]?.enrolled||0;
     const qualifying=d.qualifying||0;const pct=enrolled>0?(qualifying/enrolled*100):0;
     const hasDetail=d.qualifyingChildren&&d.qualifyingChildren.length>0;
+    const uploadedFiles=d._files||[];
 
-    html+=`<div class="card"><div class="card-hdr"><h3>🏥 ${cLabel} — CDC Eligibility ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    html+=`<div class="card"><div class="card-hdr"><h3>🏥 ${cLabel} — CDC Eligibility ${ML[m]} ${fyYear(m)}</h3>
+      ${hasDetail?`<span class="badge">${qualifying} qualifying</span>`:''}</div><div class="card-body">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Upload one or more CDC Statement PDFs. Children are deduplicated by Child ID across all uploads — no child will be counted twice.</p>
       <div class="upload-zone ${hasDetail?'done':''}" id="cdc-uz-${c}">
-        <input type="file" accept=".pdf" onchange="parseCDCPDF('${m}','${c}',this)">
-        <div class="uz-icon">🏥</div><div class="uz-label">Upload ${cLabel} CDC Statement (PDF)</div>
-        <div class="uz-file">${d._filename?'✅ '+d._filename:''}</div>
+        <input type="file" accept=".pdf" multiple onchange="parseCDCPDFs('${m}','${c}',this)">
+        <div class="uz-icon">🏥</div><div class="uz-label">Upload ${cLabel} CDC Statement(s) — select one or multiple PDFs</div>
+        <div class="uz-file">${uploadedFiles.length>0?'✅ '+uploadedFiles.length+' file(s): '+uploadedFiles.join(', '):''}</div>
       </div>
       <div class="form-grid" style="margin-top:16px">
         <div class="form-group"><label>CDC Qualifying Children</label><input type="number" value="${qualifying||''}" onchange="saveCDCField('${m}','${c}','qualifying',this.value)"></div>
@@ -943,13 +986,14 @@ function renderCDC(){
       ${hasDetail?`
         <div class="extracted-preview" style="margin-top:12px">
           <h4>📋 CDC Eligibility Report — ${cLabel}</h4>
-          <div class="extracted-row"><span class="lbl">Total children on statement:</span><span class="val">${d.totalOnStatement||0}</span></div>
+          <div class="extracted-row"><span class="lbl">Total children across all statements:</span><span class="val">${d.totalOnStatement||0}</span></div>
           <div class="extracted-row"><span class="lbl">Excluded (No Authorization):</span><span class="val">${d.noAuth||0}</span></div>
           <div class="extracted-row"><span class="lbl">Excluded ($0.00 paid):</span><span class="val">${d.zeroPaid||0}</span></div>
           <div class="extracted-row"><span class="lbl">Excluded (Duplicate Bill):</span><span class="val">${d.duplicateBill||0}</span></div>
+          <div class="extracted-row"><span class="lbl">Deduplicated by Child ID:</span><span class="val">${d.deduplicatedCount||0} duplicates removed</span></div>
           <div class="extracted-row"><span class="lbl">Unique qualifying children (Amount Paid > $0):</span><span class="val" style="color:var(--success);font-size:1rem"><strong>${qualifying}</strong></span></div>
           <div class="extracted-row"><span class="lbl">Total CDC payments:</span><span class="val">${fmt(d.totalPaid||0)}</span></div>
-          <details style="margin-top:8px"><summary style="font-size:.8rem;cursor:pointer;color:var(--navy)">View qualifying children list</summary>
+          <details style="margin-top:8px"><summary style="font-size:.8rem;cursor:pointer;color:var(--navy)">View qualifying children list (${qualifying})</summary>
             <div style="max-height:200px;overflow-y:auto;font-size:.75rem;margin-top:8px">
               <table class="staff-table"><thead><tr><th>Child Name</th><th>Child ID</th><th>Amount Paid</th></tr></thead><tbody>
               ${(d.qualifyingChildren||[]).map(ch=>`<tr><td>${ch.name}</td><td>${ch.childId}</td><td>${fmt(ch.amountPaid)}</td></tr>`).join('')}
@@ -962,93 +1006,91 @@ function renderCDC(){
   document.getElementById('sp-cdc').innerHTML=html;
 }
 
-async function parseCDCPDF(mk,center,input){
-  if(!input.files[0])return;
-  const file=input.files[0];
+async function parseCDCPDFs(mk,center,input){
+  if(!input.files||input.files.length===0)return;
+  const files=Array.from(input.files);
 
-  // Upload for storage
-  const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','cdc_statement_'+center);fd.append('metadata',JSON.stringify({center}));
-  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+  // Upload all files for storage
+  for(const file of files){
+    const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','cdc_statement_'+center);fd.append('metadata',JSON.stringify({center}));
+    try{await api('/api/documents/upload',{method:'POST',body:fd});}catch(e){}
+  }
+  documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
 
-  showToast('Scanning CDC PDF...','');
+  showToast(`Scanning ${files.length} CDC PDF(s)...`,'');
+
+  // Accumulate all entries from all files, plus any previously parsed entries
+  const data=monthlyDataCache[mk+'_cdc']||{};
+  const existing=data[center]||{};
+  const prevEntries=existing._allEntries||[]; // Keep entries from prior uploads
+  let allNewEntries=[];
+  const fileNames=existing._files||[];
+
   try{
-    const buf=await file.arrayBuffer();
-    const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-    let fullText='';
-    for(let p=1;p<=pdf.numPages;p++){
-      const page=await pdf.getPage(p);
-      const tc=await page.getTextContent();
-      fullText+=tc.items.map(i=>i.str).join(' ')+'\n';
+    for(const file of files){
+      fileNames.push(file.name);
+      const buf=await file.arrayBuffer();
+      const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+      let fullText='';
+      for(let p=1;p<=pdf.numPages;p++){
+        const page=await pdf.getPage(p);
+        const tc=await page.getTextContent();
+        fullText+=tc.items.map(i=>i.str).join(' ')+'\n';
+      }
+
+      // Find each "Child's Name" occurrence
+      const allText=fullText;
+      const nameRegex=/Child's\s*Name\s*:\s*([A-Za-z' \-]+?)(?:\s+Case)/gi;
+      const positions=[];let match;
+      while((match=nameRegex.exec(allText))!==null){
+        positions.push({name:match[1].trim(),idx:match.index});
+      }
+
+      for(let i=0;i<positions.length;i++){
+        const start=positions[i].idx;
+        const end=i<positions.length-1?positions[i+1].idx:allText.length;
+        const block=allText.substring(start,end);
+        const idM=block.match(/Child's\s*ID\s*No\.\s*:\s*(\d+)/i);
+        const childId=idM?idM[1]:'unknown';
+        const hasNoAuth=block.match(/No\s*Authorization/i);
+        const hasDup=block.match(/Duplicate\s*Bill/i);
+        const amounts=[...block.matchAll(/\$\s*([\d,]+\.\d{2})/g)].map(m2=>parseFloat(m2[1].replace(',','')));
+        let amountPaid=0;
+        const nonRateAmounts=amounts.filter(a=>a>10);
+        if(nonRateAmounts.length>0)amountPaid=nonRateAmounts[0];
+        if(hasNoAuth)amountPaid=0;
+        allNewEntries.push({name:positions[i].name,childId,amountPaid,noAuth:!!hasNoAuth,duplicate:!!hasDup,source:file.name});
+      }
     }
 
-    // Parse children from CDC text
-    const childPattern=/Child's\s*Name\s*:\s*([A-Za-z' \-]+?)(?:\s+Case\s*No)/gi;
-    const idPattern=/Child's\s*ID\s*No\.\s*:\s*(\d+)/gi;
-    const paidPattern=/\$\s*([\d,]+\.\d{2})/g;
-    const noAuthPattern=/No\s*Authorization/gi;
-    const dupPattern=/Duplicate\s*Bill/gi;
+    // Merge with previous entries
+    const combinedEntries=[...prevEntries,...allNewEntries];
+    const totalOnStatement=combinedEntries.length;
 
-    // Extract all entries
-    const entries=[];
-    const lines=fullText.split('\n');
-    const allText=fullText;
-
-    // Find each "Child's Name" occurrence
-    let match;
-    const nameRegex=/Child's\s*Name\s*:\s*([A-Za-z' \-]+?)(?:\s+Case)/gi;
-    const positions=[];
-    while((match=nameRegex.exec(allText))!==null){
-      positions.push({name:match[1].trim(),idx:match.index});
-    }
-
-    // For each child, find their Child ID and Amount Paid
-    for(let i=0;i<positions.length;i++){
-      const start=positions[i].idx;
-      const end=i<positions.length-1?positions[i+1].idx:allText.length;
-      const block=allText.substring(start,end);
-
-      const idM=block.match(/Child's\s*ID\s*No\.\s*:\s*(\d+)/i);
-      const childId=idM?idM[1]:'unknown';
-      const hasNoAuth=block.match(/No\s*Authorization/i);
-      const hasDup=block.match(/Duplicate\s*Bill/i);
-
-      // Find Amount Paid - look for dollar amounts
-      const amounts=[...block.matchAll(/\$\s*([\d,]+\.\d{2})/g)].map(m=>parseFloat(m[1].replace(',','')));
-      // The "Amount Paid" is typically the last significant dollar amount before "Total for Child"
-      // Look specifically near "Amount Paid" or "Total for Child"
-      const paidM=block.match(/\$\s*([\d,]+\.\d{2})\s*(?:More|Hours|$|\n)/i)||block.match(/\$\s*(\d+\.\d{2})\s*$/m);
-      let amountPaid=0;
-      // Find the amount on the line - typically it's the larger non-rate amount
-      const nonRateAmounts=amounts.filter(a=>a>10); // Filter out rates like $6.55
-      if(nonRateAmounts.length>0)amountPaid=nonRateAmounts[0];
-      if(hasNoAuth)amountPaid=0;
-
-      entries.push({name:positions[i].name,childId,amountPaid,noAuth:!!hasNoAuth,duplicate:!!hasDup});
-    }
-
-    // Deduplicate by Child ID - keep entry with highest payment
+    // Deduplicate by Child ID — keep entry with highest payment
     const byId={};
-    for(const e of entries){
+    for(const e of combinedEntries){
       if(!byId[e.childId]||e.amountPaid>byId[e.childId].amountPaid){
         byId[e.childId]=e;
       }
     }
     const unique=Object.values(byId);
+    const deduplicatedCount=combinedEntries.length-unique.length;
 
     // Filter qualifying: not No Auth, not Duplicate, Amount > 0
     const qualifying=unique.filter(e=>!e.noAuth&&!e.duplicate&&e.amountPaid>0);
     const noAuth=unique.filter(e=>e.noAuth).length;
     const zeroPaid=unique.filter(e=>!e.noAuth&&!e.duplicate&&e.amountPaid===0).length;
-    const duplicateBill=entries.filter(e=>e.duplicate).length;
+    const duplicateBill=combinedEntries.filter(e=>e.duplicate).length;
     const totalPaid=qualifying.reduce((s,e)=>s+e.amountPaid,0);
 
-    const data=monthlyDataCache[mk+'_cdc']||{};
     data[center]={qualifying:qualifying.length,qualifyingChildren:qualifying,
-      totalOnStatement:entries.length,noAuth,zeroPaid,duplicateBill,totalPaid,_filename:file.name};
+      totalOnStatement,noAuth,zeroPaid,duplicateBill,deduplicatedCount,totalPaid,
+      _files:fileNames,_allEntries:combinedEntries};
     monthlyDataCache[mk+'_cdc']=data;
     try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'cdc',data}});}catch(e){}
     renderCDC();
-    showToast(`✅ CDC: ${qualifying.length} qualifying children from ${entries.length} entries`,'ok');
+    showToast(`✅ CDC: ${qualifying.length} unique qualifying children from ${totalOnStatement} total entries (${deduplicatedCount} duplicates removed)`,'ok');
   }catch(e){showToast('CDC parse error: '+e.message,'err');console.error(e);}
 }
 
@@ -1145,18 +1187,126 @@ async function saveFoodCostField(mk,field,val){
 }
 
 // ═══════════════════════════════════════════════════
-// CLAIMS (numbers for submission — not post-submission)
+// CLAIMS — Full claim preparation with all data pulled in
 // ═══════════════════════════════════════════════════
 function renderClaims(){
-  const m=currentMonth,data=monthlyDataCache[m+'_claims']||{};
-  document.getElementById('sp-claims').innerHTML=`<div class="card"><div class="card-hdr"><h3>📋 CACFP Claim — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">These are the figures you will use when creating and submitting the CACFP claim in MIND. After submission, upload the claims listing screenshot in the Documents tab.</p>
-    <div class="form-grid">
-      <div class="form-group"><label>Meal Reimbursement ($)</label><input type="number" step="0.01" value="${data.meal_reimbursement||''}" onchange="saveClaimField('${m}','meal_reimbursement',this.value)"></div>
-      <div class="form-group"><label>Cash-in-Lieu ($)</label><input type="number" step="0.01" value="${data.cash_in_lieu||''}" onchange="saveClaimField('${m}','cash_in_lieu',this.value)"></div>
-      <div class="form-group"><label>Total Reimbursement ($)</label><input type="number" step="0.01" value="${data.total_reimbursement||''}" onchange="saveClaimField('${m}','total_reimbursement',this.value)"></div>
-    </div>
-  </div></div>`;
+  const m=currentMonth;
+  const att=monthlyDataCache[m+'_attendance']||{};
+  const meals=monthlyDataCache[m+'_meals']||{};
+  const cdc=monthlyDataCache[m+'_cdc']||{};
+  const fc=monthlyDataCache[m+'_foodcosts']||{};
+  const stData=salaryTotals.find(r=>r.month_key===m);
+  const fsCost=parseFloat(stData?.food_service_cost)||0;
+  const admCost=parseFloat(stData?.admin_cost)||0;
+  const benefits=fsCost*BEN_RATE;
+  const foodCost=parseFloat(fc.total)||0;
+  const totalExp=foodCost+fsCost+benefits+admCost;
+
+  // Attendance aggregates
+  const niAtt=att.niles||{};const peAtt=att.peace||{};
+  const niEnrolled=niAtt.enrolled||0,peEnrolled=peAtt.enrolled||0;
+  const niADA=niAtt.ada||0,peADA=peAtt.ada||0;
+  const niDays=niAtt.days||0,peDays=peAtt.days||0;
+  const niCapacity=niAtt.capacity||105,peCapacity=peAtt.capacity||164;
+  const niTotalPresent=niAtt.totalPresent||0,peTotalPresent=peAtt.totalPresent||0;
+  const combinedADA=Math.round((niADA+peADA)*10)/10;
+  const combinedEnrolled=niEnrolled+peEnrolled;
+  const daysFS=Math.max(niDays,peDays);
+
+  // CDC
+  const niCDC=cdc.niles||{};const peCDC=cdc.peace||{};
+  const niQual=niCDC.qualifying||0,peQual=peCDC.qualifying||0;
+  const niPct=niEnrolled>0?(niQual/niEnrolled*100):0;
+  const pePct=peEnrolled>0?(peQual/peEnrolled*100):0;
+
+  // Meals per center
+  const niMeals=meals.niles||{};const peMeals=meals.peace||{};
+
+  function mealTable(d,label){
+    const bA=parseInt(d.breakfast_A)||0,bB=parseInt(d.breakfast_B)||0,bC=parseInt(d.breakfast_C)||0;
+    const lA=parseInt(d.lunch_A)||0,lB=parseInt(d.lunch_B)||0,lC=parseInt(d.lunch_C)||0;
+    const sA=parseInt(d.snack_A)||0,sB=parseInt(d.snack_B)||0,sC=parseInt(d.snack_C)||0;
+    return `<h4 style="color:var(--navy);margin:12px 0 6px">${label}</h4>
+      <table class="staff-table"><thead><tr><th>Meal</th><th>Cat A</th><th>Cat B</th><th>Cat C</th><th>Total</th></tr></thead><tbody>
+        <tr><td>Breakfast</td><td>${bA}</td><td>${bB}</td><td>${bC}</td><td class="earned">${bA+bB+bC}</td></tr>
+        <tr><td>Lunch</td><td>${lA}</td><td>${lB}</td><td>${lC}</td><td class="earned">${lA+lB+lC}</td></tr>
+        <tr><td>Snack</td><td>${sA}</td><td>${sB}</td><td>${sC}</td><td class="earned">${sA+sB+sC}</td></tr>
+        <tr style="font-weight:700;background:var(--bg)"><td>Total</td><td>${bA+lA+sA}</td><td>${bB+lB+sB}</td><td>${bC+lC+sC}</td><td>${bA+bB+bC+lA+lB+lC+sA+sB+sC}</td></tr>
+      </tbody></table>`;
+  }
+
+  document.getElementById('sp-claims').innerHTML=`
+    <div class="card"><div class="card-hdr"><h3>📋 CACFP Claim Preparation — ${ML[m]} ${fyYear(m)}</h3><span class="badge">Sponsor #990004457</span></div><div class="card-body">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:20px">All figures below are pulled from your uploaded data. Use these numbers when completing the CACFP claim in MIND.</p>
+
+      <!-- SPONSOR SUMMARY -->
+      <div style="background:var(--bg);border-radius:8px;padding:16px;margin-bottom:20px">
+        <h4 style="color:var(--navy);margin-bottom:12px;font-size:.95rem">📊 Sponsor Summary</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <div><div style="font-size:.75rem;color:var(--muted);text-transform:uppercase">Days Food Service</div><div style="font-size:1.2rem;font-weight:700;color:var(--navy)">${daysFS}</div></div>
+          <div><div style="font-size:.75rem;color:var(--muted);text-transform:uppercase">Combined ADA</div><div style="font-size:1.2rem;font-weight:700;color:var(--navy)">${combinedADA}</div></div>
+          <div><div style="font-size:.75rem;color:var(--muted);text-transform:uppercase">Number of Centers</div><div style="font-size:1.2rem;font-weight:700;color:var(--navy)">2</div></div>
+          <div><div style="font-size:.75rem;color:var(--muted);text-transform:uppercase">Total Enrollment</div><div style="font-size:1.2rem;font-weight:700;color:var(--navy)">${combinedEnrolled}</div></div>
+        </div>
+      </div>
+
+      <!-- EXPENDITURES -->
+      <div style="background:var(--bg);border-radius:8px;padding:16px;margin-bottom:20px">
+        <h4 style="color:var(--navy);margin-bottom:12px;font-size:.95rem">💰 Program Expenditures</h4>
+        <div class="yer-line"><span>Food Costs</span><span class="val">${fmt(foodCost)}</span></div>
+        <div class="yer-line"><span>Food Service Salaries</span><span class="val">${fmt(fsCost)}</span></div>
+        <div class="yer-line"><span>Employee Benefits (7.65%)</span><span class="val">${fmt(benefits)}</span></div>
+        <div class="yer-line"><span>Administrative Costs</span><span class="val">${fmt(admCost)}</span></div>
+        <div class="yer-line total"><span>Total Expenditures</span><span class="val">${fmt(totalExp)}</span></div>
+      </div>
+
+      <!-- PER CENTER DETAIL -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+
+        <!-- NILES -->
+        <div style="background:var(--bg);border-radius:8px;padding:16px">
+          <h4 style="color:var(--navy);margin-bottom:10px;font-size:.95rem">📍 Niles</h4>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.85rem;margin-bottom:12px">
+            <div><span style="color:var(--muted)">Enrolled:</span> <strong>${niEnrolled}</strong></div>
+            <div><span style="color:var(--muted)">Capacity:</span> <strong>${niCapacity}</strong></div>
+            <div><span style="color:var(--muted)">Enrolled/Capacity:</span> <strong>${Math.min(niEnrolled,niCapacity)}</strong></div>
+            <div><span style="color:var(--muted)">Operating Days:</span> <strong>${niDays}</strong></div>
+            <div><span style="color:var(--muted)">Monthly Attendance Total:</span> <strong>${niTotalPresent}</strong></div>
+            <div><span style="color:var(--muted)">ADA:</span> <strong>${niADA}</strong></div>
+            <div><span style="color:var(--muted)">CDC Qualifying:</span> <strong>${niQual}</strong></div>
+            <div><span style="color:var(--muted)">CDC %:</span> <strong style="color:${niPct>=25?'var(--success)':'var(--error)'}"> ${niPct.toFixed(1)}%</strong></div>
+          </div>
+          ${mealTable(niMeals,'Meals to Claim — Niles')}
+        </div>
+
+        <!-- PEACE -->
+        <div style="background:var(--bg);border-radius:8px;padding:16px">
+          <h4 style="color:var(--navy);margin-bottom:10px;font-size:.95rem">📍 Peace Boulevard</h4>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.85rem;margin-bottom:12px">
+            <div><span style="color:var(--muted)">Enrolled:</span> <strong>${peEnrolled}</strong></div>
+            <div><span style="color:var(--muted)">Capacity:</span> <strong>${peCapacity}</strong></div>
+            <div><span style="color:var(--muted)">Enrolled/Capacity:</span> <strong>${Math.min(peEnrolled,peCapacity)}</strong></div>
+            <div><span style="color:var(--muted)">Operating Days:</span> <strong>${peDays}</strong></div>
+            <div><span style="color:var(--muted)">Monthly Attendance Total:</span> <strong>${peTotalPresent}</strong></div>
+            <div><span style="color:var(--muted)">ADA:</span> <strong>${peADA}</strong></div>
+            <div><span style="color:var(--muted)">CDC Qualifying:</span> <strong>${peQual}</strong></div>
+            <div><span style="color:var(--muted)">CDC %:</span> <strong style="color:${pePct>=25?'var(--success)':'var(--error)'}"> ${pePct.toFixed(1)}%</strong></div>
+          </div>
+          ${mealTable(peMeals,'Meals to Claim — Peace Blvd')}
+        </div>
+      </div>
+
+      <!-- CLAIMS LISTING UPLOAD (post-submission) -->
+      <div style="background:var(--gold-bg);border:1px solid var(--gold);border-radius:8px;padding:16px">
+        <h4 style="color:var(--gold);margin-bottom:8px">📸 After Submission — Claims Listing</h4>
+        <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">After submitting the claim in MIND, upload the Claims Listing screenshot here for your records.</p>
+        <div class="upload-zone ${getDocNameSimple('claims_listing',m)?'done':''}" style="background:#fff">
+          <input type="file" accept=".pdf,.png,.jpg" onchange="uploadMonthDoc('${m}','claims_listing',this)">
+          <div class="uz-icon">📸</div><div class="uz-label">Upload Claims Listing from MIND</div>
+          <div class="uz-file">${getDocNameSimple('claims_listing',m)}</div>
+        </div>
+      </div>
+    </div></div>`;
 }
 async function saveClaimField(mk,field,val){const data=monthlyDataCache[mk+'_claims']||{};data[field]=parseFloat(val)||0;monthlyDataCache[mk+'_claims']=data;
   try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'claims',data}});}catch(e){showToast('Save error','err');}}
@@ -1168,15 +1318,45 @@ function renderMonthDocs(){
   const m=currentMonth;
   const mDocs=documents.filter(d=>d.month_key===m);
   const uploaded=mDocs.filter(d=>!d.doc_type?.startsWith('generated_'));
-  const generated=mDocs.filter(d=>d.doc_type?.startsWith('generated_'));
+  const comp=isMonthComplete(m);
+  const completion=monthlyDataCache[m+'_completion']||{};
 
   // Check what generated docs should exist based on data
   const hasAtt=monthlyDataCache[m+'_attendance'];
   const hasMeals=monthlyDataCache[m+'_meals'];
   const hasCDC=monthlyDataCache[m+'_cdc'];
 
+  // Completion checklist
+  const checks=[
+    {label:'Niles attendance uploaded',done:comp.hasNilesAtt},
+    {label:'Peace attendance uploaded',done:comp.hasPeaceAtt},
+    {label:'Niles meal counts uploaded',done:comp.hasNilesMeals},
+    {label:'Peace meal counts uploaded',done:comp.hasPeaceMeals},
+    {label:'Niles CDC eligibility',done:comp.hasNilesCDC},
+    {label:'Peace CDC eligibility',done:comp.hasPeaceCDC},
+    {label:'Staff costs entered',done:comp.hasStaff},
+    {label:'Food costs entered',done:comp.hasFood},
+  ];
+
   document.getElementById('sp-monthdocs').innerHTML=`
-    <div class="card"><div class="card-hdr"><h3>📁 Uploaded Documents — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    <div class="card"><div class="card-hdr"><h3>✅ Month Completion — ${ML[m]} ${fyYear(m)}</h3>
+      ${comp.markedComplete?'<span class="badge" style="background:#F0FFF4;color:var(--success)">✅ Complete</span>':'<span class="badge" style="background:#FFF8E1;color:#8D6E00">In Progress</span>'}</div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+          ${checks.map(c=>`<div style="display:flex;align-items:center;gap:8px;font-size:.85rem">
+            <span>${c.done?'✅':'⬜'}</span><span style="${c.done?'color:var(--muted)':''}">${c.label}</span></div>`).join('')}
+        </div>
+        ${comp.allData&&!comp.markedComplete?`
+          <button class="btn btn-success" onclick="markMonthComplete('${m}')">✅ Mark ${ML[m]} as Complete</button>
+          <span style="font-size:.8rem;color:var(--muted);margin-left:8px">All required data is present</span>`
+          :comp.markedComplete?`
+          <div class="alert alert-ok" style="margin:0"><span>✅</span><div><strong>${ML[m]} ${fyYear(m)} marked complete</strong> on ${completion.completedAt||'N/A'}${completion.completedBy?' by '+completion.completedBy:''}</div></div>
+          <button class="btn btn-sm btn-outline" style="margin-top:8px" onclick="unmarkMonthComplete('${m}')">↩️ Reopen Month</button>`
+          :`<div class="alert alert-warn" style="margin:0"><span>⚠️</span><div>Complete all items above before marking this month as done.</div></div>`}
+      </div>
+    </div>
+
+    <div class="card"><div class="card-hdr"><h3>📁 Uploaded Documents</h3></div><div class="card-body">
       ${uploaded.length>0?`<ul class="doc-list">${uploaded.map(d=>`<li><span style="font-size:1.2rem">📄</span><span class="doc-name">${d.filename}</span>
         <span style="font-size:.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${d.doc_type}</span>
         <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
@@ -1186,20 +1366,35 @@ function renderMonthDocs(){
       <div style="margin-top:12px"><div class="upload-zone"><input type="file" onchange="uploadMonthDoc('${m}','other',this)"><div class="uz-icon">📎</div><div class="uz-label">Upload additional document</div></div></div>
     </div></div>
 
-    <div class="card"><div class="card-hdr"><h3>📊 Generated Reports — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
-      <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">These reports are automatically generated from your uploaded data. They document how calculations were made for audit purposes.</p>
+    <div class="card"><div class="card-hdr"><h3>📊 Generated Reports</h3></div><div class="card-body">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Reports generated from uploaded data. These rebuild automatically when you log in.</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div class="alert ${hasAtt?'alert-ok':'alert-warn'}" style="margin:0;cursor:pointer" onclick="hasAtt&&viewGeneratedReport('attendance','${m}')">
-          <span>📊</span><div><strong>Attendance & ADA Report</strong><br><span style="font-size:.8rem">${hasAtt?'✅ Data available — click to view':'⬜ Upload attendance CSV first'}</span></div></div>
-        <div class="alert ${hasMeals?'alert-ok':'alert-warn'}" style="margin:0;cursor:pointer" onclick="hasMeals&&viewGeneratedReport('meals','${m}')">
-          <span>🍽️</span><div><strong>Meal Count Report (3-Meal Rule)</strong><br><span style="font-size:.8rem">${hasMeals?'✅ Data available — click to view':'⬜ Upload meal count CSV first'}</span></div></div>
-        <div class="alert ${hasCDC?'alert-ok':'alert-warn'}" style="margin:0;cursor:pointer" onclick="hasCDC&&viewGeneratedReport('cdc','${m}')">
-          <span>🏥</span><div><strong>CDC Eligibility Report</strong><br><span style="font-size:.8rem">${hasCDC?'✅ Data available — click to view':'⬜ Upload CDC statement first'}</span></div></div>
+        <div class="alert ${hasAtt?'alert-ok':'alert-warn'}" style="margin:0;cursor:${hasAtt?'pointer':'default'}" onclick="${hasAtt?`viewGeneratedReport('attendance','${m}')`:''}" >
+          <span>📊</span><div><strong>Attendance & ADA Report</strong><br><span style="font-size:.8rem">${hasAtt?'✅ Click to view/print':'⬜ Upload Attendance Overview first'}</span></div></div>
+        <div class="alert ${hasMeals?'alert-ok':'alert-warn'}" style="margin:0;cursor:${hasMeals?'pointer':'default'}" onclick="${hasMeals?`viewGeneratedReport('meals','${m}')`:''}" >
+          <span>🍽️</span><div><strong>Meal Count Report (3-Meal Rule)</strong><br><span style="font-size:.8rem">${hasMeals?'✅ Includes daily detail for audit':'⬜ Upload CACFP Detailed report first'}</span></div></div>
+        <div class="alert ${hasCDC?'alert-ok':'alert-warn'}" style="margin:0;cursor:${hasCDC?'pointer':'default'}" onclick="${hasCDC?`viewGeneratedReport('cdc','${m}')`:''}" >
+          <span>🏥</span><div><strong>CDC Eligibility Report</strong><br><span style="font-size:.8rem">${hasCDC?'✅ Click to view/print':'⬜ Upload CDC statement first'}</span></div></div>
         <div class="alert alert-ok" style="margin:0;cursor:pointer" onclick="printMonthlyPackage('${m}')">
-          <span>🖨️</span><div><strong>Complete CACFP Documentation</strong><br><span style="font-size:.8rem">Print full reporting package for ${ML[m]}</span></div></div>
+          <span>🖨️</span><div><strong>Complete CACFP Documentation for ${ML[m]}</strong><br><span style="font-size:.8rem">Print full reporting package for audit</span></div></div>
       </div>
     </div></div>
   `;
+}
+
+async function markMonthComplete(mk){
+  const completion={complete:true,completedAt:new Date().toLocaleDateString(),completedBy:'Mary Wardlaw'};
+  monthlyDataCache[mk+'_completion']=completion;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'completion',data:completion}});}catch(e){}
+  renderMonthDocs();renderMonthBar();renderDashboard();
+  showToast(`✅ ${ML[mk]} marked complete!`,'ok');
+}
+
+async function unmarkMonthComplete(mk){
+  monthlyDataCache[mk+'_completion']={complete:false};
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'completion',data:{complete:false}}});}catch(e){}
+  renderMonthDocs();renderMonthBar();renderDashboard();
+  showToast(`${ML[mk]} reopened`,'ok');
 }
 
 function viewGeneratedReport(type,mk){
@@ -1238,9 +1433,26 @@ function viewGeneratedReport(type,mk){
         <tr><td>A (Free)</td><td>${d.breakfast_A}</td><td>${d.lunch_A}</td><td>${d.snack_A}</td><td>${(d.breakfast_A||0)+(d.lunch_A||0)+(d.snack_A||0)}</td></tr>
         <tr><td>B (Reduced)</td><td>${d.breakfast_B}</td><td>${d.lunch_B}</td><td>${d.snack_B}</td><td>${(d.breakfast_B||0)+(d.lunch_B||0)+(d.snack_B||0)}</td></tr>
         <tr><td>C (Paid)</td><td>${d.breakfast_C}</td><td>${d.lunch_C}</td><td>${d.snack_C}</td><td>${(d.breakfast_C||0)+(d.lunch_C||0)+(d.snack_C||0)}</td></tr></table>`;
-      html+=`<table><tr><th>Child</th><th>Cat</th><th>Bkfst</th><th>AM Snk</th><th>Lunch</th><th>PM Snk</th><th>Excluded</th><th>Total</th></tr>
+      // Summary per child
+      html+=`<h3>Per-Child Summary</h3><table><tr><th>Child</th><th>Cat</th><th>Bkfst</th><th>AM Snk</th><th>Lunch</th><th>PM Snk</th><th>Excluded</th><th>Total</th></tr>
         ${d.children.map(ch=>`<tr><td>${ch.name}</td><td>${ch.cat}</td><td>${ch.breakfast}</td><td>${ch.amSnack}</td><td>${ch.lunch}</td><td>${ch.pmSnack}</td>
           <td style="color:#C0392B">${ch.pmExcluded>0?'-'+ch.pmExcluded:''}</td><td>${ch.totalCounted}</td></tr>`).join('')}</table>`;
+      // Full daily detail for audit
+      if(d.dayLabels&&d.children[0]?.dailyDetail){
+        const shortDays=d.dayLabels.map(dl=>{const parts=dl.split(' ');return parts.length>=2?parts[0].slice(0,3)+' '+parts[parts.length-1]:dl;});
+        html+=`<h3 style="page-break-before:always">Daily Meal Detail — Complete Audit Record</h3>
+          <p style="font-size:10px;color:#718096">✓ = counted for reimbursement | <span style="color:#C0392B">✗ = excluded (4th meal, 3-meal rule)</span> | · = not served</p>`;
+        for(const ch of d.children){
+          if(!ch.dailyDetail)continue;
+          html+=`<p style="margin:8px 0 2px;font-weight:700;font-size:11px">${ch.name} (Cat ${ch.cat})</p>
+            <table style="font-size:9px"><tr><th style="padding:2px 4px">Meal</th>${shortDays.map(dl=>`<th style="padding:2px 3px;font-size:8px;writing-mode:vertical-rl;height:50px">${dl}</th>`).join('')}<th style="padding:2px 4px">Total</th></tr>
+            <tr><td>Bkfst</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;${dd.bk?'color:green':'color:#ccc'}">${dd.bk?'✓':'·'}</td>`).join('')}<td>${ch.breakfast}</td></tr>
+            <tr><td>AM Snk</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;${dd.am?'color:green':'color:#ccc'}">${dd.am?'✓':'·'}</td>`).join('')}<td>${ch.amSnack}</td></tr>
+            <tr><td>Lunch</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;${dd.ln?'color:green':'color:#ccc'}">${dd.ln?'✓':'·'}</td>`).join('')}<td>${ch.lunch}</td></tr>
+            <tr><td>PM Snk</td>${ch.dailyDetail.map(dd=>`<td style="text-align:center;${dd.pmX?'color:#C0392B;font-weight:700':dd.pm?'color:green':'color:#ccc'}">${dd.pmX?'✗':dd.pm?'✓':'·'}</td>`).join('')}<td>${ch.pmSnack}${ch.pmExcluded>0?' <span style="color:#C0392B">(-'+ch.pmExcluded+')</span>':''}</td></tr>
+            </table>`;
+        }
+      }
     }
   }else if(type==='cdc'){
     for(const c of ['niles','peace']){
@@ -1619,10 +1831,10 @@ const WIZ_STEPS=[
   {id:'wiz_timeforms_fs_niles',label:'Food Service Time Forms — Niles',icon:'📄',center:'niles',desc:'Upload the batch PDF of Niles food service Time & Attendance forms (one page per employee). The app will scan each page, extract names and hours, and auto-match to your Niles staff roster.',accept:'.pdf',docType:'batch_time_forms_fs_niles',isBatchOCR:true},
   {id:'wiz_timeforms_fs_peace',label:'Food Service Time Forms — Peace Blvd',icon:'📄',center:'peace',desc:'Upload the batch PDF of Peace Boulevard food service Time & Attendance forms (one page per employee).',accept:'.pdf',docType:'batch_time_forms_fs_peace',isBatchOCR:true},
   {id:'wiz_timeforms_admin',label:'Admin Time Distribution (Both Locations)',icon:'📄',center:'both',desc:'Upload the administrative Time & Attendance form for the CACFP coordinator. This covers admin time for both Niles and Peace Boulevard.',accept:'.pdf,.png,.jpg,.jpeg',docType:'time_distribution_admin'},
-  {id:'wiz_attendance_niles',label:'Attendance Report — Niles',icon:'📊',center:'niles',desc:'Upload the Niles monthly attendance CSV or enter attendance figures.',accept:'.csv',docType:'attendance_csv_niles'},
-  {id:'wiz_attendance_peace',label:'Attendance Report — Peace Blvd',icon:'📊',center:'peace',desc:'Upload the Peace Boulevard monthly attendance CSV or enter attendance figures.',accept:'.csv',docType:'attendance_csv_peace'},
-  {id:'wiz_mealcounts_niles',label:'Meal Count Report — Niles',icon:'🍽️',center:'niles',desc:'Upload the Niles CACFP Detailed meal count CSV or enter meal counts by category.',accept:'.csv',docType:'meal_counts_csv_niles'},
-  {id:'wiz_mealcounts_peace',label:'Meal Count Report — Peace Blvd',icon:'🍽️',center:'peace',desc:'Upload the Peace Boulevard CACFP Detailed meal count CSV or enter meal counts by category.',accept:'.csv',docType:'meal_counts_csv_peace'},
+  {id:'wiz_attendance_niles',label:'Attendance Overview — Niles',icon:'📊',center:'niles',desc:'Upload the Niles Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_niles'},
+  {id:'wiz_attendance_peace',label:'Attendance Overview — Peace Blvd',icon:'📊',center:'peace',desc:'Upload the Peace Boulevard Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_peace'},
+  {id:'wiz_mealcounts_niles',label:'CACFP Detailed Report — Niles',icon:'🍽️',center:'niles',desc:'Upload the Niles CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_niles'},
+  {id:'wiz_mealcounts_peace',label:'CACFP Detailed Report — Peace Blvd',icon:'🍽️',center:'peace',desc:'Upload the Peace Boulevard CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_peace'},
   {id:'wiz_cdc_niles',label:'CDC Statement — Niles',icon:'🏥',center:'niles',desc:'Upload the Niles CDC statement for this month to calculate eligibility percentage.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_niles'},
   {id:'wiz_cdc_peace',label:'CDC Statement — Peace Blvd',icon:'🏥',center:'peace',desc:'Upload the Peace Boulevard CDC statement for this month.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_peace'},
   {id:'wiz_foodcost',label:'Food Receipts & Invoices (All Locations)',icon:'🧾',center:'both',desc:'Upload all food vendor receipts and invoices for this month. Include receipts from JA Foods, Amazon, Sam\'s Club, grocery stores, and any other food suppliers. You can upload multiple files — each receipt total will be extracted and added to the monthly food cost.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts',isMultiUpload:true},
