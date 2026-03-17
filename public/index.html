@@ -622,23 +622,104 @@ async function deactivateStaff(id){if(!confirm('Remove this staff member?'))retu
 }
 
 // ═══════════════════════════════════════════════════
-// ATTENDANCE SUB-PANEL
+// ATTENDANCE — CSV Parser + ADA Methodology Doc
 // ═══════════════════════════════════════════════════
 function renderAttendance(){
   const m=currentMonth,data=monthlyDataCache[m+'_attendance']||{};
-  document.getElementById('sp-attendance').innerHTML=`<div class="card"><div class="card-hdr"><h3>📊 Attendance — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Enter or upload attendance data per center. These figures feed into the CACFP Claim.</p>
-    ${['niles','peace'].map(c=>{const d=data[c]||{};const cl=c==='niles'?'Niles':'Peace Boulevard';return `
-      <h4 style="margin:16px 0 10px;color:var(--navy)">${cl}</h4>
-      <div class="form-grid">
+  let html='';
+  for(const c of ['niles','peace']){
+    const cl=c==='niles'?'Niles':'Peace Boulevard';
+    const d=data[c]||{};
+    const hasDetail=d.childData&&d.childData.length>0;
+    html+=`<div class="card"><div class="card-hdr"><h3>📊 ${cl} — Attendance ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+      <div class="upload-zone ${d.enrolled?'done':''}" id="att-uz-${c}">
+        <input type="file" accept=".csv" onchange="parseAttendanceCSV('${m}','${c}',this)">
+        <div class="uz-icon">📊</div><div class="uz-label">Upload ${cl} Attendance CSV from Playground App</div>
+        <div class="uz-file" id="att-file-${c}">${d._filename?'✅ '+d._filename:''}</div>
+      </div>
+      <div class="form-grid" style="margin-top:16px">
         <div class="form-group"><label>Total Enrolled</label><input type="number" value="${d.enrolled||''}" onchange="saveAttField('${m}','${c}','enrolled',this.value)"></div>
         <div class="form-group"><label>Avg Daily Attendance</label><input type="number" step="0.1" value="${d.ada||''}" onchange="saveAttField('${m}','${c}','ada',this.value)"></div>
         <div class="form-group"><label>Operating Days</label><input type="number" value="${d.days||''}" onchange="saveAttField('${m}','${c}','days',this.value)"></div>
         <div class="form-group"><label>Capacity</label><input type="number" value="${d.capacity||(c==='niles'?105:164)}" onchange="saveAttField('${m}','${c}','capacity',this.value)"></div>
-      </div>`;}).join('')}
-    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('attendance_csv',m)?'done':''}"><input type="file" accept=".csv" onchange="uploadMonthDoc('${m}','attendance_csv',this)"><div class="uz-icon">📊</div><div class="uz-label">Upload attendance CSV (optional)</div><div class="uz-file">${getDocNameSimple('attendance_csv',m)}</div></div></div>
-  </div></div>`;
+      </div>
+      ${hasDetail?`
+        <div class="extracted-preview" style="margin-top:16px">
+          <h4>📋 ADA Calculation Methodology</h4>
+          <div class="extracted-row"><span class="lbl">Total children enrolled:</span><span class="val">${d.enrolled}</span></div>
+          <div class="extracted-row"><span class="lbl">Operating days (weekdays with attendance):</span><span class="val">${d.days}</span></div>
+          <div class="extracted-row"><span class="lbl">Total child-days present:</span><span class="val">${d.totalPresent?.toLocaleString()}</span></div>
+          <div class="extracted-row"><span class="lbl">ADA = Total Present ÷ Operating Days:</span><span class="val">${d.totalPresent} ÷ ${d.days} = <strong>${d.ada}</strong></span></div>
+          <div class="extracted-row"><span class="lbl">ADA % of enrolled:</span><span class="val">${d.enrolled>0?((d.ada/d.enrolled)*100).toFixed(1):'0'}%</span></div>
+          <p style="font-size:.8rem;color:var(--muted);margin-top:8px">Classrooms: ${d.classrooms?.join(', ')||'N/A'}</p>
+          <details style="margin-top:8px"><summary style="font-size:.8rem;cursor:pointer;color:var(--navy)">View daily breakdown (${d.childData?.length} children)</summary>
+            <div style="max-height:200px;overflow-y:auto;font-size:.75rem;margin-top:8px">
+              <table class="staff-table"><thead><tr><th>Name</th><th>Classroom</th><th>Present</th><th>Absent</th></tr></thead><tbody>
+              ${(d.childData||[]).map(ch=>`<tr><td>${ch.name}</td><td>${ch.classroom}</td><td>${ch.present}</td><td>${ch.absent}</td></tr>`).join('')}
+              </tbody></table>
+            </div>
+          </details>
+        </div>`:''}
+    </div></div>`;
+  }
+  document.getElementById('sp-attendance').innerHTML=html;
 }
+
+async function parseAttendanceCSV(mk,center,input){
+  if(!input.files[0])return;
+  const file=input.files[0];
+  const text=await file.text();
+  const lines=text.split('\n').map(l=>l.replace(/^\uFEFF/,'')); // strip BOM
+
+  // Upload for storage
+  const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','attendance_csv_'+center);fd.append('metadata',JSON.stringify({center}));
+  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+
+  // Parse header to find day columns
+  const headerLine=lines.find(l=>l.startsWith('Classroom,'));
+  if(!headerLine){showToast('Could not find header row','err');return;}
+  const cols=headerLine.split(',');
+  const dayIndices=[];
+  for(let i=3;i<cols.length;i++){
+    if(cols[i].match(/Mon|Tue|Wed|Thu|Fri/))dayIndices.push(i);
+  }
+
+  const children=[];
+  let totalPresent=0;
+  const classrooms=new Set();
+  const dailyTotals=new Array(dayIndices.length).fill(0);
+
+  for(const line of lines){
+    const parts=line.split(',');
+    if(!parts[0]||parts[0]==='Classroom'||parts[0]==='AGGREGATE'||parts[0]==='Summary statistics'||parts[0]==='Number students'||parts[0]==='Average daily'||!parts[1])continue;
+    if(parts[0].match(/^(Summary|Number|Average)/))continue;
+    const classroom=parts[0].trim();
+    const name=parts[1].trim()+' '+parts[2].trim();
+    classrooms.add(classroom);
+    let present=0,absent=0;
+    dayIndices.forEach((di,idx)=>{
+      const val=(parts[di]||'').trim();
+      if(val==='P'){present++;dailyTotals[idx]++;}
+      else if(val==='A')absent++;
+    });
+    totalPresent+=present;
+    children.push({name,classroom,present,absent});
+  }
+
+  const operatingDays=dayIndices.length;
+  const ada=operatingDays>0?Math.round((totalPresent/operatingDays)*10)/10:0;
+  const enrolled=children.length;
+
+  const data=monthlyDataCache[mk+'_attendance']||{};
+  data[center]={enrolled,ada,days:operatingDays,capacity:center==='niles'?105:164,
+    totalPresent,classrooms:[...classrooms],childData:children,dailyTotals,_filename:file.name};
+  monthlyDataCache[mk+'_attendance']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'attendance',data}});}catch(e){}
+  renderAttendance();
+  showToast(`✅ ${cl(center)} attendance: ${enrolled} enrolled, ADA ${ada}, ${operatingDays} days`,'ok');
+}
+
+function cl(c){return c==='niles'?'Niles':'Peace Boulevard';}
 
 async function saveAttField(mk,center,field,val){
   const data=monthlyDataCache[mk+'_attendance']||{};if(!data[center])data[center]={};
@@ -647,104 +728,604 @@ async function saveAttField(mk,center,field,val){
 }
 
 // ═══════════════════════════════════════════════════
-// MEAL COUNTS
+// MEAL COUNTS — CSV Parser + 3-Meal Rule + A/B/C
 // ═══════════════════════════════════════════════════
 function renderMeals(){
   const m=currentMonth,data=monthlyDataCache[m+'_meals']||{};
-  const meals=['breakfast','lunch','snack'];
-  let html=`<div class="card"><div class="card-hdr"><h3>🍽️ Meal Counts — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
-    <table class="staff-table"><thead><tr><th>Meal</th><th>Cat A</th><th>Cat B</th><th>Cat C</th><th>Total</th></tr></thead><tbody>`;
-  for(const mt of meals){const a=parseInt(data[mt+'_A'])||0,b=parseInt(data[mt+'_B'])||0,c=parseInt(data[mt+'_C'])||0;
-    html+=`<tr><td style="font-weight:600;text-transform:capitalize">${mt}</td>
-      <td><input type="number" value="${a||''}" onchange="saveMealField('${m}','${mt}_A',this.value)" style="width:80px"></td>
-      <td><input type="number" value="${b||''}" onchange="saveMealField('${m}','${mt}_B',this.value)" style="width:80px"></td>
-      <td><input type="number" value="${c||''}" onchange="saveMealField('${m}','${mt}_C',this.value)" style="width:80px"></td>
-      <td class="earned">${a+b+c>0?(a+b+c).toLocaleString():'—'}</td></tr>`;}
-  html+='</tbody></table>';
-  // Revenue calc
-  const bA=parseInt(data.breakfast_A)||0,bB=parseInt(data.breakfast_B)||0,bC=parseInt(data.breakfast_C)||0;
-  const lA=parseInt(data.lunch_A)||0,lB=parseInt(data.lunch_B)||0,lC=parseInt(data.lunch_C)||0;
-  const sA=parseInt(data.snack_A)||0,sB=parseInt(data.snack_B)||0,sC=parseInt(data.snack_C)||0;
-  const R=RATES;const reimbEst=bA*R.breakfast.A+bB*R.breakfast.B+bC*R.breakfast.C+lA*R.lunch.A+lB*R.lunch.B+lC*R.lunch.C+sA*R.snack.A+sB*R.snack.B+sC*R.snack.C;
-  const addlRev=bB*R.breakfast.addlB+bC*R.breakfast.addlC+lB*R.lunch.addlB+lC*R.lunch.addlC+sB*R.snack.addlB+sC*R.snack.addlC;
-  if(bA+lA+sA>0){html+=`<div class="totals-box" style="margin-top:16px"><h4>💰 Revenue Calculation</h4>
-    <div class="totals-row"><span class="label">Est. CACFP Reimbursement</span><span class="val">${fmt(reimbEst)}</span></div>
-    <div class="totals-row"><span class="label">Addl Revenue Needed (B&C)</span><span class="val">${fmt(addlRev)}</span></div>
-    <div class="totals-row big"><span class="label">Total Revenue Required</span><span class="val">${fmt(reimbEst+addlRev)}</span></div></div>`;}
-  html+='</div></div>';
+  let html='';
+  for(const c of ['niles','peace']){
+    const cLabel=cl(c);
+    const d=data[c]||{};
+    const hasDetail=d.children&&d.children.length>0;
+    html+=`<div class="card"><div class="card-hdr"><h3>🍽️ ${cLabel} — Meal Counts ${ML[m]} ${fyYear(m)}</h3>
+      ${hasDetail?`<span class="badge">${d.children.length} children</span>`:''}</div><div class="card-body">
+      <div class="upload-zone ${hasDetail?'done':''}" id="meal-uz-${c}">
+        <input type="file" accept=".csv" onchange="parseMealCSV('${m}','${c}',this)">
+        <div class="uz-icon">🍽️</div><div class="uz-label">Upload ${cLabel} CACFP Detailed CSV from Playground App</div>
+        <div class="uz-file">${d._filename?'✅ '+d._filename:''}</div>
+      </div>`;
+
+    // Show totals table
+    const meals=['breakfast','lunch','snack'];
+    html+=`<table class="staff-table" style="margin-top:16px"><thead><tr><th>Meal</th><th>Cat A (Free)</th><th>Cat B (Reduced)</th><th>Cat C (Paid)</th><th>Total</th></tr></thead><tbody>`;
+    for(const mt of meals){const a=parseInt(d[mt+'_A'])||0,b=parseInt(d[mt+'_B'])||0,cc=parseInt(d[mt+'_C'])||0;
+      html+=`<tr><td style="font-weight:600;text-transform:capitalize">${mt}</td>
+        <td><input type="number" value="${a||''}" onchange="saveMealFieldC('${m}','${c}','${mt}_A',this.value)" style="width:80px"></td>
+        <td><input type="number" value="${b||''}" onchange="saveMealFieldC('${m}','${c}','${mt}_B',this.value)" style="width:80px"></td>
+        <td><input type="number" value="${cc||''}" onchange="saveMealFieldC('${m}','${c}','${mt}_C',this.value)" style="width:80px"></td>
+        <td class="earned">${a+b+cc>0?(a+b+cc).toLocaleString():'—'}</td></tr>`;}
+    html+='</tbody></table>';
+
+    if(d.excluded4thMeal){
+      html+=`<div class="alert alert-warn" style="margin-top:12px"><span>⚠️</span><div><strong>${d.excluded4thMeal} 4th meals excluded</strong> by the 3-meal rule. ${d.excludedSnackCount||0} PM snacks were crossed off on days where Breakfast + AM Snack + Lunch were already served.</div></div>`;}
+
+    if(hasDetail){
+      html+=`<details style="margin-top:12px"><summary style="font-size:.85rem;cursor:pointer;color:var(--navy);font-weight:600">📋 View detailed meal count report (${d.children.length} children, 3-meal rule applied)</summary>
+        <div style="max-height:300px;overflow:auto;font-size:.75rem;margin-top:8px">
+          <table class="staff-table"><thead><tr><th>Name</th><th>Category</th><th>Bkfst</th><th>AM Snk</th><th>Lunch</th><th style="color:var(--error)">PM Snk*</th><th>Counted</th></tr></thead><tbody>
+          ${d.children.map(ch=>`<tr><td>${ch.name}</td><td style="font-weight:600;color:${ch.cat==='A'?'var(--success)':ch.cat==='B'?'var(--gold)':'var(--error)'}">Cat ${ch.cat}</td>
+            <td>${ch.breakfast}</td><td>${ch.amSnack}</td><td>${ch.lunch}</td>
+            <td style="color:${ch.pmExcluded>0?'var(--error)':'inherit'}">${ch.pmSnack}${ch.pmExcluded>0?' <s>(-'+ch.pmExcluded+')</s>':''}</td>
+            <td>${ch.totalCounted}</td></tr>`).join('')}
+          </tbody></table>
+          <p style="margin-top:8px;font-size:.75rem;color:var(--muted)">*PM Snacks are excluded (crossed off) on days where 3 meals were already served (Breakfast + AM Snack + Lunch). Only 3 meals/snacks per child per day may be claimed for CACFP reimbursement.</p>
+        </div></details>`;}
+
+    html+='</div></div>';
+  }
+
+  // Combined totals and revenue
+  const combined={};
+  for(const mt of ['breakfast','lunch','snack']){
+    for(const cat of ['A','B','C']){
+      const key=mt+'_'+cat;
+      combined[key]=(parseInt((data.niles||{})[key])||0)+(parseInt((data.peace||{})[key])||0);
+    }
+  }
+  const R=RATES;
+  const reimbEst=combined.breakfast_A*R.breakfast.A+combined.breakfast_B*R.breakfast.B+combined.breakfast_C*R.breakfast.C
+    +combined.lunch_A*R.lunch.A+combined.lunch_B*R.lunch.B+combined.lunch_C*R.lunch.C
+    +combined.snack_A*R.snack.A+combined.snack_B*R.snack.B+combined.snack_C*R.snack.C;
+  const addlRev=combined.breakfast_B*R.breakfast.addlB+combined.breakfast_C*R.breakfast.addlC
+    +combined.lunch_B*R.lunch.addlB+combined.lunch_C*R.lunch.addlC
+    +combined.snack_B*R.snack.addlB+combined.snack_C*R.snack.addlC;
+  const anyMeals=Object.values(combined).some(v=>v>0);
+
+  if(anyMeals){
+    html+=`<div class="totals-box"><h4>💰 Combined Revenue Calculation — ${ML[m]}</h4>
+      <div class="totals-row"><span class="label">Est. CACFP Reimbursement</span><span class="val">${fmt(reimbEst)}</span></div>
+      <div class="totals-row"><span class="label">Addl Revenue Needed (B&C)</span><span class="val">${fmt(addlRev)}</span></div>
+      <div class="totals-row big"><span class="label">Total Revenue Required</span><span class="val">${fmt(reimbEst+addlRev)}</span></div></div>`;
+  }
+
+  // Also save combined totals to old format for backward compat
+  if(anyMeals){
+    data._combined=combined;
+    monthlyDataCache[m+'_meals']=data;
+  }
+
   document.getElementById('sp-meals').innerHTML=html;
 }
-async function saveMealField(mk,field,val){const data=monthlyDataCache[mk+'_meals']||{};data[field]=parseInt(val)||0;monthlyDataCache[mk+'_meals']=data;
-  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'meals',data}});renderMeals();}catch(e){showToast('Save error','err');}}
+
+async function parseMealCSV(mk,center,input){
+  if(!input.files[0])return;
+  const file=input.files[0];
+  const text=await file.text();
+  const lines=text.split('\n').map(l=>l.replace(/^\uFEFF/,''));
+
+  // Upload for storage
+  const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','meal_counts_csv_'+center);fd.append('metadata',JSON.stringify({center}));
+  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+
+  // Find header row with day columns
+  const headerIdx=lines.findIndex(l=>l.startsWith('First name,'));
+  if(headerIdx<0){showToast('Could not find header row','err');return;}
+  const cols=lines[headerIdx].split(',');
+  const dayIndices=[];
+  for(let i=4;i<cols.length;i++){
+    if(cols[i].match(/Mon|Tue|Wed|Thu|Fri/))dayIndices.push(i);
+  }
+
+  // Parse children: name row → category+meal rows
+  const children=[];
+  let i=headerIdx+1;
+  while(i<lines.length){
+    const parts=lines[i].split(',');
+    // Name row: First,Last,,Classroom
+    if(parts[0]&&parts[0].match(/^[A-Z]/i)&&parts[2]===''&&parts[3]){
+      const childName=parts[0].trim()+' '+parts[1].trim();
+      const classroom=parts[3].trim();
+      i++;
+      // Next rows are meal rows. First meal row may have category in col0
+      let category='C'; // Default: no label = Cat C (Paid)
+      const mealDays={breakfast:[],amSnack:[],lunch:[],pmSnack:[]};
+      const mealCounts={breakfast:0,amSnack:0,lunch:0,pmSnack:0};
+      while(i<lines.length){
+        const mp=lines[i].split(',');
+        const mealType=(mp[3]||'').trim().toLowerCase();
+        if(!mealType||(!mealType.includes('breakfast')&&!mealType.includes('snack')&&!mealType.includes('lunch')&&!mealType.includes('dinner')&&!mealType.includes('not specified'))){
+          break; // Next child or end
+        }
+        // Check for category on first meal row
+        if(mp[0]&&mp[0].match(/^(Free|Paid|Reduced)/i)){
+          const cat=mp[0].trim().toLowerCase();
+          if(cat==='free')category='A';
+          else if(cat==='reduced')category='B';
+          else category='C';
+        }
+        // Map meal type
+        let key=null;
+        if(mealType==='breakfast')key='breakfast';
+        else if(mealType==='am snack')key='amSnack';
+        else if(mealType==='lunch')key='lunch';
+        else if(mealType==='pm snack')key='pmSnack';
+        // Record which days had X
+        if(key){
+          dayIndices.forEach((di,idx)=>{
+            if((mp[di]||'').trim()==='X'){
+              mealDays[key].push(idx);
+              mealCounts[key]++;
+            }
+          });
+        }
+        i++;
+      }
+      // Apply 3-meal rule: max 3 meals/snacks per day
+      // Priority: Breakfast > AM Snack > Lunch > PM Snack (PM gets excluded)
+      let pmExcluded=0;
+      const countedPMDays=[];
+      for(const dayIdx of mealDays.pmSnack){
+        const dayMealCount=[mealDays.breakfast,mealDays.amSnack,mealDays.lunch]
+          .filter(arr=>arr.includes(dayIdx)).length;
+        if(dayMealCount>=3){pmExcluded++;}
+        else{countedPMDays.push(dayIdx);}
+      }
+      const pmCounted=countedPMDays.length;
+      const totalCounted=mealCounts.breakfast+mealCounts.amSnack+mealCounts.lunch+pmCounted;
+
+      children.push({name:childName,classroom,cat:category,
+        breakfast:mealCounts.breakfast,amSnack:mealCounts.amSnack,
+        lunch:mealCounts.lunch,pmSnack:pmCounted,pmExcluded,totalCounted});
+    }else{i++;}
+  }
+
+  // Aggregate by category
+  const totals={breakfast_A:0,breakfast_B:0,breakfast_C:0,lunch_A:0,lunch_B:0,lunch_C:0,snack_A:0,snack_B:0,snack_C:0};
+  let totalExcluded=0,excludedSnackCount=0;
+  for(const ch of children){
+    totals['breakfast_'+ch.cat]+=ch.breakfast;
+    totals['lunch_'+ch.cat]+=ch.lunch;
+    totals['snack_'+ch.cat]+=(ch.amSnack+ch.pmSnack); // Combined AM+PM snacks
+    totalExcluded+=ch.pmExcluded;
+    if(ch.pmExcluded>0)excludedSnackCount++;
+  }
+
+  const data=monthlyDataCache[mk+'_meals']||{};
+  data[center]={...totals,children,excluded4thMeal:totalExcluded,excludedSnackCount,_filename:file.name};
+  monthlyDataCache[mk+'_meals']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'meals',data}});}catch(e){}
+  renderMeals();
+  showToast(`✅ ${cl(center)}: ${children.length} children, ${totalExcluded} 4th meals excluded`,'ok');
+}
+
+async function saveMealFieldC(mk,center,field,val){
+  const data=monthlyDataCache[mk+'_meals']||{};
+  if(!data[center])data[center]={};
+  data[center][field]=parseInt(val)||0;
+  monthlyDataCache[mk+'_meals']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'meals',data}});renderMeals();}catch(e){showToast('Save error','err');}
+}
 
 // ═══════════════════════════════════════════════════
-// CDC ELIGIBILITY
+// CDC ELIGIBILITY — PDF OCR + Dedup + Report
 // ═══════════════════════════════════════════════════
 function renderCDC(){
   const m=currentMonth,data=monthlyDataCache[m+'_cdc']||{};
-  document.getElementById('sp-cdc').innerHTML=`<div class="card"><div class="card-hdr"><h3>🏥 CDC Eligibility — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Enter the CDC qualifying children count per center. If ≥25% of enrolled children qualify, use CDC percentage for CACFP eligibility. Otherwise, HEIS (Household Eligibility Income Statement) is required.</p>
-    ${['niles','peace'].map(c=>{const d=data[c]||{};const att=monthlyDataCache[m+'_attendance']||{};const enrolled=att[c]?.enrolled||0;const pct=enrolled>0?((d.qualifying||0)/enrolled*100):0;
-      return `<h4 style="margin:16px 0 10px;color:var(--navy)">${c==='niles'?'Niles':'Peace Boulevard'}</h4>
-      <div class="form-grid">
-        <div class="form-group"><label>CDC Qualifying Children</label><input type="number" value="${d.qualifying||''}" onchange="saveCDCField('${m}','${c}','qualifying',this.value)"></div>
+  let html='';
+  for(const c of ['niles','peace']){
+    const cLabel=cl(c);const d=data[c]||{};
+    const att=monthlyDataCache[m+'_attendance']||{};const enrolled=att[c]?.enrolled||0;
+    const qualifying=d.qualifying||0;const pct=enrolled>0?(qualifying/enrolled*100):0;
+    const hasDetail=d.qualifyingChildren&&d.qualifyingChildren.length>0;
+
+    html+=`<div class="card"><div class="card-hdr"><h3>🏥 ${cLabel} — CDC Eligibility ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+      <div class="upload-zone ${hasDetail?'done':''}" id="cdc-uz-${c}">
+        <input type="file" accept=".pdf" onchange="parseCDCPDF('${m}','${c}',this)">
+        <div class="uz-icon">🏥</div><div class="uz-label">Upload ${cLabel} CDC Statement (PDF)</div>
+        <div class="uz-file">${d._filename?'✅ '+d._filename:''}</div>
+      </div>
+      <div class="form-grid" style="margin-top:16px">
+        <div class="form-group"><label>CDC Qualifying Children</label><input type="number" value="${qualifying||''}" onchange="saveCDCField('${m}','${c}','qualifying',this.value)"></div>
         <div class="form-group"><label>Total Enrolled (from Attendance)</label><input type="number" value="${enrolled}" readonly style="background:var(--bg)"></div>
       </div>
       <div class="alert ${pct>=25?'alert-ok':'alert-warn'}"><span style="font-size:1.2rem">${pct>=25?'✅':'⚠️'}</span>
-        <div><strong>${pct.toFixed(1)}% qualify</strong> — ${pct>=25?'Meets 25% threshold. CDC eligibility applies.':'Below 25% threshold. HEIS forms may be needed.'}</div></div>`;}).join('')}
-    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('cdc_statement',m)?'done':''}"><input type="file" accept=".pdf,.png,.jpg" onchange="uploadMonthDoc('${m}','cdc_statement',this)"><div class="uz-icon">🏥</div><div class="uz-label">Upload CDC Statement(s)</div><div class="uz-file">${getDocNameSimple('cdc_statement',m)}</div></div></div>
-  </div></div>`;
+        <div><strong>${pct.toFixed(1)}% qualify</strong> — ${pct>=25?'Meets 25% threshold. CDC eligibility applies.':'Below 25% threshold. HEIS forms may be needed.'}</div></div>
+      ${hasDetail?`
+        <div class="extracted-preview" style="margin-top:12px">
+          <h4>📋 CDC Eligibility Report — ${cLabel}</h4>
+          <div class="extracted-row"><span class="lbl">Total children on statement:</span><span class="val">${d.totalOnStatement||0}</span></div>
+          <div class="extracted-row"><span class="lbl">Excluded (No Authorization):</span><span class="val">${d.noAuth||0}</span></div>
+          <div class="extracted-row"><span class="lbl">Excluded ($0.00 paid):</span><span class="val">${d.zeroPaid||0}</span></div>
+          <div class="extracted-row"><span class="lbl">Excluded (Duplicate Bill):</span><span class="val">${d.duplicateBill||0}</span></div>
+          <div class="extracted-row"><span class="lbl">Unique qualifying children (Amount Paid > $0):</span><span class="val" style="color:var(--success);font-size:1rem"><strong>${qualifying}</strong></span></div>
+          <div class="extracted-row"><span class="lbl">Total CDC payments:</span><span class="val">${fmt(d.totalPaid||0)}</span></div>
+          <details style="margin-top:8px"><summary style="font-size:.8rem;cursor:pointer;color:var(--navy)">View qualifying children list</summary>
+            <div style="max-height:200px;overflow-y:auto;font-size:.75rem;margin-top:8px">
+              <table class="staff-table"><thead><tr><th>Child Name</th><th>Child ID</th><th>Amount Paid</th></tr></thead><tbody>
+              ${(d.qualifyingChildren||[]).map(ch=>`<tr><td>${ch.name}</td><td>${ch.childId}</td><td>${fmt(ch.amountPaid)}</td></tr>`).join('')}
+              </tbody></table>
+            </div>
+          </details>
+        </div>`:''}
+    </div></div>`;
+  }
+  document.getElementById('sp-cdc').innerHTML=html;
 }
-async function saveCDCField(mk,center,field,val){const data=monthlyDataCache[mk+'_cdc']||{};if(!data[center])data[center]={};data[center][field]=parseInt(val)||0;monthlyDataCache[mk+'_cdc']=data;
-  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'cdc',data}});renderCDC();}catch(e){showToast('Save error','err');}}
+
+async function parseCDCPDF(mk,center,input){
+  if(!input.files[0])return;
+  const file=input.files[0];
+
+  // Upload for storage
+  const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','cdc_statement_'+center);fd.append('metadata',JSON.stringify({center}));
+  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+
+  showToast('Scanning CDC PDF...','');
+  try{
+    const buf=await file.arrayBuffer();
+    const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+    let fullText='';
+    for(let p=1;p<=pdf.numPages;p++){
+      const page=await pdf.getPage(p);
+      const tc=await page.getTextContent();
+      fullText+=tc.items.map(i=>i.str).join(' ')+'\n';
+    }
+
+    // Parse children from CDC text
+    const childPattern=/Child's\s*Name\s*:\s*([A-Za-z' \-]+?)(?:\s+Case\s*No)/gi;
+    const idPattern=/Child's\s*ID\s*No\.\s*:\s*(\d+)/gi;
+    const paidPattern=/\$\s*([\d,]+\.\d{2})/g;
+    const noAuthPattern=/No\s*Authorization/gi;
+    const dupPattern=/Duplicate\s*Bill/gi;
+
+    // Extract all entries
+    const entries=[];
+    const lines=fullText.split('\n');
+    const allText=fullText;
+
+    // Find each "Child's Name" occurrence
+    let match;
+    const nameRegex=/Child's\s*Name\s*:\s*([A-Za-z' \-]+?)(?:\s+Case)/gi;
+    const positions=[];
+    while((match=nameRegex.exec(allText))!==null){
+      positions.push({name:match[1].trim(),idx:match.index});
+    }
+
+    // For each child, find their Child ID and Amount Paid
+    for(let i=0;i<positions.length;i++){
+      const start=positions[i].idx;
+      const end=i<positions.length-1?positions[i+1].idx:allText.length;
+      const block=allText.substring(start,end);
+
+      const idM=block.match(/Child's\s*ID\s*No\.\s*:\s*(\d+)/i);
+      const childId=idM?idM[1]:'unknown';
+      const hasNoAuth=block.match(/No\s*Authorization/i);
+      const hasDup=block.match(/Duplicate\s*Bill/i);
+
+      // Find Amount Paid - look for dollar amounts
+      const amounts=[...block.matchAll(/\$\s*([\d,]+\.\d{2})/g)].map(m=>parseFloat(m[1].replace(',','')));
+      // The "Amount Paid" is typically the last significant dollar amount before "Total for Child"
+      // Look specifically near "Amount Paid" or "Total for Child"
+      const paidM=block.match(/\$\s*([\d,]+\.\d{2})\s*(?:More|Hours|$|\n)/i)||block.match(/\$\s*(\d+\.\d{2})\s*$/m);
+      let amountPaid=0;
+      // Find the amount on the line - typically it's the larger non-rate amount
+      const nonRateAmounts=amounts.filter(a=>a>10); // Filter out rates like $6.55
+      if(nonRateAmounts.length>0)amountPaid=nonRateAmounts[0];
+      if(hasNoAuth)amountPaid=0;
+
+      entries.push({name:positions[i].name,childId,amountPaid,noAuth:!!hasNoAuth,duplicate:!!hasDup});
+    }
+
+    // Deduplicate by Child ID - keep entry with highest payment
+    const byId={};
+    for(const e of entries){
+      if(!byId[e.childId]||e.amountPaid>byId[e.childId].amountPaid){
+        byId[e.childId]=e;
+      }
+    }
+    const unique=Object.values(byId);
+
+    // Filter qualifying: not No Auth, not Duplicate, Amount > 0
+    const qualifying=unique.filter(e=>!e.noAuth&&!e.duplicate&&e.amountPaid>0);
+    const noAuth=unique.filter(e=>e.noAuth).length;
+    const zeroPaid=unique.filter(e=>!e.noAuth&&!e.duplicate&&e.amountPaid===0).length;
+    const duplicateBill=entries.filter(e=>e.duplicate).length;
+    const totalPaid=qualifying.reduce((s,e)=>s+e.amountPaid,0);
+
+    const data=monthlyDataCache[mk+'_cdc']||{};
+    data[center]={qualifying:qualifying.length,qualifyingChildren:qualifying,
+      totalOnStatement:entries.length,noAuth,zeroPaid,duplicateBill,totalPaid,_filename:file.name};
+    monthlyDataCache[mk+'_cdc']=data;
+    try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'cdc',data}});}catch(e){}
+    renderCDC();
+    showToast(`✅ CDC: ${qualifying.length} qualifying children from ${entries.length} entries`,'ok');
+  }catch(e){showToast('CDC parse error: '+e.message,'err');console.error(e);}
+}
+
+async function saveCDCField(mk,center,field,val){
+  const data=monthlyDataCache[mk+'_cdc']||{};if(!data[center])data[center]={};
+  data[center][field]=parseInt(val)||0;monthlyDataCache[mk+'_cdc']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'cdc',data}});renderCDC();}catch(e){showToast('Save error','err');}
+}
 
 // ═══════════════════════════════════════════════════
-// FOOD COSTS
+// FOOD COSTS — Receipt Tracker
 // ═══════════════════════════════════════════════════
 function renderFoodCosts(){
   const m=currentMonth,data=monthlyDataCache[m+'_foodcosts']||{};
-  document.getElementById('sp-foodcosts').innerHTML=`<div class="card"><div class="card-hdr"><h3>🧾 Food Costs — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
-    <div class="form-grid">
-      <div class="form-group"><label>Monthly Food Cost Total ($)</label><input type="number" step="0.01" value="${data.total||''}" onchange="saveFoodCostField('${m}','total',this.value)" placeholder="From receipts/invoices"></div>
-      <div class="form-group"><label>Notes</label><input type="text" value="${data.notes||''}" onchange="saveFoodCostField('${m}','notes',this.value)" placeholder="e.g. GFS, Sysco"></div>
-    </div>
-    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('food_receipts',m)?'done':''}"><input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadMonthDoc('${m}','food_receipts',this)"><div class="uz-icon">🧾</div><div class="uz-label">Upload food receipts/invoices</div><div class="uz-file">${getDocNameSimple('food_receipts',m)}</div></div></div>
+  const receipts=data.receipts||[];
+  const total=receipts.reduce((s,r)=>s+(parseFloat(r.amount)||0),0)||(parseFloat(data.total)||0);
+
+  let html=`<div class="card"><div class="card-hdr"><h3>🧾 Food Costs — ${ML[m]} ${fyYear(m)}</h3><span class="badge">${fmt(total)}</span></div><div class="card-body">
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Upload food vendor receipts (JA Foods, Amazon, Sam's Club, grocery stores, etc.). Each receipt total is extracted and added to the monthly total.</p>
+    <div class="upload-zone" id="fc-uz">
+      <input type="file" accept=".pdf,.png,.jpg,.jpeg" multiple onchange="uploadFoodReceipts('${m}',this)">
+      <div class="uz-icon">🧾</div><div class="uz-label">Upload receipts (select multiple)</div>
+    </div>`;
+
+  if(receipts.length>0){
+    html+=`<table class="staff-table" style="margin-top:16px"><thead><tr><th>Receipt / Invoice</th><th>Vendor</th><th style="text-align:right">Amount</th><th></th></tr></thead><tbody>`;
+    receipts.forEach((r,idx)=>{
+      html+=`<tr><td>${r.filename}</td>
+        <td><input type="text" value="${r.vendor||''}" onchange="updateReceipt('${m}',${idx},'vendor',this.value)" style="width:120px" placeholder="Vendor name"></td>
+        <td><input type="number" step="0.01" value="${r.amount||''}" onchange="updateReceipt('${m}',${idx},'amount',this.value)" style="width:100px;text-align:right;font-family:'JetBrains Mono',monospace"></td>
+        <td><button class="btn-remove" onclick="removeReceipt('${m}',${idx})">✕</button></td></tr>`;
+    });
+    html+=`</tbody><tfoot><tr style="background:var(--navy);color:#fff"><td colspan="2" style="padding:10px 12px;font-weight:700">MONTHLY TOTAL</td>
+      <td style="padding:10px 12px;font-family:'JetBrains Mono',monospace;font-weight:700;text-align:right">${fmt(total)}</td><td></td></tr></tfoot></table>`;
+  }
+
+  html+=`<div class="form-group" style="margin-top:16px"><label>Manual Total Override ($)</label>
+    <input type="number" step="0.01" value="${data.total||''}" onchange="saveFoodCostField('${m}','total',this.value)" placeholder="Or enter total manually">
+    <div class="form-hint">If you enter receipts above, this updates automatically. Use this field to override or enter a manual total.</div></div>
   </div></div>`;
+  document.getElementById('sp-foodcosts').innerHTML=html;
 }
-async function saveFoodCostField(mk,field,val){const data=monthlyDataCache[mk+'_foodcosts']||{};data[field]=field==='notes'?val:(parseFloat(val)||0);monthlyDataCache[mk+'_foodcosts']=data;
-  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'foodcosts',data}});}catch(e){showToast('Save error','err');}}
+
+async function uploadFoodReceipts(mk,input){
+  if(!input.files)return;
+  const data=monthlyDataCache[mk+'_foodcosts']||{};
+  if(!data.receipts)data.receipts=[];
+
+  for(const file of Array.from(input.files)){
+    // Upload for storage
+    const fd=new FormData();fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','food_receipt');
+    try{await api('/api/documents/upload',{method:'POST',body:fd});}catch(e){continue;}
+
+    // OCR for total if image
+    let extractedAmount=0;
+    if(file.type.startsWith('image/')||file.name.match(/\.(png|jpg|jpeg)$/i)){
+      try{const worker=await Tesseract.createWorker('eng');const{data:ocrData}=await worker.recognize(file);await worker.terminate();
+        extractedAmount=extractReceiptTotal(ocrData.text);}catch(e){}
+    }
+    data.receipts.push({filename:file.name,amount:extractedAmount,vendor:'',uploadedAt:new Date().toISOString()});
+  }
+
+  // Recalculate total
+  data.total=data.receipts.reduce((s,r)=>s+(parseFloat(r.amount)||0),0);
+  monthlyDataCache[mk+'_foodcosts']=data;
+  documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'foodcosts',data}});}catch(e){}
+  renderFoodCosts();
+  showToast(`✅ ${input.files.length} receipt(s) added!`,'ok');
+}
+
+function updateReceipt(mk,idx,field,val){
+  const data=monthlyDataCache[mk+'_foodcosts']||{};
+  if(data.receipts&&data.receipts[idx]){
+    data.receipts[idx][field]=field==='amount'?(parseFloat(val)||0):val;
+    data.total=data.receipts.reduce((s,r)=>s+(parseFloat(r.amount)||0),0);
+    monthlyDataCache[mk+'_foodcosts']=data;
+    api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'foodcosts',data}}).catch(()=>{});
+    renderFoodCosts();
+  }
+}
+
+function removeReceipt(mk,idx){
+  const data=monthlyDataCache[mk+'_foodcosts']||{};
+  if(data.receipts){data.receipts.splice(idx,1);data.total=data.receipts.reduce((s,r)=>s+(parseFloat(r.amount)||0),0);
+    monthlyDataCache[mk+'_foodcosts']=data;
+    api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'foodcosts',data}}).catch(()=>{});
+    renderFoodCosts();}
+}
+
+async function saveFoodCostField(mk,field,val){
+  const data=monthlyDataCache[mk+'_foodcosts']||{};data[field]=field==='notes'?val:(parseFloat(val)||0);monthlyDataCache[mk+'_foodcosts']=data;
+  try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'foodcosts',data}});}catch(e){showToast('Save error','err');}
+}
 
 // ═══════════════════════════════════════════════════
-// CLAIMS
+// CLAIMS (numbers for submission — not post-submission)
 // ═══════════════════════════════════════════════════
 function renderClaims(){
   const m=currentMonth,data=monthlyDataCache[m+'_claims']||{};
   document.getElementById('sp-claims').innerHTML=`<div class="card"><div class="card-hdr"><h3>📋 CACFP Claim — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">These are the figures you will use when creating and submitting the CACFP claim in MIND. After submission, upload the claims listing screenshot in the Documents tab.</p>
     <div class="form-grid">
       <div class="form-group"><label>Meal Reimbursement ($)</label><input type="number" step="0.01" value="${data.meal_reimbursement||''}" onchange="saveClaimField('${m}','meal_reimbursement',this.value)"></div>
       <div class="form-group"><label>Cash-in-Lieu ($)</label><input type="number" step="0.01" value="${data.cash_in_lieu||''}" onchange="saveClaimField('${m}','cash_in_lieu',this.value)"></div>
       <div class="form-group"><label>Total Reimbursement ($)</label><input type="number" step="0.01" value="${data.total_reimbursement||''}" onchange="saveClaimField('${m}','total_reimbursement',this.value)"></div>
     </div>
-    <div style="margin-top:16px"><div class="upload-zone ${getDocNameSimple('claims_listing',m)?'done':''}"><input type="file" accept=".pdf,.png,.jpg" onchange="uploadMonthDoc('${m}','claims_listing',this)"><div class="uz-icon">📸</div><div class="uz-label">Upload Claims Listing from MIND</div><div class="uz-file">${getDocNameSimple('claims_listing',m)}</div></div></div>
   </div></div>`;
 }
 async function saveClaimField(mk,field,val){const data=monthlyDataCache[mk+'_claims']||{};data[field]=parseFloat(val)||0;monthlyDataCache[mk+'_claims']=data;
   try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'claims',data}});}catch(e){showToast('Save error','err');}}
 
 // ═══════════════════════════════════════════════════
-// MONTH DOCS
+// MONTH DOCS — Two sections + Print Package
 // ═══════════════════════════════════════════════════
 function renderMonthDocs(){
-  const m=currentMonth,mDocs=documents.filter(d=>d.month_key===m);
-  document.getElementById('sp-monthdocs').innerHTML=`<div class="card"><div class="card-hdr"><h3>📁 Documents — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
-    ${mDocs.length>0?`<ul class="doc-list">${mDocs.map(d=>`<li><span style="font-size:1.2rem">📄</span><span class="doc-name">${d.filename}</span>
-      <span style="font-size:.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${d.doc_type}</span>
-      <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
-      <div class="doc-actions"><a href="/api/documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
-      <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`).join('')}</ul>`
-      :'<p style="color:var(--muted);text-align:center;padding:20px">No documents for this month.</p>'}
-    <div style="margin-top:16px"><div class="upload-zone"><input type="file" onchange="uploadMonthDoc('${m}','other',this)"><div class="uz-icon">📎</div><div class="uz-label">Upload additional document</div></div></div>
-  </div></div>`;
+  const m=currentMonth;
+  const mDocs=documents.filter(d=>d.month_key===m);
+  const uploaded=mDocs.filter(d=>!d.doc_type?.startsWith('generated_'));
+  const generated=mDocs.filter(d=>d.doc_type?.startsWith('generated_'));
+
+  // Check what generated docs should exist based on data
+  const hasAtt=monthlyDataCache[m+'_attendance'];
+  const hasMeals=monthlyDataCache[m+'_meals'];
+  const hasCDC=monthlyDataCache[m+'_cdc'];
+
+  document.getElementById('sp-monthdocs').innerHTML=`
+    <div class="card"><div class="card-hdr"><h3>📁 Uploaded Documents — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+      ${uploaded.length>0?`<ul class="doc-list">${uploaded.map(d=>`<li><span style="font-size:1.2rem">📄</span><span class="doc-name">${d.filename}</span>
+        <span style="font-size:.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${d.doc_type}</span>
+        <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
+        <div class="doc-actions"><a href="/api/documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
+        <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`).join('')}</ul>`
+        :'<p style="color:var(--muted);text-align:center;padding:16px">No uploaded documents for this month.</p>'}
+      <div style="margin-top:12px"><div class="upload-zone"><input type="file" onchange="uploadMonthDoc('${m}','other',this)"><div class="uz-icon">📎</div><div class="uz-label">Upload additional document</div></div></div>
+    </div></div>
+
+    <div class="card"><div class="card-hdr"><h3>📊 Generated Reports — ${ML[m]} ${fyYear(m)}</h3></div><div class="card-body">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">These reports are automatically generated from your uploaded data. They document how calculations were made for audit purposes.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="alert ${hasAtt?'alert-ok':'alert-warn'}" style="margin:0;cursor:pointer" onclick="hasAtt&&viewGeneratedReport('attendance','${m}')">
+          <span>📊</span><div><strong>Attendance & ADA Report</strong><br><span style="font-size:.8rem">${hasAtt?'✅ Data available — click to view':'⬜ Upload attendance CSV first'}</span></div></div>
+        <div class="alert ${hasMeals?'alert-ok':'alert-warn'}" style="margin:0;cursor:pointer" onclick="hasMeals&&viewGeneratedReport('meals','${m}')">
+          <span>🍽️</span><div><strong>Meal Count Report (3-Meal Rule)</strong><br><span style="font-size:.8rem">${hasMeals?'✅ Data available — click to view':'⬜ Upload meal count CSV first'}</span></div></div>
+        <div class="alert ${hasCDC?'alert-ok':'alert-warn'}" style="margin:0;cursor:pointer" onclick="hasCDC&&viewGeneratedReport('cdc','${m}')">
+          <span>🏥</span><div><strong>CDC Eligibility Report</strong><br><span style="font-size:.8rem">${hasCDC?'✅ Data available — click to view':'⬜ Upload CDC statement first'}</span></div></div>
+        <div class="alert alert-ok" style="margin:0;cursor:pointer" onclick="printMonthlyPackage('${m}')">
+          <span>🖨️</span><div><strong>Complete CACFP Documentation</strong><br><span style="font-size:.8rem">Print full reporting package for ${ML[m]}</span></div></div>
+      </div>
+    </div></div>
+  `;
+}
+
+function viewGeneratedReport(type,mk){
+  // Open a printable view of the generated report
+  const w=window.open('','_blank','width=900,height=700');
+  let html=`<!DOCTYPE html><html><head><title>CACFP ${type} Report — ${ML[mk]} ${fyYear(mk)}</title>
+    <style>body{font-family:'DM Sans',Arial,sans-serif;padding:40px;color:#1A202C;font-size:13px}
+    h1{font-size:18px;color:#1B2A4A;border-bottom:2px solid #C5972C;padding-bottom:8px}
+    h2{font-size:14px;color:#1B2A4A;margin-top:20px}
+    table{width:100%;border-collapse:collapse;margin:12px 0;font-size:12px}
+    th{background:#1B2A4A;color:#fff;padding:6px 8px;text-align:left}
+    td{padding:4px 8px;border-bottom:1px solid #E2E8F0}
+    .header{text-align:center;margin-bottom:24px}
+    .header p{color:#718096;font-size:12px}
+    .total-row{font-weight:700;background:#F4F6F9}
+    @media print{body{padding:20px}}</style></head><body>`;
+  html+=`<div class="header"><h1>The Children's Center, Inc.</h1><p>CACFP ${type==='attendance'?'Attendance & ADA':type==='meals'?'Meal Count (3-Meal Rule Applied)':'CDC Eligibility'} Report</p>
+    <p>${ML[mk]} ${fyYear(mk)} | Sponsor #990004457</p></div>`;
+
+  if(type==='attendance'){
+    for(const c of ['niles','peace']){
+      const d=(monthlyDataCache[mk+'_attendance']||{})[c];
+      if(!d)continue;
+      html+=`<h2>${cl(c)}</h2><p>Enrolled: ${d.enrolled} | Operating Days: ${d.days} | Total Present: ${d.totalPresent} | <strong>ADA: ${d.ada}</strong></p>
+        <p>ADA Calculation: ${d.totalPresent} total child-days present ÷ ${d.days} operating days = ${d.ada} average daily attendance</p>`;
+      if(d.childData){html+=`<table><tr><th>Name</th><th>Classroom</th><th>Present</th><th>Absent</th></tr>
+        ${d.childData.map(ch=>`<tr><td>${ch.name}</td><td>${ch.classroom}</td><td>${ch.present}</td><td>${ch.absent}</td></tr>`).join('')}</table>`;}
+    }
+  }else if(type==='meals'){
+    for(const c of ['niles','peace']){
+      const d=(monthlyDataCache[mk+'_meals']||{})[c];
+      if(!d||!d.children)continue;
+      html+=`<h2>${cl(c)} — ${d.children.length} Children</h2>`;
+      if(d.excluded4thMeal)html+=`<p style="color:#C0392B"><strong>${d.excluded4thMeal} PM snacks excluded by 3-meal rule</strong></p>`;
+      html+=`<table><tr><th>Cat</th><th>Breakfast</th><th>Lunch</th><th>Snack (AM+PM)</th><th>Total</th></tr>
+        <tr><td>A (Free)</td><td>${d.breakfast_A}</td><td>${d.lunch_A}</td><td>${d.snack_A}</td><td>${(d.breakfast_A||0)+(d.lunch_A||0)+(d.snack_A||0)}</td></tr>
+        <tr><td>B (Reduced)</td><td>${d.breakfast_B}</td><td>${d.lunch_B}</td><td>${d.snack_B}</td><td>${(d.breakfast_B||0)+(d.lunch_B||0)+(d.snack_B||0)}</td></tr>
+        <tr><td>C (Paid)</td><td>${d.breakfast_C}</td><td>${d.lunch_C}</td><td>${d.snack_C}</td><td>${(d.breakfast_C||0)+(d.lunch_C||0)+(d.snack_C||0)}</td></tr></table>`;
+      html+=`<table><tr><th>Child</th><th>Cat</th><th>Bkfst</th><th>AM Snk</th><th>Lunch</th><th>PM Snk</th><th>Excluded</th><th>Total</th></tr>
+        ${d.children.map(ch=>`<tr><td>${ch.name}</td><td>${ch.cat}</td><td>${ch.breakfast}</td><td>${ch.amSnack}</td><td>${ch.lunch}</td><td>${ch.pmSnack}</td>
+          <td style="color:#C0392B">${ch.pmExcluded>0?'-'+ch.pmExcluded:''}</td><td>${ch.totalCounted}</td></tr>`).join('')}</table>`;
+    }
+  }else if(type==='cdc'){
+    for(const c of ['niles','peace']){
+      const d=(monthlyDataCache[mk+'_cdc']||{})[c];
+      if(!d)continue;
+      const att=(monthlyDataCache[mk+'_attendance']||{})[c];
+      const enrolled=att?.enrolled||0;const pct=enrolled>0?((d.qualifying||0)/enrolled*100):0;
+      html+=`<h2>${cl(c)}</h2><p>Total on statement: ${d.totalOnStatement||0} | No Authorization: ${d.noAuth||0} | $0 Paid: ${d.zeroPaid||0} | Duplicate: ${d.duplicateBill||0}</p>
+        <p><strong>Qualifying children: ${d.qualifying} of ${enrolled} enrolled (${pct.toFixed(1)}%) — ${pct>=25?'MEETS':'DOES NOT MEET'} 25% threshold</strong></p>`;
+      if(d.qualifyingChildren){html+=`<table><tr><th>Child Name</th><th>Child ID</th><th>Amount Paid</th></tr>
+        ${d.qualifyingChildren.map(ch=>`<tr><td>${ch.name}</td><td>${ch.childId}</td><td>$${ch.amountPaid.toFixed(2)}</td></tr>`).join('')}
+        <tr class="total-row"><td colspan="2">Total CDC Payments</td><td>$${(d.totalPaid||0).toFixed(2)}</td></tr></table>`;}
+    }
+  }
+  html+=`<p style="margin-top:24px;font-size:11px;color:#718096">Generated by TCC CACFP Suite on ${new Date().toLocaleDateString()}</p></body></html>`;
+  w.document.write(html);w.document.close();
+}
+
+function printMonthlyPackage(mk){
+  const w=window.open('','_blank','width=900,height=700');
+  let html=`<!DOCTYPE html><html><head><title>Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</title>
+    <style>body{font-family:'DM Sans',Arial,sans-serif;padding:30px;color:#1A202C;font-size:12px}
+    h1{font-size:18px;color:#1B2A4A;border-bottom:3px solid #C5972C;padding-bottom:8px;text-align:center}
+    h2{font-size:15px;color:#1B2A4A;margin-top:24px;border-bottom:1px solid #E2E8F0;padding-bottom:4px}
+    h3{font-size:13px;color:#2A3D66;margin-top:16px}
+    table{width:100%;border-collapse:collapse;margin:8px 0;font-size:11px}
+    th{background:#1B2A4A;color:#fff;padding:5px 6px;text-align:left}
+    td{padding:3px 6px;border-bottom:1px solid #E2E8F0}
+    .total-row{font-weight:700;background:#F4F6F9}
+    .section{page-break-inside:avoid;margin-bottom:16px}
+    @media print{body{padding:15px;font-size:11px}h1{font-size:16px}}</style></head><body>`;
+  html+=`<h1>The Children's Center, Inc.<br>Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</h1>
+    <p style="text-align:center;color:#718096">Sponsor #990004457 | Generated ${new Date().toLocaleDateString()}</p>`;
+
+  // STAFF COSTS
+  const stTotals=salaryTotals.find(r=>r.month_key===mk);
+  if(stTotals){
+    const fs=parseFloat(stTotals.food_service_cost)||0,ad=parseFloat(stTotals.admin_cost)||0;
+    html+=`<div class="section"><h2>1. Staff Costs</h2>
+      <p>Food Service Salaries: <strong>$${fs.toFixed(2)}</strong> | Benefits (7.65%): <strong>$${(fs*BEN_RATE).toFixed(2)}</strong> | Admin: <strong>$${ad.toFixed(2)}</strong></p>
+      <p><strong>Total Cost to NFSA: $${(fs+fs*BEN_RATE+ad).toFixed(2)}</strong></p></div>`;
+  }
+
+  // ATTENDANCE
+  const att=monthlyDataCache[mk+'_attendance']||{};
+  html+=`<div class="section"><h2>2. Attendance</h2>`;
+  for(const c of ['niles','peace']){const d=att[c];if(!d)continue;
+    html+=`<h3>${cl(c)}</h3><p>Enrolled: ${d.enrolled} | ADA: ${d.ada} | Operating Days: ${d.days} | ADA Calc: ${d.totalPresent||'?'} ÷ ${d.days} = ${d.ada}</p>`;}
+  html+=`</div>`;
+
+  // MEAL COUNTS
+  const meals=monthlyDataCache[mk+'_meals']||{};
+  html+=`<div class="section"><h2>3. Meal Counts (3-Meal Rule Applied)</h2>`;
+  for(const c of ['niles','peace']){const d=meals[c];if(!d)continue;
+    html+=`<h3>${cl(c)}</h3>`;
+    if(d.excluded4thMeal)html+=`<p style="color:#C0392B">${d.excluded4thMeal} PM snacks excluded by 3-meal rule</p>`;
+    html+=`<table><tr><th>Cat</th><th>Breakfast</th><th>Lunch</th><th>Snack</th></tr>
+      <tr><td>A</td><td>${d.breakfast_A||0}</td><td>${d.lunch_A||0}</td><td>${d.snack_A||0}</td></tr>
+      <tr><td>B</td><td>${d.breakfast_B||0}</td><td>${d.lunch_B||0}</td><td>${d.snack_B||0}</td></tr>
+      <tr><td>C</td><td>${d.breakfast_C||0}</td><td>${d.lunch_C||0}</td><td>${d.snack_C||0}</td></tr></table>`;}
+  html+=`</div>`;
+
+  // CDC
+  const cdc=monthlyDataCache[mk+'_cdc']||{};
+  html+=`<div class="section"><h2>4. CDC Eligibility</h2>`;
+  for(const c of ['niles','peace']){const d=cdc[c];if(!d)continue;const en=att[c]?.enrolled||0;const pct=en>0?((d.qualifying||0)/en*100):0;
+    html+=`<h3>${cl(c)}</h3><p>Qualifying: ${d.qualifying||0} of ${en} enrolled (${pct.toFixed(1)}%) — ${pct>=25?'MEETS':'Does not meet'} 25% threshold</p>`;}
+  html+=`</div>`;
+
+  // FOOD COSTS
+  const fc=monthlyDataCache[mk+'_foodcosts']||{};
+  html+=`<div class="section"><h2>5. Food Costs</h2><p>Total: <strong>$${(fc.total||0).toFixed(2)}</strong></p>`;
+  if(fc.receipts?.length>0){html+=`<table><tr><th>Receipt</th><th>Vendor</th><th>Amount</th></tr>
+    ${fc.receipts.map(r=>`<tr><td>${r.filename}</td><td>${r.vendor||''}</td><td>$${(r.amount||0).toFixed(2)}</td></tr>`).join('')}
+    <tr class="total-row"><td colspan="2">Total</td><td>$${(fc.total||0).toFixed(2)}</td></tr></table>`;}
+  html+=`</div>`;
+
+  // CLAIM
+  const cl2=monthlyDataCache[mk+'_claims']||{};
+  html+=`<div class="section"><h2>6. CACFP Claim Figures</h2>
+    <p>Meal Reimbursement: $${(cl2.meal_reimbursement||0).toFixed(2)} | CIL: $${(cl2.cash_in_lieu||0).toFixed(2)} | Total: $${(cl2.total_reimbursement||0).toFixed(2)}</p></div>`;
+
+  html+=`</body></html>`;
+  w.document.write(html);w.document.close();
+  setTimeout(()=>w.print(),500);
 }
 
 async function uploadMonthDoc(mk,docType,input){if(!input.files[0])return;
