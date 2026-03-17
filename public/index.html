@@ -1682,14 +1682,18 @@ async function printMonthlyPackage(mk){
   // 3. STAFF COSTS
   // ══════════════════════════════════════════════════
   html+=`<h2 class="page-break">3. Staff Costs</h2>`;
-  // Uploaded staff cost documents
-  const staffDocs=mDocs.filter(d=>d.doc_type?.includes('time_distribution')||d.doc_type?.includes('batch_time'));
+  // Uploaded staff time distribution documents ONLY (not meal counts or attendance)
+  const staffDocs=mDocs.filter(d=>{const dt=d.doc_type||'';
+    return dt.startsWith('time_distribution_fs')||dt.startsWith('time_distribution_admin')||dt.startsWith('batch_time_forms');});
   if(staffDocs.length>0){
     html+=`<h4>Uploaded Time Distribution Documents</h4>`;
     for(const sd of staffDocs){
-      if(docImages[sd.id])html+=`<div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
-      else html+=`<div class="doc-note">📄 ${sd.filename} (${sd.doc_type}) — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}</div>`;
+      const centerLabel=sd.metadata?.center?` (${cl(sd.metadata.center)})`:'';
+      if(docImages[sd.id])html+=`<p style="font-size:9px;color:#666;margin:4px 0">${sd.filename}${centerLabel}</p><div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
+      else html+=`<div class="doc-note">📄 ${sd.filename}${centerLabel} — ${sd.doc_type} — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}. Print this document separately from the Documents tab.</div>`;
     }
+  }else{
+    html+=`<div class="doc-note">⚠️ No Time & Attendance / Time Distribution documents uploaded for this month yet.</div>`;
   }
   // Staff cost totals
   if(stData){
@@ -1720,6 +1724,8 @@ async function printMonthlyPackage(mk){
         html+=`<tr class="total-row"><td colspan="3">Total ${cl(center)}</td><td>${fmt(cFS)}</td><td></td><td>${fmt(cAdm)}</td></tr></table>`;
       }
     }
+  }else{
+    html+=`<div class="doc-note">⚠️ No staff cost data entered for this month.</div>`;
   }
 
   // ══════════════════════════════════════════════════
@@ -1729,11 +1735,16 @@ async function printMonthlyPackage(mk){
   for(const c of ['niles','peace']){
     const a=att[c];
     html+=`<h2 class="page-break">${sectionNum}. Attendance & ADA — ${cl(c)}</h2>`;
-    // Uploaded attendance doc
-    const attDoc=mDocs.find(d=>d.doc_type===('attendance_csv_'+c));
-    if(attDoc){
-      if(docImages[attDoc.id])html+=`<div class="doc-embed"><img src="${docImages[attDoc.id]}" alt="${attDoc.filename}"></div>`;
-      else html+=`<div class="doc-note">📄 Attendance Overview uploaded: ${attDoc.filename}</div>`;
+    // ALL uploaded attendance documents for this center
+    const attDocs=mDocs.filter(d=>d.doc_type===('attendance_csv_'+c));
+    if(attDocs.length>0){
+      html+=`<h4>Uploaded Attendance Overview — ${cl(c)}</h4>`;
+      for(const ad of attDocs){
+        if(docImages[ad.id])html+=`<p style="font-size:9px;color:#666">${ad.filename}</p><div class="doc-embed"><img src="${docImages[ad.id]}" alt="${ad.filename}"></div>`;
+        else html+=`<div class="doc-note">📄 ${ad.filename} — uploaded ${new Date(ad.uploaded_at).toLocaleDateString()}. This is a CSV file — the extracted data is shown below. Original file available for download from the Documents tab.</div>`;
+      }
+    }else{
+      html+=`<div class="doc-note">⚠️ No Attendance Overview uploaded for ${cl(c)} yet.</div>`;
     }
     if(a){
       html+=`<h4>ADA Calculation</h4>
@@ -1743,11 +1754,11 @@ async function printMonthlyPackage(mk){
         <div class="stat-box">ADA: <strong>${a.totalPresent} ÷ ${a.days} = ${a.ada}</strong></div>
         <div class="stat-box">ADA %: <strong>${a.enrolled>0?((a.ada/a.enrolled)*100).toFixed(1):'0'}%</strong></div>`;
       if(a.childData){
-        html+=`<h4>Daily Attendance Breakdown</h4>
+        html+=`<h4>Daily Attendance Breakdown (extracted from uploaded report)</h4>
           <table><tr><th>Name</th><th>Classroom</th><th>Present</th><th>Absent</th></tr>
           ${a.childData.map(ch=>`<tr><td>${ch.name}</td><td>${ch.classroom}</td><td>${ch.present}</td><td>${ch.absent}</td></tr>`).join('')}</table>`;
       }
-    }else{html+=`<div class="doc-note">⚠️ No attendance data uploaded for ${cl(c)}.</div>`;}
+    }else{html+=`<div class="doc-note">⚠️ No attendance data processed for ${cl(c)}.</div>`;}
     sectionNum++;
   }
 
@@ -1757,7 +1768,19 @@ async function printMonthlyPackage(mk){
   for(const c of ['niles','peace']){
     const d=meals[c];
     html+=`<h2 class="page-break">${sectionNum}. Adjusted Daily Meal Counts — ${cl(c)}</h2>`;
+    // Uploaded CACFP Detailed source document
+    const mealDocs=mDocs.filter(dd=>dd.doc_type===('meal_counts_csv_'+c));
+    if(mealDocs.length>0){
+      html+=`<h4>Uploaded CACFP Detailed Report — ${cl(c)}</h4>`;
+      for(const md of mealDocs){
+        if(docImages[md.id])html+=`<p style="font-size:9px;color:#666">${md.filename}</p><div class="doc-embed"><img src="${docImages[md.id]}" alt="${md.filename}"></div>`;
+        else html+=`<div class="doc-note">📄 ${md.filename} — uploaded ${new Date(md.uploaded_at).toLocaleDateString()}. This is a CSV file — the adjusted daily meal counts extracted from this report are shown below. Original file available for download from the Documents tab.</div>`;
+      }
+    }else{
+      html+=`<div class="doc-note">⚠️ No CACFP Detailed report uploaded for ${cl(c)} yet.</div>`;
+    }
     if(d&&d.children&&d.dayLabels){
+      html+=`<h4>Adjusted Daily Meal Counts (3-Meal Rule Applied)</h4>`;
       if(d.excluded4thMeal)html+=`<p style="color:#C0392B;margin-bottom:6px"><strong>${d.excluded4thMeal} PM snacks excluded by 3-meal rule</strong></p>`;
       const days=d.dayLabels;
       const shortDays=days.map(dl=>{const p=dl.split(' ');return p.length>=2?p[0].slice(0,2)+' '+p[p.length-1]:dl;});
@@ -1844,15 +1867,17 @@ async function printMonthlyPackage(mk){
     // Uploaded CDC documents
     const cdcDocs=mDocs.filter(d=>d.doc_type===('cdc_statement_'+c));
     if(cdcDocs.length>0){
-      html+=`<h4>Uploaded CDC Statements</h4>`;
+      html+=`<h4>Uploaded CDC Statement(s) — ${cl(c)} (${cdcDocs.length} document${cdcDocs.length>1?'s':''})</h4>`;
       for(const sd of cdcDocs){
-        if(docImages[sd.id])html+=`<div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
-        else html+=`<div class="doc-note">📄 ${sd.filename} — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}</div>`;
+        if(docImages[sd.id])html+=`<p style="font-size:9px;color:#666">${sd.filename}</p><div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
+        else html+=`<div class="doc-note">📄 ${sd.filename} — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}. This is a PDF — the eligibility data extracted from this document is shown below. Original file available for download from the Documents tab.</div>`;
       }
+    }else{
+      html+=`<div class="doc-note">⚠️ No CDC Statement uploaded for ${cl(c)} yet.</div>`;
     }
     if(cd){
       const en=(att[c]||{}).enrolled||0;const pct=en>0?((cd.qualifying||0)/en*100):0;
-      html+=`<h4>Eligibility Report</h4>
+      html+=`<h4>Eligibility Report (extracted from uploaded CDC statements)</h4>
         <div class="stat-box">Total on statements: <strong>${cd.totalOnStatement||0}</strong></div>
         <div class="stat-box">No Authorization: <strong>${cd.noAuth||0}</strong></div>
         <div class="stat-box">$0 Paid: <strong>${cd.zeroPaid||0}</strong></div>
