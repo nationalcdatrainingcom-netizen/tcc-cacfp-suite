@@ -2723,7 +2723,7 @@ async function saveBatchResults(center,monthKey){
 async function generateStaffCostReport(monthKey){
   try{
     showToast('Generating staff cost report...','');
-    const res=await fetch('/api/generate-staff-report',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},body:JSON.stringify({fiscal_year_id:activeFY.id,month_key:monthKey})});
+    const res=await fetch('/api/generate-staff-report',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},body:JSON.stringify({fiscal_year_id:activeFY.id,month_key:monthKey})});
     if(!res.ok)throw new Error('Generate failed');
     const blob=await res.blob();
     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`Staff_Cost_Report_${monthKey}_${activeFY.label}.docx`;a.click();URL.revokeObjectURL(url);
@@ -2742,7 +2742,9 @@ async function renderStaffTA(){
 
   try{
     const allData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${m}`);
-    const hasPlayground=allData.some(s=>s.hasPlayground);
+    const hasPlaygroundNiles=allData.some(s=>s.hasPlayground&&s.center==='niles');
+    const hasPlaygroundPeace=allData.some(s=>s.hasPlayground&&s.center==='peace');
+    const hasPlayground=hasPlaygroundNiles||hasPlaygroundPeace;
     const submitted=allData.filter(s=>s.signature?.status==='submitted'||s.signature?.status==='approved');
     const approved=allData.filter(s=>s.signature?.status==='approved');
 
@@ -2756,16 +2758,24 @@ async function renderStaffTA(){
         <div style="text-align:center;padding:8px;background:var(--bg);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;${hasPlayground?'color:var(--success)':'color:var(--error)'}">${hasPlayground?'✓':'✗'}</div><div style="font-size:.75rem;color:var(--muted)">Playground</div></div>
       </div>
 
-      <!-- Step 1: Upload Playground CSV -->
-      <div style="margin-bottom:16px;padding:12px;background:${hasPlayground?'#f0faf0':'#fff8e1'};border:1px solid ${hasPlayground?'#c8e6c9':'#ffe082'};border-radius:8px">
-        <div style="font-weight:600;font-size:.9rem;margin-bottom:6px">${hasPlayground?'✅ Playground Daily Staff Hours uploaded':'Step 1: Upload Playground Daily Staff Hours CSV'}</div>
-        <p style="font-size:.8rem;color:var(--muted);margin-bottom:8px">From Playground App: Reports → Daily Staff Hours → export CSV for this month.</p>
-        <div style="display:flex;gap:8px">
-          <div class="upload-zone ${hasPlayground?'done':''}" style="flex:1;padding:10px"><input type="file" accept=".csv" onchange="uploadPlaygroundCSV(this)">
-            <div class="uz-label" style="font-size:.85rem">${hasPlayground?'Re-upload to replace':'Click to upload CSV'}</div>
+      <!-- Step 1: Upload Playground CSV per center -->
+      <div style="font-weight:600;font-size:.9rem;margin-bottom:8px">Step 1: Upload Playground Daily Staff Hours</div>
+      <p style="font-size:.8rem;color:var(--muted);margin-bottom:10px">From Playground App: Reports → Daily Staff Hours → export one CSV per center for this month.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        <div style="padding:12px;background:${hasPlaygroundNiles?'#f0faf0':'#fff8e1'};border:1px solid ${hasPlaygroundNiles?'#c8e6c9':'#ffe082'};border-radius:8px">
+          <div style="font-weight:600;font-size:.85rem;margin-bottom:6px">📍 Niles ${hasPlaygroundNiles?'✅':''}</div>
+          <div class="upload-zone ${hasPlaygroundNiles?'done':''}" style="padding:8px"><input type="file" accept=".csv" onchange="uploadPlaygroundCSV(this,'niles')">
+            <div class="uz-label" style="font-size:.8rem">${hasPlaygroundNiles?'Re-upload':'Upload Niles CSV'}</div>
           </div>
+          <div id="playgroundImportResultNiles" style="font-size:.8rem"></div>
         </div>
-        <div id="playgroundImportResult"></div>
+        <div style="padding:12px;background:${hasPlaygroundPeace?'#f0faf0':'#fff8e1'};border:1px solid ${hasPlaygroundPeace?'#c8e6c9':'#ffe082'};border-radius:8px">
+          <div style="font-weight:600;font-size:.85rem;margin-bottom:6px">📍 Peace Blvd ${hasPlaygroundPeace?'✅':''}</div>
+          <div class="upload-zone ${hasPlaygroundPeace?'done':''}" style="padding:8px"><input type="file" accept=".csv" onchange="uploadPlaygroundCSV(this,'peace')">
+            <div class="uz-label" style="font-size:.8rem">${hasPlaygroundPeace?'Re-upload':'Upload Peace CSV'}</div>
+          </div>
+          <div id="playgroundImportResultPeace" style="font-size:.8rem"></div>
+        </div>
       </div>
 
       <!-- Step 2: Review staff -->
@@ -2823,25 +2833,26 @@ async function renderStaffTA(){
   }
 }
 
-async function uploadPlaygroundCSV(input){
+async function uploadPlaygroundCSV(input,center){
   if(!input.files[0])return;
   const file=input.files[0];
-  document.getElementById('playgroundImportResult').innerHTML='<div class="alert alert-warn" style="margin-top:8px">⏳ Importing...</div>';
+  const resultId='playgroundImportResult'+(center==='niles'?'Niles':'Peace');
+  document.getElementById(resultId).innerHTML='<div class="alert alert-warn" style="margin-top:6px">⏳ Importing...</div>';
   try{
     const fd=new FormData();
     fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',currentMonth);
-    const res=await fetch('/api/playground-import',{method:'POST',headers:{'x-access-pin':accessPIN},body:fd});
+    const res=await fetch('/api/playground-import',{method:'POST',headers:{'X-Access-PIN':PIN},body:fd});
     const data=await res.json();
     if(!res.ok)throw new Error(data.error);
-    let resultHtml=`<div class="alert alert-ok" style="margin-top:8px">✅ Imported ${data.imported} records from ${data.total_rows} rows.</div>`;
+    let resultHtml=`<div class="alert alert-ok" style="margin-top:6px">✅ ${data.imported} records imported.</div>`;
     if(data.unmatched&&data.unmatched.length>0){
-      resultHtml+=`<div class="alert alert-warn" style="margin-top:4px">⚠️ ${data.unmatched.length} names not matched to roster: ${data.unmatched.join(', ')}. Add them in Staff Costs or the Staff Time Entry app.</div>`;
+      resultHtml+=`<div class="alert alert-warn" style="margin-top:4px">⚠️ Unmatched: ${data.unmatched.join(', ')}</div>`;
     }
-    document.getElementById('playgroundImportResult').innerHTML=resultHtml;
-    showToast('✅ Playground import complete!','ok');
+    document.getElementById(resultId).innerHTML=resultHtml;
+    showToast(`✅ ${center==='niles'?'Niles':'Peace'} import complete!`,'ok');
     setTimeout(()=>renderStaffTA(),1000);
   }catch(e){
-    document.getElementById('playgroundImportResult').innerHTML=`<div class="alert alert-err" style="margin-top:8px">❌ ${e.message}</div>`;
+    document.getElementById(resultId).innerHTML=`<div class="alert alert-err" style="margin-top:6px">❌ ${e.message}</div>`;
   }
 }
 
@@ -2866,7 +2877,7 @@ async function approveAllStaff(){
 async function generateTAForm(staffId){
   try{
     showToast('Generating T&A form...','');
-    const res=await fetch('/api/generate-ta-form',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},
+    const res=await fetch('/api/generate-ta-form',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},
       body:JSON.stringify({staff_id:staffId,fiscal_year_id:activeFY.id,month_key:currentMonth,store_in_docs:true})});
     if(!res.ok)throw new Error('Generate failed');
     const blob=await res.blob();
@@ -2889,13 +2900,13 @@ async function generateAllTAForms(){
     let count=0;
     for(const s of ready){
       showToast(`Generating ${count+1} of ${ready.length}...`,'');
-      await fetch('/api/generate-ta-form',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},
+      await fetch('/api/generate-ta-form',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},
         body:JSON.stringify({staff_id:s.id,fiscal_year_id:activeFY.id,month_key:currentMonth,store_in_docs:true})});
       count++;
     }
     // Also generate the combined staff cost report
     showToast('Generating combined report...','');
-    await fetch('/api/generate-staff-report',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},
+    await fetch('/api/generate-staff-report',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},
       body:JSON.stringify({fiscal_year_id:activeFY.id,month_key:currentMonth})});
 
     documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
@@ -2918,6 +2929,8 @@ const WIZ_STEPS=[
   {id:'wiz_mealcounts_peace',label:'CACFP Detailed Report — Peace Blvd',icon:'🍽️',center:'peace',desc:'Upload the Peace Boulevard CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_peace'},
   {id:'wiz_cdc_niles',label:'CDC Statement — Niles',icon:'🏥',center:'niles',desc:'Upload the Niles CDC statement for this month to calculate eligibility percentage.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_niles'},
   {id:'wiz_cdc_peace',label:'CDC Statement — Peace Blvd',icon:'🏥',center:'peace',desc:'Upload the Peace Boulevard CDC statement for this month.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_peace'},
+  {id:'wiz_playground_niles',label:'Daily Staff Hours — Niles',icon:'👥',center:'niles',desc:'Upload the Niles Daily Staff Hours report from Playground App. This provides start/end times and breaks for each staff member to complete their T&A forms.',accept:'.csv',docType:'playground_staff_hours_niles',isPlayground:true},
+  {id:'wiz_playground_peace',label:'Daily Staff Hours — Peace Blvd',icon:'👥',center:'peace',desc:'Upload the Peace Boulevard Daily Staff Hours report from Playground App.',accept:'.csv',docType:'playground_staff_hours_peace',isPlayground:true},
   {id:'wiz_foodcost',label:'Food Receipts & Invoices (All Locations)',icon:'🧾',center:'both',desc:'Upload all food vendor receipts and invoices for this month. Include receipts from JA Foods, Amazon, Sam\'s Club, grocery stores, and any other food suppliers. You can upload multiple files — each receipt total will be extracted and added to the monthly food cost.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts',isMultiUpload:true},
 ];
 let wizStep=0,wizMonthKey=null,wizReceiptTotal=0,wizReceiptItems=[];
@@ -3029,6 +3042,30 @@ async function wizUploadFile(input){
     const d=(monthlyDataCache[wizMonthKey+'_cdc']||{})[center]||{};
     document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${d.qualifying||0} qualifying children from ${d.totalOnStatement||0} entries</strong></div></div>`;
     showToast('✅ '+step.label+' processed!','ok');
+    return;
+  }
+
+  // Playground Daily Staff Hours CSV
+  if(step.isPlayground){
+    document.getElementById('wiz-upload-status').textContent='⏳ Importing staff hours...';
+    const fd=new FormData();
+    fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);
+    try{
+      const res=await fetch('/api/playground-import',{method:'POST',headers:{'X-Access-PIN':PIN},body:fd});
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error);
+      document.getElementById('wiz-upload-zone').classList.add('done');
+      document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — imported!';
+      let extra=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${data.imported} staff records imported</strong></div></div>`;
+      if(data.unmatched&&data.unmatched.length>0){
+        extra+=`<div class="alert alert-warn" style="margin-top:8px"><span>⚠️</span><div>Unmatched names: ${data.unmatched.join(', ')}</div></div>`;
+      }
+      document.getElementById('wizExtraContent').innerHTML=extra;
+      showToast('✅ '+step.label+' imported!','ok');
+    }catch(e){
+      document.getElementById('wiz-upload-status').textContent='❌ Import failed';
+      document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-err" style="margin-top:16px"><span>❌</span><div>${e.message}</div></div>`;
+    }
     return;
   }
 
