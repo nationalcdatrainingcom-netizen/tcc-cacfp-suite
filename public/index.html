@@ -274,8 +274,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         </div>
         <div class="month-bar" id="monthBar"></div>
         <div class="sub-tabs" id="monthlySubTabs">
-          <div class="sub-tab active" onclick="monthSubTab('staffcosts')">👥 Staff Costs</div>
-          <div class="sub-tab" onclick="monthSubTab('staffta')">📋 Staff T&A</div>
+          <div class="sub-tab active" onclick="monthSubTab('staffta')">👥 Staff T&A</div>
           <div class="sub-tab" onclick="monthSubTab('attendance')">📊 Attendance</div>
           <div class="sub-tab" onclick="monthSubTab('meals')">🍽️ Meal Counts</div>
           <div class="sub-tab" onclick="monthSubTab('cdc')">🏥 CDC Eligibility</div>
@@ -283,8 +282,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <div class="sub-tab" onclick="monthSubTab('claims')">📋 CACFP Claim</div>
           <div class="sub-tab" onclick="monthSubTab('monthdocs')">📁 Documents</div>
         </div>
-        <div class="sub-panel active" id="sp-staffcosts"></div>
-        <div class="sub-panel" id="sp-staffta"></div>
+        <div class="sub-panel active" id="sp-staffta"></div>
         <div class="sub-panel" id="sp-attendance"></div>
         <div class="sub-panel" id="sp-meals"></div>
         <div class="sub-panel" id="sp-cdc"></div>
@@ -386,7 +384,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 // ═══════════════════════════════════════════════════
 let PIN='',fiscalYears=[],activeFY=null,staffList=[],staffTimeEntries=[],salaryTotals=[],
     monthlyDataCache={},revenueEntries=[],documents=[],programDocs=[],yerData=null,
-    currentMonth=null,currentSubTab='staffcosts';
+    currentMonth=null,currentSubTab='staffta';
 
 const MO=['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep'];
 const ML={oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
@@ -579,73 +577,16 @@ function selectMonth(m){currentMonth=m;renderMonthBar();renderSubPanel();}
 function renderMonthlyPage(){renderMonthBar();renderSubPanel();}
 
 function renderSubPanel(){
-  const fn={staffcosts:renderStaffCosts,staffta:renderStaffTA,attendance:renderAttendance,meals:renderMeals,cdc:renderCDC,foodcosts:renderFoodCosts,claims:renderClaims,monthdocs:renderMonthDocs};
+  const fn={staffta:renderStaffTA,attendance:renderAttendance,meals:renderMeals,cdc:renderCDC,foodcosts:renderFoodCosts,claims:renderClaims,monthdocs:renderMonthDocs};
   if(fn[currentSubTab])fn[currentSubTab]();
 }
 
 // ═══════════════════════════════════════════════════
 // STAFF COSTS (restored + enhanced)
 // ═══════════════════════════════════════════════════
-function renderStaffCosts(){
-  const m=currentMonth;
-  const timeMap={};
-  staffTimeEntries.filter(e=>e.month_key===m).forEach(e=>{timeMap[e.staff_id]=e;});
-
-  function buildTable(center,label){
-    const staff=staffList.filter(s=>s.center===center);
-    let tFS=0,tAdm=0;
-    const rows=staff.map(s=>{
-      const te=timeMap[s.id]||{};
-      const fsH=parseFloat(te.food_service_hours)||0,admH=parseFloat(te.admin_hours)||0;
-      const rate=parseFloat(te.hourly_rate_used)||parseFloat(s.hourly_rate)||0;
-      tFS+=fsH*rate;tAdm+=admH*rate;
-      return `<tr><td style="font-weight:500">${s.name}</td>
-        <td><input type="number" step="0.01" value="${rate||''}" onchange="updateStaffRate(${s.id},this.value)" style="width:80px"></td>
-        <td><input type="number" step="0.25" value="${fsH||''}" onchange="updateStaffTime(${s.id},'${m}','fs',this.value)" style="width:70px"></td>
-        <td class="earned">${fsH*rate>0?fmt(fsH*rate):'—'}</td>
-        <td><input type="number" step="0.25" value="${admH||''}" onchange="updateStaffTime(${s.id},'${m}','admin',this.value)" style="width:70px"></td>
-        <td class="earned">${admH*rate>0?fmt(admH*rate):'—'}</td>
-        <td><button class="btn-remove" onclick="deactivateStaff(${s.id})" title="Remove">✕</button></td></tr>`;
-    }).join('');
-
-    return `<div class="card"><div class="card-hdr"><h3>📍 ${label} — ${ML[m]} ${fyYear(m)}</h3>
-      <button class="btn btn-sm btn-outline" onclick="showAddStaffForCenter('${center}')">+ Add Staff</button></div>
-      <div class="card-body">
-        <table class="staff-table"><thead><tr><th>Name</th><th>Rate/Hr</th><th>FS Hours</th><th>FS Earned</th><th>Admin Hrs</th><th>Admin Earned</th><th></th></tr></thead>
-        <tbody>${rows||'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No staff added yet</td></tr>'}</tbody></table>
-        <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div><div style="font-size:.85rem;font-weight:600;margin-bottom:8px">📄 FS Time Distribution</div>
-            <div class="upload-zone ${getDocExists('time_distribution_fs',m,center)?'done':''}"><input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadTimeDist('${center}','${m}','fs',this)">
-            <div class="uz-icon">📄</div><div class="uz-label">Upload food service time form</div><div class="uz-file">${getDocName('time_distribution_fs',m,center)}</div></div></div>
-          <div><div style="font-size:.85rem;font-weight:600;margin-bottom:8px">📄 Admin Time Distribution</div>
-            <div class="upload-zone ${getDocExists('time_distribution_admin',m,center)?'done':''}"><input type="file" accept=".pdf,.png,.jpg,.jpeg" onchange="uploadTimeDist('${center}','${m}','admin',this)">
-            <div class="uz-icon">📄</div><div class="uz-label">Upload admin time form</div><div class="uz-file">${getDocName('time_distribution_admin',m,center)}</div></div></div>
-        </div>
-        <div style="margin-top:12px"><button class="btn btn-sm btn-primary" onclick="startBatchUpload('${center}','${m}')">📑 Batch Upload Time Forms (Multi-Page PDF)</button></div>
-      </div></div>`;
-  }
-
-  // Totals
-  const at=staffTimeEntries.filter(e=>e.month_key===m);
-  const calc=(center,type)=>at.filter(e=>staffList.find(s=>s.id==e.staff_id)?.center===center)
-    .reduce((s,e)=>s+(parseFloat(e[type==='fs'?'food_service_hours':'admin_hours'])||0)*(parseFloat(e.hourly_rate_used)||0),0);
-  const nFS=calc('niles','fs'),pFS=calc('peace','fs'),nAd=calc('niles','adm'),pAd=calc('peace','adm');
-  const totalFS=nFS+pFS,totalAd=nAd+pAd,ben=totalFS*BEN_RATE;
-
-  document.getElementById('sp-staffcosts').innerHTML=`
-    ${buildTable('niles','Niles')}${buildTable('peace','Peace Boulevard')}
-    <div class="totals-box"><h4>📊 ${ML[m]} ${fyYear(m)} — Combined Staff Cost Summary</h4>
-      <div class="totals-row"><span class="label">Niles FS Salaries</span><span class="val">${fmt(nFS)}</span></div>
-      <div class="totals-row"><span class="label">Peace FS Salaries</span><span class="val">${fmt(pFS)}</span></div>
-      <div class="totals-row"><span class="label">Combined FS Salaries</span><span class="val">${fmt(totalFS)}</span></div>
-      <div class="totals-row"><span class="label">Benefits (7.65%)</span><span class="val">${fmt(ben)}</span></div>
-      <div class="totals-row"><span class="label">Combined Admin Costs</span><span class="val">${fmt(totalAd)}</span></div>
-      <div class="totals-row big"><span class="label">TOTAL COST TO NFSA</span><span class="val">${fmt(totalFS+ben+totalAd)}</span></div></div>
-    <div style="margin-top:12px;text-align:right">
-      <button class="btn btn-primary" onclick="generateStaffCostReport('${m}')">📄 Generate Monthly Staff Cost Report</button>
-    </div>`;
-}
-
+// ═══════════════════════════════════════════════════
+// STAFF HELPERS (rate updates, roster management)
+// ═══════════════════════════════════════════════════
 function getDocExists(dt,mk,center){return documents.some(d=>d.doc_type===dt&&d.month_key===mk&&d.metadata?.center===center);}
 function getDocName(dt,mk,center){const d=documents.find(d2=>d2.doc_type===dt&&d2.month_key===mk&&d2.metadata?.center===center);return d?'✅ '+d.filename:'';}
 function getDocNameSimple(dt,mk){const d=documents.find(d2=>d2.doc_type===dt&&d2.month_key===mk);return d?'✅ '+d.filename:'';}
@@ -655,7 +596,7 @@ async function updateStaffRate(id,val){
     staffList=await api('/api/staff');
     const m=currentMonth,ex=staffTimeEntries.find(e=>e.staff_id==id&&e.month_key===m);
     if(ex){await api('/api/staff-time',{method:'POST',body:{staff_id:id,fiscal_year_id:activeFY.id,month_key:m,food_service_hours:ex.food_service_hours,admin_hours:ex.admin_hours,hourly_rate_used:parseFloat(val)||0}});await reloadTime();}
-    renderStaffCosts();}catch(e){showToast('Error: '+e.message,'err');}
+    renderStaffTA();}catch(e){showToast('Error: '+e.message,'err');}
 }
 
 async function updateStaffTime(id,mk,type,val){
@@ -664,7 +605,7 @@ async function updateStaffTime(id,mk,type,val){
     const fsH=type==='fs'?(parseFloat(val)||0):(parseFloat(ex?.food_service_hours)||0);
     const admH=type==='admin'?(parseFloat(val)||0):(parseFloat(ex?.admin_hours)||0);
     await api('/api/staff-time',{method:'POST',body:{staff_id:id,fiscal_year_id:activeFY.id,month_key:mk,food_service_hours:fsH,admin_hours:admH,hourly_rate_used:parseFloat(rate)}});
-    await reloadTime();renderStaffCosts();renderDashboard();}catch(e){showToast('Error: '+e.message,'err');}
+    await reloadTime();renderStaffTA();renderDashboard();}catch(e){showToast('Error: '+e.message,'err');}
 }
 
 async function reloadTime(){staffTimeEntries=await api(`/api/staff-time?fiscal_year_id=${activeFY.id}`);salaryTotals=await api(`/api/staff-time/totals?fiscal_year_id=${activeFY.id}`);}
@@ -674,11 +615,11 @@ function showAddStaffForCenter(c){document.getElementById('newStaffCenter').valu
 async function addStaffMember(){
   const name=document.getElementById('newStaffName').value.trim(),center=document.getElementById('newStaffCenter').value,rate=parseFloat(document.getElementById('newStaffRate').value)||0;
   if(!name)return showToast('Enter a name','err');
-  try{await api('/api/staff',{method:'POST',body:{name,center,hourly_rate:rate}});staffList=await api('/api/staff');closeModal('addStaffModal');renderStaffCosts();showToast('✅ '+name+' added!','ok');}catch(e){showToast('Error: '+e.message,'err');}
+  try{await api('/api/staff',{method:'POST',body:{name,center,hourly_rate:rate}});staffList=await api('/api/staff');closeModal('addStaffModal');renderStaffTA();showToast('✅ '+name+' added!','ok');}catch(e){showToast('Error: '+e.message,'err');}
 }
 
 async function deactivateStaff(id){if(!confirm('Remove this staff member?'))return;
-  try{await api(`/api/staff/${id}`,{method:'PUT',body:{is_active:false}});staffList=await api('/api/staff');renderStaffCosts();showToast('Staff removed','ok');}catch(e){showToast('Error: '+e.message,'err');}
+  try{await api(`/api/staff/${id}`,{method:'PUT',body:{is_active:false}});staffList=await api('/api/staff');renderStaffTA();showToast('Staff removed','ok');}catch(e){showToast('Error: '+e.message,'err');}
 }
 
 // ═══════════════════════════════════════════════════
@@ -2129,7 +2070,7 @@ async function uploadMonthDoc(mk,docType,input){if(!input.files[0])return;
 
 async function uploadTimeDist(center,mk,type,input){if(!input.files[0])return;
   const fd=new FormData();fd.append('file',input.files[0]);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',mk);fd.append('doc_type','time_distribution_'+type);fd.append('metadata',JSON.stringify({center}));
-  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);renderStaffCosts();showToast('✅ Document saved for audit!','ok');}catch(e){showToast('Error: '+e.message,'err');}}
+  try{await api('/api/documents/upload',{method:'POST',body:fd});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);renderStaffTA();showToast('✅ Document saved for audit!','ok');}catch(e){showToast('Error: '+e.message,'err');}}
 
 // ── SMART DELETE WITH DATA CLEANUP ──
 let pendingDelete={type:null,id:null,meta:null};
@@ -2726,7 +2667,7 @@ async function saveBatchResults(center,monthKey){
   showToast(`✅ ${saved} staff entries saved${errors>0?', '+errors+' errors':''}!`,'ok');
   // Advance to next wizard step instead of closing
   wizStep++;
-  if(wizStep>=WIZ_STEPS.length){closeWizard();renderStaffCosts();renderDashboard();showToast('🪄 Monthly wizard complete!','ok');return;}
+  if(wizStep>=WIZ_STEPS.length){closeWizard();renderStaffTA();renderDashboard();showToast('🪄 Monthly wizard complete!','ok');return;}
   document.getElementById('wizBack').style.display='';document.getElementById('wizNext').style.display='';
   renderWizStep();
 }
@@ -2842,7 +2783,69 @@ async function renderStaffTA(){
       html+=`</div>`;
     }
 
+    // Detail view placeholder
+    html+=`<div id="staffTADetail"></div>`;
+
     html+=`</div></div>`;
+
+    // ── MONTHLY COST SUMMARY ──
+    const BEN_RATE=0.0765;
+    let grandFS=0,grandAdm=0;
+    const nilesFS=allData.filter(s=>s.center==='niles').reduce((t,s)=>t+s.totalFS,0);
+    const peaceFS=allData.filter(s=>s.center==='peace').reduce((t,s)=>t+s.totalFS,0);
+    const nilesAdm=allData.filter(s=>s.center==='niles').reduce((t,s)=>t+s.totalAdm,0);
+    const peaceAdm=allData.filter(s=>s.center==='peace').reduce((t,s)=>t+s.totalAdm,0);
+    grandFS=nilesFS+peaceFS;grandAdm=nilesAdm+peaceAdm;
+    const totalFSCost=allData.reduce((t,s)=>t+(s.totalFS*(parseFloat(s.hourly_rate)||0)),0);
+    const totalAdmCost=allData.reduce((t,s)=>t+(s.totalAdm*(parseFloat(s.hourly_rate)||0)),0);
+    const benefits=totalFSCost*BEN_RATE;
+
+    html+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><h3>💰 ${ML[m]} ${fyYear(m)} — Staff Cost Summary</h3></div>
+    <div class="card-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div style="padding:10px;background:var(--bg);border-radius:8px">
+          <div style="font-size:.8rem;color:var(--muted)">Niles FS Salaries</div>
+          <div style="font-size:1.1rem;font-weight:600">${fmt(allData.filter(s=>s.center==='niles').reduce((t,s)=>t+(s.totalFS*(parseFloat(s.hourly_rate)||0)),0))}</div>
+        </div>
+        <div style="padding:10px;background:var(--bg);border-radius:8px">
+          <div style="font-size:.8rem;color:var(--muted)">Peace FS Salaries</div>
+          <div style="font-size:1.1rem;font-weight:600">${fmt(allData.filter(s=>s.center==='peace').reduce((t,s)=>t+(s.totalFS*(parseFloat(s.hourly_rate)||0)),0))}</div>
+        </div>
+      </div>
+      <div class="totals-box">
+        <div class="totals-row"><span class="label">Combined FS Salaries</span><span class="val">${fmt(totalFSCost)}</span></div>
+        <div class="totals-row"><span class="label">Employee Benefits (7.65%)</span><span class="val">${fmt(benefits)}</span></div>
+        <div class="totals-row"><span class="label">Combined Admin Costs</span><span class="val">${fmt(totalAdmCost)}</span></div>
+        <div class="totals-row big"><span class="label">TOTAL COST TO NFSA</span><span class="val">${fmt(totalFSCost+benefits+totalAdmCost)}</span></div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-sm btn-primary" onclick="generateStaffCostReport('${m}')">📄 Monthly Staff Cost Report</button>
+      </div>
+    </div></div>`;
+
+    // ── STAFF ROSTER MANAGEMENT ──
+    html+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><h3>👥 Staff Roster</h3>
+      <button class="btn btn-sm btn-outline" onclick="showAddStaffForCenter('niles')">+ Add Staff</button></div>
+    <div class="card-body">
+      <table class="staff-table" style="font-size:.85rem">
+        <thead><tr><th>Name</th><th>Center</th><th>Rate/Hr</th><th>FS Hrs</th><th>FS Cost</th><th></th></tr></thead>
+        <tbody>`;
+
+    for(const s of allData){
+      const rate=parseFloat(s.hourly_rate)||0;
+      const fsCost=s.totalFS*rate;
+      html+=`<tr>
+        <td style="font-weight:500">${s.name}</td>
+        <td>${s.center==='niles'?'Niles':'Peace'}</td>
+        <td><input type="number" step="0.01" value="${rate||''}" onchange="updateStaffRate(${s.id},this.value)" style="width:70px;padding:4px;font-size:.85rem;text-align:center"></td>
+        <td>${s.totalFS.toFixed(1)}</td>
+        <td>${fsCost>0?fmt(fsCost):'—'}</td>
+        <td><button class="btn-remove" onclick="deactivateStaff(${s.id})" title="Remove">✕</button></td>
+      </tr>`;
+    }
+
+    html+=`</tbody></table></div></div>`;
+
     panel.innerHTML=html;
   }catch(e){
     panel.innerHTML=`<div class="card"><div class="card-body"><div class="alert alert-err">Error loading T&A data: ${e.message}</div></div></div>`;
