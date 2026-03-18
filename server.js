@@ -495,6 +495,155 @@ app.post('/api/yer', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GENERATE MONTHLY STAFF COST REPORT (.docx) ───────────
+app.post('/api/generate-staff-report', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key } = req.body;
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id = $1', [fiscal_year_id]);
+    const fy = fyRes.rows[0];
+    if (!fy) return res.status(404).json({ error: 'Fiscal year not found' });
+
+    // Month labels
+    const ML = { oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',
+      mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
+    const fyYear = mk => {
+      const first = ['oct','nov','dec'];
+      return first.includes(mk) ? fy.start_year : fy.end_year;
+    };
+    const monthLabel = `${ML[month_key]} ${fyYear(month_key)}`;
+
+    // Get staff time entries for this month with staff details
+    const { rows: entries } = await pool.query(`
+      SELECT ste.*, s.name, s.center
+      FROM staff_time_entries ste
+      JOIN staff s ON s.id = ste.staff_id
+      WHERE ste.fiscal_year_id = $1 AND ste.month_key = $2 AND s.is_active = true
+      ORDER BY s.center, s.name
+    `, [fiscal_year_id, month_key]);
+
+    const fmt = n => '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const navy = '1B2A4A';
+    const gold = 'C5972C';
+    const noBorder = { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE },
+      left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } };
+    const thinBorder = {
+      top: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
+      bottom: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
+      left: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
+      right: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
+    };
+
+    function makeCell(text, opts = {}) {
+      return new TableCell({
+        width: opts.width ? { size: opts.width, type: WidthType.PERCENTAGE } : undefined,
+        borders: opts.noBorder ? noBorder : thinBorder,
+        shading: opts.shading ? { type: ShadingType.SOLID, color: opts.shading } : undefined,
+        children: [new Paragraph({
+          alignment: opts.align || AlignmentType.LEFT,
+          children: [new TextRun({
+            text: text || '',
+            bold: opts.bold || false,
+            size: opts.size || 20,
+            font: 'Calibri',
+            color: opts.color || '333333'
+          })]
+        })]
+      });
+    }
+
+    // Header row
+    const headerRow = new TableRow({
+      children: [
+        makeCell('Staff Name', { bold: true, shading: navy, color: 'FFFFFF', width: 28 }),
+        makeCell('Center', { bold: true, shading: navy, color: 'FFFFFF', width: 14 }),
+        makeCell('Rate/Hr', { bold: true, shading: navy, color: 'FFFFFF', width: 12, align: AlignmentType.RIGHT }),
+        makeCell('FS Hours', { bold: true, shading: navy, color: 'FFFFFF', width: 12, align: AlignmentType.RIGHT }),
+        makeCell('FS Cost', { bold: true, shading: navy, color: 'FFFFFF', width: 17, align: AlignmentType.RIGHT }),
+        makeCell('Admin Hrs', { bold: true, shading: navy, color: 'FFFFFF', width: 12, align: AlignmentType.RIGHT }),
+        makeCell('Admin Cost', { bold: true, shading: navy, color: 'FFFFFF', width: 17, align: AlignmentType.RIGHT }),
+      ]
+    });
+
+    let grandFS = 0, grandAdmin = 0, grandFSHrs = 0, grandAdmHrs = 0;
+    const dataRows = entries.map((e, i) => {
+      const rate = parseFloat(e.hourly_rate_used) || 0;
+      const fsH = parseFloat(e.food_service_hours) || 0;
+      const admH = parseFloat(e.admin_hours) || 0;
+      const fsCost = fsH * rate;
+      const admCost = admH * rate;
+      grandFS += fsCost; grandAdmin += admCost; grandFSHrs += fsH; grandAdmHrs += admH;
+      const bg = i % 2 === 0 ? undefined : 'F5F5F5';
+      const centerLabel = e.center === 'niles' ? 'Niles' : 'Peace Blvd';
+      return new TableRow({
+        children: [
+          makeCell(e.name, { shading: bg }),
+          makeCell(centerLabel, { shading: bg }),
+          makeCell(fmt(rate), { align: AlignmentType.RIGHT, shading: bg }),
+          makeCell(fsH > 0 ? fsH.toFixed(2) : '—', { align: AlignmentType.RIGHT, shading: bg }),
+          makeCell(fsCost > 0 ? fmt(fsCost) : '—', { align: AlignmentType.RIGHT, shading: bg }),
+          makeCell(admH > 0 ? admH.toFixed(2) : '—', { align: AlignmentType.RIGHT, shading: bg }),
+          makeCell(admCost > 0 ? fmt(admCost) : '—', { align: AlignmentType.RIGHT, shading: bg }),
+        ]
+      });
+    });
+
+    const benefits = grandFS * 0.0765;
+
+    // Totals row
+    const totalsRow = new TableRow({
+      children: [
+        makeCell('TOTALS', { bold: true, shading: 'E8E8E8' }),
+        makeCell('', { shading: 'E8E8E8' }),
+        makeCell('', { shading: 'E8E8E8' }),
+        makeCell(grandFSHrs.toFixed(2), { bold: true, align: AlignmentType.RIGHT, shading: 'E8E8E8' }),
+        makeCell(fmt(grandFS), { bold: true, align: AlignmentType.RIGHT, shading: 'E8E8E8' }),
+        makeCell(grandAdmHrs.toFixed(2), { bold: true, align: AlignmentType.RIGHT, shading: 'E8E8E8' }),
+        makeCell(fmt(grandAdmin), { bold: true, align: AlignmentType.RIGHT, shading: 'E8E8E8' }),
+      ]
+    });
+
+    const doc = new Document({
+      sections: [{
+        properties: { page: { margin: { top: 720, bottom: 720, left: 720, right: 720 },
+          size: { orientation: 'landscape', width: 15840, height: 12240 } } },
+        children: [
+          new Paragraph({
+            alignment: AlignmentType.CENTER, spacing: { after: 80 },
+            children: [new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 28, font: 'Calibri', color: navy })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER, spacing: { after: 80 },
+            children: [new TextRun({ text: `CACFP Monthly Staff Cost Report`, size: 24, font: 'Calibri', color: '666666' })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER, spacing: { after: 200 },
+            children: [new TextRun({ text: `${monthLabel} | FY ${fy.label} | Sponsor #990004457`, size: 20, font: 'Calibri', color: '999999' })]
+          }),
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [headerRow, ...dataRows, totalsRow]
+          }),
+          new Paragraph({ spacing: { before: 300 }, children: [] }),
+          new Paragraph({
+            children: [
+              new TextRun({ text: 'Summary: ', bold: true, size: 20, font: 'Calibri' }),
+              new TextRun({ text: `Food Service Salaries: ${fmt(grandFS)} | Benefits (7.65%): ${fmt(benefits)} | Admin Costs: ${fmt(grandAdmin)} | Total NFSA Cost: ${fmt(grandFS + benefits + grandAdmin)}`, size: 20, font: 'Calibri', color: '555555' })
+            ]
+          }),
+          new Paragraph({ spacing: { before: 200 }, children: [
+            new TextRun({ text: `Report generated: ${new Date().toLocaleDateString('en-US')} | Staff count: ${entries.length}`, size: 18, font: 'Calibri', color: '999999' })
+          ]}),
+        ]
+      }]
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+    res.setHeader('Content-Disposition', `attachment; filename="Staff_Cost_Report_${month_key}_${fy.label}.docx"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
 // ── GENERATE NFSA GENERAL LEDGER (.docx) ──────────────────
 app.post('/api/generate-gl', authCheck, async (req, res) => {
   try {
