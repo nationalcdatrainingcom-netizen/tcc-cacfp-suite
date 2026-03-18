@@ -2804,7 +2804,7 @@ async function renderStaffTA(){
       const centerLabel=s.center==='niles'?'Niles':'Peace';
 
       html+=`<tr>
-        <td style="font-weight:500">${s.name}</td>
+        <td style="font-weight:500;color:var(--primary);cursor:pointer;text-decoration:underline" onclick="viewStaffTA(${s.id})">${s.name}</td>
         <td>${centerLabel}</td>
         <td>${s.daysWorked}</td>
         <td>${s.totalFS.toFixed(1)}</td>
@@ -2814,6 +2814,7 @@ async function renderStaffTA(){
         <td style="color:${statusColor};font-weight:500">${statusLabel}</td>
         <td>
           <div style="display:flex;gap:4px">
+            <button class="btn btn-sm btn-outline" onclick="viewStaffTA(${s.id})">View</button>
             ${status==='submitted'?`<button class="btn btn-sm btn-success" onclick="approveStaff(${s.id})">Approve</button>`:''}
             ${(status==='submitted'||status==='approved')&&s.hasPlayground?`<button class="btn btn-sm btn-primary" onclick="generateTAForm(${s.id})">📄 Form</button>`:''}
           </div>
@@ -2822,6 +2823,9 @@ async function renderStaffTA(){
     }
 
     html+=`</tbody></table>`;
+
+    // Detail view panel (hidden until a staff member is clicked)
+    html+=`<div id="staffTADetail"></div>`;
 
     // Bulk actions
     const readyToApprove=allData.filter(s=>s.signature?.status==='submitted');
@@ -2927,9 +2931,160 @@ async function generateAllTAForms(){
   }catch(e){showToast('Error: '+e.message,'err');}
 }
 
-
 // ═══════════════════════════════════════════════════
-// MONTHLY UPLOAD WIZARD
+// STAFF T&A DETAIL VIEW — Full MDE Form Preview
+// ═══════════════════════════════════════════════════
+async function viewStaffTA(staffId){
+  const panel=document.getElementById('staffTADetail');
+  if(!panel){showToast('Detail panel not found','err');return;}
+  panel.innerHTML='<div class="card" style="margin-top:16px"><div class="card-body" style="text-align:center;padding:20px">⏳ Loading...</div></div>';
+  panel.scrollIntoView({behavior:'smooth'});
+
+  try{
+    const data=await api(`/api/merged-time/${staffId}?fiscal_year_id=${activeFY.id}&month_key=${currentMonth}`);
+    const staff=data.staff;
+    const sig=data.signature;
+    const days=data.days;
+    const mk=currentMonth;
+    const year=fyYear(mk);
+    const monthLabel=ML[mk]+' '+year;
+    const MN={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+    const numDays=new Date(year,MN[mk]+1,0).getDate();
+    const rate=parseFloat(staff.hourly_rate)||0;
+    const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+    // Build day map
+    const dayMap={};
+    days.forEach(d=>{dayMap[d.day]=d;});
+
+    let totWorked=0,totAbsent=0,totNonCACFP=0,totFS=0,totAdm=0;
+
+    // Build table rows
+    let rowsHtml='';
+    for(let d=1;d<=numDays;d++){
+      const dd=dayMap[d];
+      const date=new Date(year,MN[mk],d);
+      const dow=date.getDay();
+      const isWeekend=dow===0||dow===6;
+      const hasData=!!dd&&(dd.total_worked>0||dd.food_service_hours>0);
+
+      const worked=dd?dd.total_worked:0;
+      const absent=dd?dd.total_absent:0;
+      const fsH=dd?dd.food_service_hours:0;
+      const admH=dd?dd.admin_hours:0;
+      const nonCACFP=dd?dd.non_cacfp:0;
+      totWorked+=worked;totAbsent+=absent;totFS+=fsH;totAdm+=admH;totNonCACFP+=nonCACFP;
+
+      const bgStyle=hasData?'':'background:#fafaf8;color:#bbb';
+      const fmtV=v=>v>0?v.toFixed(2):'';
+      const fsBg=fsH>0?'background:#e6f1fb;font-weight:600':'';
+
+      rowsHtml+=`<tr style="${bgStyle}">
+        <td style="font-weight:600;width:28px;padding:4px;border:1px solid #ddd;text-align:center">${d}</td>
+        <td style="width:30px;font-size:.7rem;color:var(--muted);padding:4px;border:1px solid #ddd;text-align:center">${DOW[dow]}</td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center">${dd?.start_time||''}</td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center">${dd?.end_time||''}</td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center">${fmtV(worked)}</td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center">${fmtV(absent)}</td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center">${fmtV(nonCACFP)}</td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center;${fsBg}">${fmtV(fsH)}</td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center">${fmtV(admH)}</td>
+      </tr>`;
+    }
+
+    const status=sig?.status||'none';
+    const canApprove=status==='submitted';
+    const isApproved=status==='approved';
+
+    let html=`<div class="card" style="margin-top:16px;border:2px solid var(--navy)">
+      <div class="card-body" style="padding:20px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
+          <button class="btn btn-sm btn-outline" onclick="document.getElementById('staffTADetail').innerHTML=''">&times; Close</button>
+          <div style="display:flex;gap:6px">
+            ${canApprove?`<button class="btn btn-sm btn-success" onclick="approveStaff(${staffId});setTimeout(()=>viewStaffTA(${staffId}),500)">✅ Approve</button>`:''}
+            ${(status==='submitted'||isApproved)?`<button class="btn btn-sm btn-primary" onclick="generateTAForm(${staffId})">📄 Download .docx</button>`:''}
+          </div>
+        </div>
+
+        <!-- MDE FORM HEADER -->
+        <div style="text-align:center;margin-bottom:12px">
+          <div style="font-size:.8rem;color:var(--muted)">Michigan Department of Education</div>
+          <div style="font-size:.8rem;color:var(--muted)">Child and Adult Care Food Program</div>
+          <div style="font-size:1rem;font-weight:600;color:var(--navy);margin-top:4px">Time and Attendance / Time Distribution</div>
+        </div>
+
+        <div style="display:flex;gap:24px;margin-bottom:12px;font-size:.9rem">
+          <div><span style="font-weight:600">Name:</span> <span style="text-decoration:underline">${staff.name}</span></div>
+          <div><span style="font-weight:600">Month/Year:</span> <span style="text-decoration:underline">${monthLabel}</span></div>
+          <div><span style="font-weight:600">Center:</span> ${staff.center==='niles'?'Niles':'Peace Boulevard'}</div>
+        </div>
+
+        <!-- DATA TABLE -->
+        <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+          <thead>
+            <tr style="background:var(--navy);color:#fff">
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444">Date</th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444"></th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444">Starting<br>Time</th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444">Ending<br>Time</th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444">Total Hrs<br>Worked</th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444">Total Hrs<br>Absent</th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444">Non-CACFP<br>Hours</th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444;background:#1a4a7a">CACFP Hrs<br>(Food Svc)</th>
+              <th style="padding:6px 4px;text-align:center;border:1px solid #444">CACFP Hrs<br>(Admin)</th>
+            </tr>
+          </thead>
+          <tbody style="font-size:.8rem">
+            ${rowsHtml}
+            <tr style="background:#e8e8e8;font-weight:600">
+              <td colspan="2" style="padding:6px;border:1px solid #ccc"></td>
+              <td style="padding:6px;border:1px solid #ccc;text-align:center">Totals</td>
+              <td style="padding:6px;border:1px solid #ccc"></td>
+              <td style="padding:6px;border:1px solid #ccc;text-align:center">${totWorked.toFixed(2)}</td>
+              <td style="padding:6px;border:1px solid #ccc;text-align:center">${totAbsent.toFixed(2)}</td>
+              <td style="padding:6px;border:1px solid #ccc;text-align:center">${totNonCACFP.toFixed(2)}</td>
+              <td style="padding:6px;border:1px solid #ccc;text-align:center;background:#d4e8fb;font-weight:700">${totFS.toFixed(2)}</td>
+              <td style="padding:6px;border:1px solid #ccc;text-align:center">${totAdm.toFixed(2)}</td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
+
+        <!-- COST CALCULATIONS -->
+        <div style="margin-top:12px;font-size:.85rem">
+          <div style="margin-bottom:4px">Total CACFP Administrative Time: <strong>${totAdm.toFixed(2)} hrs</strong> × Hourly Rate <strong>$${rate.toFixed(2)}</strong> = Administrative Costs <strong>$${(totAdm*rate).toFixed(2)}</strong></div>
+          <div>Total CACFP Food Service Labor Time: <strong>${totFS.toFixed(2)} hrs</strong> × Hourly Rate <strong>$${rate.toFixed(2)}</strong> = Food Service Costs <strong>$${(totFS*rate).toFixed(2)}</strong></div>
+        </div>
+
+        <!-- SIGNATURES -->
+        <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:.85rem">
+          <div style="padding:12px;border:1px solid ${sig?.employee_signature?'var(--success)':'var(--border)'};border-radius:8px;background:${sig?.employee_signature?'#f0faf0':'#fafaf8'}">
+            <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">Employee Signature</div>
+            ${sig?.employee_signature?
+              `<div style="font-size:1.1rem;font-style:italic;font-weight:500;color:var(--navy)">${sig.employee_signature}</div>
+               <div style="font-size:.75rem;color:var(--muted);margin-top:2px">${new Date(sig.employee_signed_at).toLocaleDateString()}</div>`
+              :'<div style="color:var(--muted);font-style:italic">Not yet signed</div>'}
+          </div>
+          <div style="padding:12px;border:1px solid ${sig?.supervisor_signature?'var(--success)':'var(--border)'};border-radius:8px;background:${sig?.supervisor_signature?'#f0faf0':'#fafaf8'}">
+            <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px">Supervisor Signature (certification)</div>
+            ${sig?.supervisor_signature?
+              `<div style="font-size:1.1rem;font-style:italic;font-weight:500;color:var(--navy)">${sig.supervisor_signature}</div>
+               <div style="font-size:.75rem;color:var(--muted);margin-top:2px">${new Date(sig.supervisor_signed_at).toLocaleDateString()}</div>`
+              :`<div style="color:var(--muted);font-style:italic">${canApprove?'Pending your approval':'Not yet approved'}</div>`}
+          </div>
+        </div>
+
+        <div style="text-align:right;margin-top:8px;font-size:.7rem;color:var(--muted)">Rev. 3/08</div>
+      </div>
+    </div>`;
+
+    panel.innerHTML=html;
+    panel.scrollIntoView({behavior:'smooth'});
+  }catch(e){
+    panel.innerHTML=`<div class="card" style="margin-top:16px"><div class="card-body"><div class="alert alert-err">Error: ${e.message}</div></div></div>`;
+  }
+}
 // ═══════════════════════════════════════════════════
 const WIZ_STEPS=[
   {id:'wiz_attendance_niles',label:'Attendance — Niles',icon:'📊',center:'niles',desc:'Upload the Niles Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_niles'},
