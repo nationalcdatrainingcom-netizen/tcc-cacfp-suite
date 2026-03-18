@@ -2234,15 +2234,160 @@ async function executeDelete(){
 }
 // ═══════════════════════════════════════════════════
 // BATCH PDF UPLOAD + OCR (Time & Attendance)
+// Enhanced: zone-based extraction of CACFP columns + page thumbnails
 // ═══════════════════════════════════════════════════
 let batchResults=[];
+
+async function ocrPageEnhanced(canvas){
+  const w=canvas.width,h=canvas.height;
+  const result={name:null,monthYear:null,totalCACFP_FS:null,totalCACFP_Admin:null,hourlyRate:null,totalHours:null,dailyFS:[],dailyAdmin:[],ocrTotalsFS:null,ocrTotalsAdmin:null,alerts:[],thumbnail:null};
+
+  // Generate thumbnail for review display
+  const thumbW=280,thumbH=Math.round(h*(280/w));
+  const thumbCanvas=document.createElement('canvas');thumbCanvas.width=thumbW;thumbCanvas.height=thumbH;
+  thumbCanvas.getContext('2d').drawImage(canvas,0,0,thumbW,thumbH);
+  result.thumbnail=thumbCanvas.toDataURL('image/jpeg',0.6);
+
+  // Full-page OCR for name and metadata
+  const fullWorker=await Tesseract.createWorker('eng');
+  const fullResult=await fullWorker.recognize(canvas);
+  await fullWorker.terminate();
+  result.rawText=fullResult.data.text;
+  result.ocrConfidence=fullResult.data.confidence;
+
+  // Parse name and month from full-page OCR
+  const parsed=parseTimeAttendancePage(fullResult.data.text);
+  result.name=parsed.name;result.monthYear=parsed.monthYear;
+  result.hourlyRate=parsed.hourlyRate;
+
+  // If full-page found totals, keep them as fallback
+  if(parsed.totalCACFP_FS!==null)result.totalCACFP_FS=parsed.totalCACFP_FS;
+  if(parsed.totalCACFP_Admin!==null)result.totalCACFP_Admin=parsed.totalCACFP_Admin;
+  if(parsed.totalHours!==null)result.totalHours=parsed.totalHours;
+
+  // ── ZONE-BASED EXTRACTION ──
+  // MDE Time & Attendance form layout (8 columns):
+  // Date | Start | End | TotalWorked | Absent | Non-CACFP | CACFP FS | CACFP Admin
+  // CACFP FS column: approx 68-82% width
+  // CACFP Admin column: approx 82-95% width
+  // Data rows: approx 12-82% height (31 rows)
+  // Totals row: approx 83-87% height
+
+  try{
+    // Extract CACFP FS column zone
+    const fsX1=Math.round(w*0.65),fsX2=Math.round(w*0.82);
+    const admX1=Math.round(w*0.82),admX2=Math.round(w*0.96);
+    const dataY1=Math.round(h*0.12),dataY2=Math.round(h*0.82);
+    const totY1=Math.round(h*0.82),totY2=Math.round(h*0.88);
+    const rowH=(dataY2-dataY1)/31;
+
+    // ── Try to read each daily row in the CACFP FS column ──
+    const dailyFS=[];
+    for(let day=0;day<31;day++){
+      const ry1=Math.round(dataY1+day*rowH);
+      const ry2=Math.round(ry1+rowH);
+
+      // Crop the FS cell from the main canvas
+      const cellCanvas=document.createElement('canvas');
+      const cellW=fsX2-fsX1,cellH=ry2-ry1;
+      cellCanvas.width=cellW*2;cellCanvas.height=cellH*2;
+      const cellCtx=cellCanvas.getContext('2d');
+      cellCtx.drawImage(canvas,fsX1,ry1,cellW,cellH,0,0,cellW*2,cellH*2);
+
+      // Enhance: increase contrast, threshold
+      const imgData=cellCtx.getImageData(0,0,cellCanvas.width,cellCanvas.height);
+      const d=imgData.data;
+      for(let px=0;px<d.length;px+=4){
+        const gray=d[px]*0.3+d[px+1]*0.59+d[px+2]*0.11;
+        const bw=gray<130?0:255;
+        d[px]=d[px+1]=d[px+2]=bw;
+      }
+      cellCtx.putImageData(imgData,0,0);
+
+      const cellWorker=await Tesseract.createWorker('eng');
+      const cellRes=await cellWorker.recognize(cellCanvas,{tessedit_char_whitelist:'0123456789.'});
+      await cellWorker.terminate();
+
+      let txt=cellRes.data.text.trim().replace(/\s/g,'').replace(/,/g,'.').replace(/[lI|]/g,'1').replace(/[oO]/g,'0').replace(/[sS]/g,'5');
+      txt=txt.replace(/\.+/g,'.').replace(/^\.+|\.+$/g,'');
+      if(txt){
+        try{const val=parseFloat(txt);if(val>=0.25&&val<=24){dailyFS.push({day:day+1,val});}}catch(e){}
+      }
+    }
+    result.dailyFS=dailyFS;
+
+    // ── Try to read totals row for FS ──
+    const totFSCanvas=document.createElement('canvas');
+    const totW=fsX2-fsX1,totH2=totY2-totY1;
+    totFSCanvas.width=totW*3;totFSCanvas.height=totH2*3;
+    totFSCanvas.getContext('2d').drawImage(canvas,fsX1,totY1,totW,totH2,0,0,totW*3,totH2*3);
+    // Enhance
+    const tCtx=totFSCanvas.getContext('2d');
+    const tImgData=tCtx.getImageData(0,0,totFSCanvas.width,totFSCanvas.height);
+    const td=tImgData.data;
+    for(let px=0;px<td.length;px+=4){const gray=td[px]*0.3+td[px+1]*0.59+td[px+2]*0.11;const bw=gray<120?0:255;td[px]=td[px+1]=td[px+2]=bw;}
+    tCtx.putImageData(tImgData,0,0);
+    const totWorker=await Tesseract.createWorker('eng');
+    const totRes=await totWorker.recognize(totFSCanvas,{tessedit_char_whitelist:'0123456789.'});
+    await totWorker.terminate();
+    let totTxt=totRes.data.text.trim().replace(/\s/g,'').replace(/,/g,'.').replace(/[lI|]/g,'1').replace(/[oO]/g,'0').replace(/[sS]/g,'5').replace(/\.+/g,'.').replace(/^\.+|\.+$/g,'');
+    if(totTxt){try{const tv=parseFloat(totTxt);if(tv>0&&tv<999)result.ocrTotalsFS=tv;}catch(e){}}
+
+    // ── Determine best FS hours value ──
+    // Priority: 1) Sum of daily entries if we got enough, 2) OCR totals row, 3) full-page parse
+    const dailySum=dailyFS.reduce((s,d)=>s+d.val,0);
+    if(dailyFS.length>=3&&dailySum>0){
+      result.totalCACFP_FS=Math.round(dailySum*100)/100;
+      result.fsSource='daily_sum';
+    }else if(result.ocrTotalsFS){
+      result.totalCACFP_FS=result.ocrTotalsFS;
+      result.fsSource='totals_row';
+    }else if(parsed.totalCACFP_FS!==null){
+      result.fsSource='full_page';
+    }else{
+      result.fsSource='none';
+    }
+
+    // ── Same for Admin column (simpler — usually blank or has a few entries) ──
+    const dailyAdmin=[];
+    for(let day=0;day<31;day++){
+      const ry1=Math.round(dataY1+day*rowH);
+      const ry2=Math.round(ry1+rowH);
+      const cellCanvas=document.createElement('canvas');
+      const cellW=admX2-admX1,cellH=ry2-ry1;
+      cellCanvas.width=cellW*2;cellCanvas.height=cellH*2;
+      const cellCtx=cellCanvas.getContext('2d');
+      cellCtx.drawImage(canvas,admX1,ry1,cellW,cellH,0,0,cellW*2,cellH*2);
+      const imgData=cellCtx.getImageData(0,0,cellCanvas.width,cellCanvas.height);
+      const dd=imgData.data;
+      for(let px=0;px<dd.length;px+=4){const gray=dd[px]*0.3+dd[px+1]*0.59+dd[px+2]*0.11;const bw=gray<130?0:255;dd[px]=dd[px+1]=dd[px+2]=bw;}
+      cellCtx.putImageData(imgData,0,0);
+      const cw=await Tesseract.createWorker('eng');
+      const cr=await cw.recognize(cellCanvas,{tessedit_char_whitelist:'0123456789.'});
+      await cw.terminate();
+      let ct=cr.data.text.trim().replace(/\s/g,'').replace(/,/g,'.').replace(/[lI|]/g,'1').replace(/[oO]/g,'0').replace(/[sS]/g,'5').replace(/\.+/g,'.').replace(/^\.+|\.+$/g,'');
+      if(ct){try{const val=parseFloat(ct);if(val>=0.25&&val<=24)dailyAdmin.push({day:day+1,val});}catch(e){}}
+    }
+    result.dailyAdmin=dailyAdmin;
+    const adminDailySum=dailyAdmin.reduce((s,d)=>s+d.val,0);
+    if(dailyAdmin.length>=1&&adminDailySum>0)result.totalCACFP_Admin=Math.round(adminDailySum*100)/100;
+
+  }catch(zoneErr){
+    console.warn('Zone OCR failed, using full-page results:',zoneErr);
+  }
+
+  // ── Pre-fill from last month if OCR found nothing ──
+  // (handled in showBatchReview when we have staff match)
+
+  return result;
+}
 
 async function startBatchUpload(center,monthKey){
   const input=document.createElement('input');input.type='file';input.accept='.pdf';
   input.onchange=async()=>{
     if(!input.files[0])return;
     const file=input.files[0];
-    showToast('Processing PDF — this may take a minute...','');
+    showToast('Processing PDF — this may take a few minutes...','');
     try{
       const arrayBuf=await file.arrayBuffer();
       const pdf=await pdfjsLib.getDocument({data:arrayBuf}).promise;
@@ -2254,7 +2399,7 @@ async function startBatchUpload(center,monthKey){
       await api('/api/documents/upload',{method:'POST',body:fd});
       documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
 
-      // Process each page
+      // Process each page with enhanced zone OCR
       for(let i=1;i<=numPages;i++){
         const page=await pdf.getPage(i);
         const viewport=page.getViewport({scale:2});
@@ -2263,28 +2408,20 @@ async function startBatchUpload(center,monthKey){
         const ctx=canvas.getContext('2d');
         await page.render({canvasContext:ctx,viewport}).promise;
 
-        // OCR the page
-        const worker=await Tesseract.createWorker('eng');
-        const{data}=await worker.recognize(canvas);
-        await worker.terminate();
-
-        const extracted=parseTimeAttendancePage(data.text);
+        const extracted=await ocrPageEnhanced(canvas);
         extracted.pageNum=i;
-        extracted.rawText=data.text;
 
         // Auto-match to staff
         const centerStaff=staffList.filter(s=>s.center===center);
         if(extracted.name){
-          const match=centerStaff.find(s=>s.name.toLowerCase().includes(extracted.name.toLowerCase())||extracted.name.toLowerCase().includes(s.name.toLowerCase().split(' ')[1]||'ZZZZZ'));
+          const match=centerStaff.find(s=>s.name.toLowerCase().includes(extracted.name.toLowerCase())||extracted.name.toLowerCase().includes((s.name.split(' ')[1]||'ZZZ').toLowerCase()));
           if(match){extracted.matchedStaffId=match.id;extracted.matchedName=match.name;extracted.status='matched';}
           else{extracted.status='unrecognized';}
         }else{extracted.status='no_name';}
 
-        // Check for signatures
-        extracted.alerts=[];
-        if(!data.text.match(/signature|signed/i)&&data.confidence<60)extracted.alerts.push('Possible missing signature');
-        if(extracted.totalHours===null)extracted.alerts.push('Could not extract total hours');
-        if(data.confidence<40)extracted.alerts.push('Low confidence — may be unreadable');
+        if(extracted.ocrConfidence<55&&!extracted.rawText.match(/signature|signed/i))extracted.alerts.push('Possible missing signature');
+        if(extracted.ocrConfidence<40)extracted.alerts.push('Low quality — may be unreadable');
+        if(extracted.totalCACFP_FS===null&&extracted.totalHours===null)extracted.alerts.push('Could not extract hours — please enter manually');
 
         batchResults.push(extracted);
       }
@@ -2352,12 +2489,61 @@ function renderBatchPage(){
   const staffOpts=centerStaff.map(s=>`<option value="${s.id}" ${r.matchedStaffId===s.id?'selected':''}>${s.name} ($${parseFloat(s.hourly_rate||0).toFixed(2)}/hr)</option>`).join('');
 
   // Pre-fill rate from matched staff if not set by OCR
-  const displayRate=r.hourlyRate||(r.matchedStaffId?parseFloat(staffList.find(s=>s.id===r.matchedStaffId)?.hourly_rate)||'':'');
+  const displayRate=r.hourlyRate||(r.matchedStaffId&&r.matchedStaffId!=='NEW'?parseFloat(staffList.find(s=>s.id===r.matchedStaffId)?.hourly_rate)||'':'');
+
+  // Pre-fill hours from last month if OCR found nothing and staff matched
+  if(r.totalCACFP_FS===null&&r.matchedStaffId&&r.matchedStaffId!=='NEW'&&!r.triedLastMonth){
+    r.triedLastMonth=true;
+    const prevMonths=MO;const curIdx=prevMonths.indexOf(monthKey);
+    if(curIdx>0){
+      const prevKey=prevMonths[curIdx-1];
+      const prevEntry=staffTimeEntries.find(e=>e.staff_id==r.matchedStaffId&&e.month_key===prevKey);
+      if(prevEntry&&parseFloat(prevEntry.food_service_hours)>0){
+        r.totalCACFP_FS=parseFloat(prevEntry.food_service_hours);
+        r.fsSource='last_month';
+        r.lastMonthFS=parseFloat(prevEntry.food_service_hours);
+      }
+      if(prevEntry&&parseFloat(prevEntry.admin_hours)>0&&r.totalCACFP_Admin===null){
+        r.totalCACFP_Admin=parseFloat(prevEntry.admin_hours);
+        r.lastMonthAdmin=parseFloat(prevEntry.admin_hours);
+      }
+    }
+  }
+
   const fsH=r.totalCACFP_FS!==null?r.totalCACFP_FS:'';
   const admH=r.totalCACFP_Admin!==null?r.totalCACFP_Admin:'';
   const rateVal=displayRate||'';
   const fsCost=(parseFloat(fsH)||0)*(parseFloat(rateVal)||0);
   const admCost=(parseFloat(admH)||0)*(parseFloat(rateVal)||0);
+
+  // OCR source badge
+  const srcBadge=(src)=>{
+    if(src==='daily_sum')return '<span style="display:inline-block;font-size:.7rem;background:#e8f5e9;color:#2e7d32;padding:2px 6px;border-radius:4px;margin-left:4px">✓ from daily entries</span>';
+    if(src==='totals_row')return '<span style="display:inline-block;font-size:.7rem;background:#fff3e0;color:#e65100;padding:2px 6px;border-radius:4px;margin-left:4px">from totals row</span>';
+    if(src==='last_month')return '<span style="display:inline-block;font-size:.7rem;background:#e3f2fd;color:#1565c0;padding:2px 6px;border-radius:4px;margin-left:4px">from last month</span>';
+    if(src==='full_page')return '<span style="display:inline-block;font-size:.7rem;background:#fce4ec;color:#c62828;padding:2px 6px;border-radius:4px;margin-left:4px">OCR estimate</span>';
+    return '<span style="display:inline-block;font-size:.7rem;background:#f5f5f5;color:#666;padding:2px 6px;border-radius:4px;margin-left:4px">enter manually</span>';
+  };
+
+  // Daily breakdown display
+  let dailyHtml='';
+  if(r.dailyFS&&r.dailyFS.length>0){
+    const dailySum=r.dailyFS.reduce((s,d)=>s+d.val,0);
+    const dayList=r.dailyFS.map(d=>`Day ${d.day}: ${d.val}`).join(', ');
+    dailyHtml=`<div style="margin-top:8px;padding:8px;background:#f0faf0;border:1px solid #c8e6c9;border-radius:6px;font-size:.8rem">
+      <strong>📊 OCR detected ${r.dailyFS.length} daily entries:</strong> ${dayList}<br>
+      <strong>Sum: ${Math.round(dailySum*100)/100}</strong>
+      ${r.ocrTotalsFS?` · Totals row reads: ${r.ocrTotalsFS}`:''}
+    </div>`;
+  }else if(r.ocrTotalsFS){
+    dailyHtml=`<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;font-size:.8rem">
+      📊 Could not read individual daily entries. <strong>Totals row reads: ${r.ocrTotalsFS}</strong>
+    </div>`;
+  }else if(r.fsSource==='last_month'){
+    dailyHtml=`<div style="margin-top:8px;padding:8px;background:#e3f2fd;border:1px solid #90caf9;border-radius:6px;font-size:.8rem">
+      📋 OCR could not read hours. Pre-filled <strong>${r.lastMonthFS}</strong> from last month's entry. Please verify against the form.
+    </div>`;
+  }
 
   let html=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -2373,9 +2559,9 @@ function renderBatchPage(){
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:auto 1fr;gap:0 24px;align-items:start">
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:0 20px;align-items:start">
       <!-- Page thumbnails sidebar -->
-      <div style="display:flex;flex-direction:column;gap:4px;max-height:440px;overflow-y:auto;padding-right:8px">
+      <div style="display:flex;flex-direction:column;gap:4px;max-height:540px;overflow-y:auto;padding-right:8px">
         ${batchResults.map((b,i)=>`<button onclick="batchReviewPage=${i};renderBatchPage()" style="
           width:36px;height:36px;border-radius:6px;border:2px solid ${i===pg?'var(--primary)':b.confirmed?'var(--success)':'#ddd'};
           background:${b.confirmed?'#e8f5e9':i===pg?'#e3f2fd':'#fff'};cursor:pointer;font-size:.75rem;font-weight:600;
@@ -2384,11 +2570,18 @@ function renderBatchPage(){
 
       <!-- Current page review -->
       <div class="card" style="margin:0;border:2px solid ${r.confirmed?'var(--success)':'var(--primary)'}">
-        <div class="card-body" style="padding:20px">
+        <div class="card-body" style="padding:16px">
           ${r.alerts.length>0?`<div class="alert alert-warn" style="margin-bottom:12px;font-size:.85rem">⚠️ ${r.alerts.join(' · ')}</div>`:''}
 
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <!-- Left: Staff Identity -->
+          <div style="display:grid;grid-template-columns:${r.thumbnail?'200px ':''} 1fr 1fr;gap:16px">
+            ${r.thumbnail?`<!-- Scanned form preview -->
+            <div>
+              <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Scanned Form</label>
+              <img src="${r.thumbnail}" style="width:100%;border:1px solid #ddd;border-radius:6px;cursor:pointer" onclick="window.open(this.src,'_blank')" title="Click to enlarge">
+              <div style="font-size:.7rem;color:var(--muted);margin-top:4px;text-align:center">Click to enlarge</div>
+            </div>`:''}
+
+            <!-- Staff Identity -->
             <div>
               <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">OCR Detected Name</label>
               <div style="font-size:1rem;font-weight:500;margin-bottom:12px;padding:8px;background:#f8f8f8;border-radius:6px">${r.name||'<em style="color:#999">Not detected</em>'}</div>
@@ -2404,19 +2597,19 @@ function renderBatchPage(){
               </div>
             </div>
 
-            <!-- Right: Hours & Rate -->
+            <!-- Hours & Rate -->
             <div>
               <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Hourly Rate</label>
-              <div style="position:relative;margin-bottom:12px">
+              <div style="position:relative;margin-bottom:8px">
                 <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#999;font-weight:600">$</span>
                 <input id="batchRate" type="number" step="0.01" min="0" value="${rateVal}" onchange="batchUpdateField(${pg},'hourlyRate',parseFloat(this.value));renderBatchPage()" style="width:100%;padding:8px 8px 8px 24px;border:1px solid #ccc;border-radius:6px;font-size:.95rem">
               </div>
-              <p style="font-size:.75rem;color:var(--muted);margin:-8px 0 12px 0">Rate is saved to staff profile and carries forward to future months</p>
+              <p style="font-size:.7rem;color:var(--muted);margin:0 0 10px 0">Carries forward to future months</p>
 
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
                 <div>
-                  <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">FS Hours</label>
-                  <input id="batchFSH" type="number" step="0.25" min="0" value="${fsH}" onchange="batchUpdateField(${pg},'totalCACFP_FS',parseFloat(this.value));renderBatchPage()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:.95rem">
+                  <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">FS Hours ${srcBadge(r.fsSource||'none')}</label>
+                  <input id="batchFSH" type="number" step="0.25" min="0" value="${fsH}" onchange="batchUpdateField(${pg},'totalCACFP_FS',parseFloat(this.value));batchResults[${pg}].fsSource='manual';renderBatchPage()" style="width:100%;padding:8px;border:1px solid ${r.fsSource==='daily_sum'?'#4caf50':r.fsSource==='last_month'?'#2196f3':'#ccc'};border-radius:6px;font-size:.95rem">
                   <div style="font-size:.8rem;color:var(--muted);margin-top:4px">Cost: <strong>${fsCost>0?fmt(fsCost):'—'}</strong></div>
                 </div>
                 <div>
@@ -2428,11 +2621,14 @@ function renderBatchPage(){
             </div>
           </div>
 
+          <!-- Daily OCR breakdown -->
+          ${dailyHtml}
+
           <!-- Confirm button for this page -->
           <div style="margin-top:16px;display:flex;gap:8px;align-items:center;justify-content:space-between">
-            <div style="display:flex;gap:8px">
+            <div style="display:flex;gap:8px;align-items:center">
               <button class="btn ${r.confirmed?'btn-outline':'btn-success'}" onclick="batchConfirmPage(${pg})">
-                ${r.confirmed?'✏️ Edit':'✅ Confirm Page '+( pg+1)}
+                ${r.confirmed?'✏️ Edit':'✅ Confirm Page '+(pg+1)}
               </button>
               ${r.confirmed?'<span style="color:var(--success);font-weight:600;font-size:.9rem">✅ Confirmed</span>':''}
             </div>
@@ -2669,36 +2865,34 @@ async function wizUploadFile(input){
   document.getElementById('wiz-upload-zone').classList.add('done');
   document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' uploaded!';
 
-  // Special processing for batch Time forms
+  // Special processing for batch Time forms — use enhanced zone OCR
   if(step.isBatchOCR&&file.name.toLowerCase().endsWith('.pdf')){
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' saved — now scanning pages...';
-    document.getElementById('wizExtraContent').innerHTML='<div class="alert alert-warn" style="margin-top:16px"><span>⏳</span><div>Scanning '+file.name+'... This may take 1-2 minutes for large PDFs.</div></div>';
+    document.getElementById('wizExtraContent').innerHTML='<div class="alert alert-warn" style="margin-top:16px"><span>⏳</span><div>Scanning '+file.name+'... Reading CACFP hours from each page. This may take a few minutes.</div></div>';
     try{
       const buf=await file.arrayBuffer();const pdf=await pdfjsLib.getDocument({data:buf}).promise;
       batchResults=[];
       for(let i=1;i<=pdf.numPages;i++){
-        document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-warn" style="margin-top:16px"><span>⏳</span><div>Scanning page ${i} of ${pdf.numPages}...</div></div>`;
+        document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-warn" style="margin-top:16px"><span>⏳</span><div>Scanning page ${i} of ${pdf.numPages} — reading CACFP hours column...</div></div>`;
         const pg=await pdf.getPage(i);const vp=pg.getViewport({scale:2});
         const cvs=document.createElement('canvas');cvs.width=vp.width;cvs.height=vp.height;
         await pg.render({canvasContext:cvs.getContext('2d'),viewport:vp}).promise;
-        const worker=await Tesseract.createWorker('eng');
-        const{data}=await worker.recognize(cvs);await worker.terminate();
-        const ext=parseTimeAttendancePage(data.text);ext.pageNum=i;ext.rawText=data.text;
+        const ext=await ocrPageEnhanced(cvs);
+        ext.pageNum=i;
         const centerStaff=staffList.filter(s=>s.center===center);
         if(ext.name){const match=centerStaff.find(s=>s.name.toLowerCase().includes(ext.name.toLowerCase())||ext.name.toLowerCase().includes((s.name.split(' ')[1]||'ZZZ').toLowerCase()));
           if(match){ext.matchedStaffId=match.id;ext.matchedName=match.name;ext.status='matched';}else ext.status='unrecognized';}
         else ext.status='no_name';
-        ext.alerts=[];
-        if(!data.text.match(/signature|signed/i)&&data.confidence<55)ext.alerts.push('Possible missing signature');
-        if(data.confidence<40)ext.alerts.push('Low quality — may be unreadable');
-        if(ext.totalCACFP_FS===null&&ext.totalHours===null)ext.alerts.push('Could not extract hours');
+        if(ext.ocrConfidence<55&&!ext.rawText.match(/signature|signed/i))ext.alerts.push('Possible missing signature');
+        if(ext.ocrConfidence<40)ext.alerts.push('Low quality — may be unreadable');
+        if(ext.totalCACFP_FS===null&&ext.totalHours===null)ext.alerts.push('Could not extract hours — please enter manually');
         batchResults.push(ext);
       }
       const matched=batchResults.filter(r=>r.status==='matched').length;
       const flagged=batchResults.length-matched;
-      const alerts=batchResults.reduce((s,r)=>s+r.alerts.length,0);
+      const withHours=batchResults.filter(r=>r.totalCACFP_FS!==null).length;
       document.getElementById('wizExtraContent').innerHTML=`
-        <div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${pdf.numPages} pages scanned!</strong> ${matched} auto-matched, ${flagged} need review${alerts>0?', '+alerts+' alerts':''}. Click Next to review and save.</div></div>`;
+        <div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${pdf.numPages} pages scanned!</strong> ${matched} auto-matched, ${withHours} with hours detected. Click Next to review page-by-page and confirm.</div></div>`;
     }catch(e){document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-err" style="margin-top:16px"><span>❌</span><div>OCR error: ${e.message}. You can enter data manually in Staff Costs tab.</div></div>`;}
   }
   showToast('✅ '+step.label+' uploaded!','ok');
