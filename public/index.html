@@ -267,6 +267,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div class="month-bar" id="monthBar"></div>
         <div class="sub-tabs" id="monthlySubTabs">
           <div class="sub-tab active" onclick="monthSubTab('staffcosts')">👥 Staff Costs</div>
+          <div class="sub-tab" onclick="monthSubTab('staffta')">📋 Staff T&A</div>
           <div class="sub-tab" onclick="monthSubTab('attendance')">📊 Attendance</div>
           <div class="sub-tab" onclick="monthSubTab('meals')">🍽️ Meal Counts</div>
           <div class="sub-tab" onclick="monthSubTab('cdc')">🏥 CDC Eligibility</div>
@@ -275,6 +276,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <div class="sub-tab" onclick="monthSubTab('monthdocs')">📁 Documents</div>
         </div>
         <div class="sub-panel active" id="sp-staffcosts"></div>
+        <div class="sub-panel" id="sp-staffta"></div>
         <div class="sub-panel" id="sp-attendance"></div>
         <div class="sub-panel" id="sp-meals"></div>
         <div class="sub-panel" id="sp-cdc"></div>
@@ -565,7 +567,7 @@ function selectMonth(m){currentMonth=m;renderMonthBar();renderSubPanel();}
 function renderMonthlyPage(){renderMonthBar();renderSubPanel();}
 
 function renderSubPanel(){
-  const fn={staffcosts:renderStaffCosts,attendance:renderAttendance,meals:renderMeals,cdc:renderCDC,foodcosts:renderFoodCosts,claims:renderClaims,monthdocs:renderMonthDocs};
+  const fn={staffcosts:renderStaffCosts,staffta:renderStaffTA,attendance:renderAttendance,meals:renderMeals,cdc:renderCDC,foodcosts:renderFoodCosts,claims:renderClaims,monthdocs:renderMonthDocs};
   if(fn[currentSubTab])fn[currentSubTab]();
 }
 
@@ -2727,6 +2729,179 @@ async function generateStaffCostReport(monthKey){
     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`Staff_Cost_Report_${monthKey}_${activeFY.label}.docx`;a.click();URL.revokeObjectURL(url);
     showToast('✅ Staff Cost Report downloaded!','ok');
   }catch(e){showToast('Error generating report: '+e.message,'err');}
+}
+
+// ═══════════════════════════════════════════════════
+// STAFF T&A REVIEW PANEL
+// ═══════════════════════════════════════════════════
+async function renderStaffTA(){
+  const m=currentMonth;
+  const panel=document.getElementById('sp-staffta');
+
+  panel.innerHTML=`<div class="card"><div class="card-body" style="text-align:center;padding:30px"><div style="font-size:1.5rem">⏳</div><p>Loading staff T&A data...</p></div></div>`;
+
+  try{
+    const allData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${m}`);
+    const hasPlayground=allData.some(s=>s.hasPlayground);
+    const submitted=allData.filter(s=>s.signature?.status==='submitted'||s.signature?.status==='approved');
+    const approved=allData.filter(s=>s.signature?.status==='approved');
+
+    let html=`
+    <div class="card"><div class="card-hdr"><h3>📋 Staff T&A Review — ${ML[m]} ${fyYear(m)}</h3></div>
+    <div class="card-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+        <div style="text-align:center;padding:8px;background:var(--bg);border-radius:8px"><div style="font-size:1.3rem;font-weight:700">${allData.length}</div><div style="font-size:.75rem;color:var(--muted)">Total staff</div></div>
+        <div style="text-align:center;padding:8px;background:var(--bg);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;color:var(--success)">${submitted.length}</div><div style="font-size:.75rem;color:var(--muted)">Signed</div></div>
+        <div style="text-align:center;padding:8px;background:var(--bg);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;color:var(--primary)">${approved.length}</div><div style="font-size:.75rem;color:var(--muted)">Approved</div></div>
+        <div style="text-align:center;padding:8px;background:var(--bg);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;${hasPlayground?'color:var(--success)':'color:var(--error)'}">${hasPlayground?'✓':'✗'}</div><div style="font-size:.75rem;color:var(--muted)">Playground</div></div>
+      </div>
+
+      <!-- Step 1: Upload Playground CSV -->
+      <div style="margin-bottom:16px;padding:12px;background:${hasPlayground?'#f0faf0':'#fff8e1'};border:1px solid ${hasPlayground?'#c8e6c9':'#ffe082'};border-radius:8px">
+        <div style="font-weight:600;font-size:.9rem;margin-bottom:6px">${hasPlayground?'✅ Playground Daily Staff Hours uploaded':'Step 1: Upload Playground Daily Staff Hours CSV'}</div>
+        <p style="font-size:.8rem;color:var(--muted);margin-bottom:8px">From Playground App: Reports → Daily Staff Hours → export CSV for this month.</p>
+        <div style="display:flex;gap:8px">
+          <div class="upload-zone ${hasPlayground?'done':''}" style="flex:1;padding:10px"><input type="file" accept=".csv" onchange="uploadPlaygroundCSV(this)">
+            <div class="uz-label" style="font-size:.85rem">${hasPlayground?'Re-upload to replace':'Click to upload CSV'}</div>
+          </div>
+        </div>
+        <div id="playgroundImportResult"></div>
+      </div>
+
+      <!-- Step 2: Review staff -->
+      <div style="margin-bottom:12px;font-weight:600;font-size:.9rem">Step 2: Review & Approve</div>
+      <table class="staff-table" style="font-size:.85rem">
+        <thead><tr><th>Name</th><th>Center</th><th>Days</th><th>FS Hrs</th><th>Adm</th><th>Playground</th><th>CACFP</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>`;
+
+    for(const s of allData){
+      const sig=s.signature;
+      const status=sig?.status||'none';
+      const statusLabel=status==='approved'?'✅ Approved':status==='submitted'?'📝 Signed':'⏳ Pending';
+      const statusColor=status==='approved'?'var(--success)':status==='submitted'?'var(--primary)':'var(--muted)';
+      const centerLabel=s.center==='niles'?'Niles':'Peace';
+
+      html+=`<tr>
+        <td style="font-weight:500">${s.name}</td>
+        <td>${centerLabel}</td>
+        <td>${s.daysWorked}</td>
+        <td>${s.totalFS.toFixed(1)}</td>
+        <td>${s.totalAdm>0?s.totalAdm.toFixed(1):'—'}</td>
+        <td style="color:${s.hasPlayground?'var(--success)':'var(--error)'}">${s.hasPlayground?'✓':'✗'}</td>
+        <td style="color:${s.hasCACFP?'var(--success)':'var(--error)'}">${s.hasCACFP?'✓':'✗'}</td>
+        <td style="color:${statusColor};font-weight:500">${statusLabel}</td>
+        <td>
+          <div style="display:flex;gap:4px">
+            ${status==='submitted'?`<button class="btn btn-sm btn-success" onclick="approveStaff(${s.id})">Approve</button>`:''}
+            ${(status==='submitted'||status==='approved')&&s.hasPlayground?`<button class="btn btn-sm btn-primary" onclick="generateTAForm(${s.id})">📄 Form</button>`:''}
+          </div>
+        </td>
+      </tr>`;
+    }
+
+    html+=`</tbody></table>`;
+
+    // Bulk actions
+    const readyToApprove=allData.filter(s=>s.signature?.status==='submitted');
+    const readyToGenerate=allData.filter(s=>s.signature?.status==='approved'&&s.hasPlayground);
+
+    if(readyToApprove.length>0||readyToGenerate.length>0){
+      html+=`<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">`;
+      if(readyToApprove.length>0){
+        html+=`<button class="btn btn-success" onclick="approveAllStaff()">✅ Approve All ${readyToApprove.length} Signed</button>`;
+      }
+      if(readyToGenerate.length>0){
+        html+=`<button class="btn btn-primary" onclick="generateAllTAForms()">📄 Generate All ${readyToGenerate.length} T&A Forms</button>`;
+      }
+      html+=`</div>`;
+    }
+
+    html+=`</div></div>`;
+    panel.innerHTML=html;
+  }catch(e){
+    panel.innerHTML=`<div class="card"><div class="card-body"><div class="alert alert-err">Error loading T&A data: ${e.message}</div></div></div>`;
+  }
+}
+
+async function uploadPlaygroundCSV(input){
+  if(!input.files[0])return;
+  const file=input.files[0];
+  document.getElementById('playgroundImportResult').innerHTML='<div class="alert alert-warn" style="margin-top:8px">⏳ Importing...</div>';
+  try{
+    const fd=new FormData();
+    fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',currentMonth);
+    const res=await fetch('/api/playground-import',{method:'POST',headers:{'x-access-pin':accessPIN},body:fd});
+    const data=await res.json();
+    if(!res.ok)throw new Error(data.error);
+    let resultHtml=`<div class="alert alert-ok" style="margin-top:8px">✅ Imported ${data.imported} records from ${data.total_rows} rows.</div>`;
+    if(data.unmatched&&data.unmatched.length>0){
+      resultHtml+=`<div class="alert alert-warn" style="margin-top:4px">⚠️ ${data.unmatched.length} names not matched to roster: ${data.unmatched.join(', ')}. Add them in Staff Costs or the Staff Time Entry app.</div>`;
+    }
+    document.getElementById('playgroundImportResult').innerHTML=resultHtml;
+    showToast('✅ Playground import complete!','ok');
+    setTimeout(()=>renderStaffTA(),1000);
+  }catch(e){
+    document.getElementById('playgroundImportResult').innerHTML=`<div class="alert alert-err" style="margin-top:8px">❌ ${e.message}</div>`;
+  }
+}
+
+async function approveStaff(staffId){
+  try{
+    await api('/api/approve-month',{method:'POST',body:{staff_id:staffId,fiscal_year_id:activeFY.id,month_key:currentMonth,supervisor_signature:'Mary Wardlaw'}});
+    showToast('✅ Approved','ok');renderStaffTA();
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function approveAllStaff(){
+  try{
+    const allData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${currentMonth}`);
+    const ids=allData.filter(s=>s.signature?.status==='submitted').map(s=>s.id);
+    if(!ids.length){showToast('No signed entries to approve','err');return;}
+    if(!confirm(`Approve ${ids.length} staff time entries for ${ML[currentMonth]}?`))return;
+    await api('/api/approve-month-bulk',{method:'POST',body:{staff_ids:ids,fiscal_year_id:activeFY.id,month_key:currentMonth,supervisor_signature:'Mary Wardlaw'}});
+    showToast(`✅ ${ids.length} approved!`,'ok');renderStaffTA();
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function generateTAForm(staffId){
+  try{
+    showToast('Generating T&A form...','');
+    const res=await fetch('/api/generate-ta-form',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},
+      body:JSON.stringify({staff_id:staffId,fiscal_year_id:activeFY.id,month_key:currentMonth,store_in_docs:true})});
+    if(!res.ok)throw new Error('Generate failed');
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+    const cd=res.headers.get('content-disposition')||'';
+    const fnMatch=cd.match(/filename="(.+)"/);
+    a.download=fnMatch?fnMatch[1]:`TA_Form_${currentMonth}.docx`;
+    a.click();URL.revokeObjectURL(url);
+    showToast('✅ T&A form generated and saved to documents!','ok');
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function generateAllTAForms(){
+  try{
+    const allData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${currentMonth}`);
+    const ready=allData.filter(s=>s.signature?.status==='approved'&&s.hasPlayground);
+    if(!ready.length){showToast('No approved entries with Playground data','err');return;}
+    if(!confirm(`Generate ${ready.length} T&A forms for ${ML[currentMonth]}? Each will be saved to Documents.`))return;
+    let count=0;
+    for(const s of ready){
+      showToast(`Generating ${count+1} of ${ready.length}...`,'');
+      await fetch('/api/generate-ta-form',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},
+        body:JSON.stringify({staff_id:s.id,fiscal_year_id:activeFY.id,month_key:currentMonth,store_in_docs:true})});
+      count++;
+    }
+    // Also generate the combined staff cost report
+    showToast('Generating combined report...','');
+    await fetch('/api/generate-staff-report',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},
+      body:JSON.stringify({fiscal_year_id:activeFY.id,month_key:currentMonth})});
+
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    showToast(`✅ ${count} T&A forms + combined report generated!`,'ok');
+    renderStaffTA();
+  }catch(e){showToast('Error: '+e.message,'err');}
 }
 
 
