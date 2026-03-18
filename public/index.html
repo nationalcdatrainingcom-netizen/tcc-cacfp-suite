@@ -147,15 +147,23 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 /* WIZARD */
 .wizard-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:5000;display:none;align-items:center;justify-content:center}
 .wizard-overlay.show{display:flex}
-.wizard{background:#fff;border-radius:16px;max-width:700px;width:95%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)}
-.wizard-header{background:var(--navy);color:#fff;padding:20px 24px;border-radius:16px 16px 0 0;display:flex;align-items:center;justify-content:space-between}
+.wizard{background:#fff;border-radius:16px;max-width:880px;width:95%;max-height:90vh;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.3);display:flex;flex-direction:column}
+.wizard-header{background:var(--navy);color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
 .wizard-header h2{font-size:1.1rem}.wizard-close{background:none;border:none;color:rgba(255,255,255,.7);font-size:1.5rem;cursor:pointer}
-.wizard-progress{display:flex;padding:16px 24px;gap:8px;background:var(--bg)}
-.wiz-step{flex:1;height:6px;border-radius:3px;background:var(--border);transition:background .3s}
-.wiz-step.done{background:var(--success)}.wiz-step.current{background:var(--gold)}
-.wizard-body{padding:24px}
-.wizard-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.wizard-layout{display:flex;flex:1;overflow:hidden;min-height:0}
+.wizard-sidebar{width:220px;background:var(--bg);border-right:1px solid var(--border);overflow-y:auto;padding:12px 0;flex-shrink:0}
+.wizard-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.wizard-body{padding:24px;overflow-y:auto;flex:1}
+.wizard-footer{padding:14px 24px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
 .wiz-step-label{font-size:.85rem;color:var(--muted)}
+.wiz-sidebar-item{display:flex;align-items:center;gap:8px;padding:8px 16px;font-size:.8rem;cursor:pointer;color:var(--muted);transition:background .15s;border-left:3px solid transparent}
+.wiz-sidebar-item:hover{background:rgba(0,0,0,.03)}
+.wiz-sidebar-item.current{background:rgba(27,42,74,.06);color:var(--navy);font-weight:600;border-left-color:var(--navy)}
+.wiz-sidebar-item.done{color:var(--success)}
+.wiz-sidebar-item.done .wiz-sb-icon{color:var(--success)}
+.wiz-sidebar-item .wiz-sb-icon{width:18px;text-align:center;font-size:.9rem;flex-shrink:0}
+.wiz-sidebar-item .wiz-sb-label{flex:1;line-height:1.2}
+@media(max-width:640px){.wizard-sidebar{display:none}.wizard{max-width:95%}}
 
 /* BATCH OCR */
 .batch-results{max-height:400px;overflow-y:auto;margin-top:16px}
@@ -334,13 +342,17 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <h2 id="wizTitle">🪄 Monthly Upload Wizard</h2>
       <button class="wizard-close" onclick="closeWizard()">&times;</button>
     </div>
-    <div class="wizard-progress" id="wizProgress"></div>
-    <div class="wizard-body" id="wizBody"></div>
-    <div class="wizard-footer">
-      <span class="wiz-step-label" id="wizStepLabel"></span>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-outline" id="wizBack" onclick="wizPrev()">← Back</button>
-        <button class="btn btn-gold" id="wizNext" onclick="wizNext()">Next →</button>
+    <div class="wizard-layout">
+      <div class="wizard-sidebar" id="wizSidebar"></div>
+      <div class="wizard-main">
+        <div class="wizard-body" id="wizBody"></div>
+        <div class="wizard-footer">
+          <span class="wiz-step-label" id="wizStepLabel"></span>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline" id="wizBack" onclick="wizPrev()">← Back</button>
+            <button class="btn btn-gold" id="wizNext" onclick="wizNext()">Next →</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -2653,7 +2665,7 @@ function renderBatchPage(){
     </div>`;
 
   document.getElementById('wizBody').innerHTML=html;
-  document.getElementById('wizProgress').innerHTML='';
+  document.getElementById('wizSidebar').innerHTML='<div style="padding:16px;font-size:.85rem;font-weight:600;color:var(--navy)">T&A Review</div>';
   document.getElementById('wizStepLabel').textContent='T&A Review — Page by Page';
   document.getElementById('wizBack').style.display='none';
   document.getElementById('wizNext').style.display='none';
@@ -2920,33 +2932,48 @@ async function generateAllTAForms(){
 // MONTHLY UPLOAD WIZARD
 // ═══════════════════════════════════════════════════
 const WIZ_STEPS=[
-  {id:'wiz_timeforms_fs_niles',label:'Food Service Time Forms — Niles',icon:'📄',center:'niles',desc:'Upload the batch PDF of Niles food service Time & Attendance forms (one page per employee). The app will scan each page, extract names and hours, and auto-match to your Niles staff roster.',accept:'.pdf',docType:'batch_time_forms_fs_niles',isBatchOCR:true},
-  {id:'wiz_timeforms_fs_peace',label:'Food Service Time Forms — Peace Blvd',icon:'📄',center:'peace',desc:'Upload the batch PDF of Peace Boulevard food service Time & Attendance forms (one page per employee).',accept:'.pdf',docType:'batch_time_forms_fs_peace',isBatchOCR:true},
-  {id:'wiz_timeforms_admin',label:'Admin Time Distribution (Both Locations)',icon:'📄',center:'both',desc:'Upload the administrative Time & Attendance form for the CACFP coordinator. This covers admin time for both Niles and Peace Boulevard.',accept:'.pdf,.png,.jpg,.jpeg',docType:'time_distribution_admin'},
-  {id:'wiz_attendance_niles',label:'Attendance Overview — Niles',icon:'📊',center:'niles',desc:'Upload the Niles Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_niles'},
-  {id:'wiz_attendance_peace',label:'Attendance Overview — Peace Blvd',icon:'📊',center:'peace',desc:'Upload the Peace Boulevard Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_peace'},
-  {id:'wiz_mealcounts_niles',label:'CACFP Detailed Report — Niles',icon:'🍽️',center:'niles',desc:'Upload the Niles CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_niles'},
-  {id:'wiz_mealcounts_peace',label:'CACFP Detailed Report — Peace Blvd',icon:'🍽️',center:'peace',desc:'Upload the Peace Boulevard CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_peace'},
+  {id:'wiz_attendance_niles',label:'Attendance — Niles',icon:'📊',center:'niles',desc:'Upload the Niles Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_niles'},
+  {id:'wiz_attendance_peace',label:'Attendance — Peace Blvd',icon:'📊',center:'peace',desc:'Upload the Peace Boulevard Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_peace'},
+  {id:'wiz_mealcounts_niles',label:'Meal Counts — Niles',icon:'🍽️',center:'niles',desc:'Upload the Niles CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_niles'},
+  {id:'wiz_mealcounts_peace',label:'Meal Counts — Peace Blvd',icon:'🍽️',center:'peace',desc:'Upload the Peace Boulevard CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_peace'},
   {id:'wiz_cdc_niles',label:'CDC Statement — Niles',icon:'🏥',center:'niles',desc:'Upload the Niles CDC statement for this month to calculate eligibility percentage.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_niles'},
   {id:'wiz_cdc_peace',label:'CDC Statement — Peace Blvd',icon:'🏥',center:'peace',desc:'Upload the Peace Boulevard CDC statement for this month.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_peace'},
-  {id:'wiz_playground_niles',label:'Daily Staff Hours — Niles',icon:'👥',center:'niles',desc:'Upload the Niles Daily Staff Hours report from Playground App. This provides start/end times and breaks for each staff member to complete their T&A forms.',accept:'.csv',docType:'playground_staff_hours_niles',isPlayground:true},
-  {id:'wiz_playground_peace',label:'Daily Staff Hours — Peace Blvd',icon:'👥',center:'peace',desc:'Upload the Peace Boulevard Daily Staff Hours report from Playground App.',accept:'.csv',docType:'playground_staff_hours_peace',isPlayground:true},
-  {id:'wiz_foodcost',label:'Food Receipts & Invoices (All Locations)',icon:'🧾',center:'both',desc:'Upload all food vendor receipts and invoices for this month. Include receipts from JA Foods, Amazon, Sam\'s Club, grocery stores, and any other food suppliers. You can upload multiple files — each receipt total will be extracted and added to the monthly food cost.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts',isMultiUpload:true},
+  {id:'wiz_playground_niles',label:'Staff Hours — Niles',icon:'👥',center:'niles',desc:'Upload the Niles Daily Staff Hours report from Playground App. This provides start/end times and breaks for each staff member to complete their T&A forms.',accept:'.csv',docType:'playground_staff_hours_niles',isPlayground:true},
+  {id:'wiz_playground_peace',label:'Staff Hours — Peace Blvd',icon:'👥',center:'peace',desc:'Upload the Peace Boulevard Daily Staff Hours report from Playground App.',accept:'.csv',docType:'playground_staff_hours_peace',isPlayground:true},
+  {id:'wiz_foodcost',label:'Food Receipts & Invoices',icon:'🧾',center:'both',desc:'Upload all food vendor receipts and invoices for this month. Include receipts from JA Foods, Amazon, Sam\'s Club, grocery stores, and any other food suppliers. You can upload multiple files — each receipt total will be extracted and added to the monthly food cost.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts',isMultiUpload:true},
 ];
-let wizStep=0,wizMonthKey=null,wizReceiptTotal=0,wizReceiptItems=[];
+let wizStep=0,wizMonthKey=null,wizReceiptTotal=0,wizReceiptItems=[],wizStepUploaded={};
 
 function startWizard(){
-  wizStep=0;wizMonthKey=currentMonth;wizReceiptTotal=0;wizReceiptItems=[];
+  wizStep=0;wizMonthKey=currentMonth;wizReceiptTotal=0;wizReceiptItems=[];wizStepUploaded={};
   document.getElementById('wizTitle').textContent='🪄 Monthly Upload Wizard — '+ML[wizMonthKey]+' '+fyYear(wizMonthKey);
   renderWizStep();
   document.getElementById('wizardOverlay').classList.add('show');
 }
 
+function wizJumpTo(idx){
+  wizStep=idx;renderWizStep();
+}
+
 function renderWizStep(){
   const step=WIZ_STEPS[wizStep];
   const total=WIZ_STEPS.length;
-  document.getElementById('wizProgress').innerHTML=WIZ_STEPS.map((_,i)=>
-    `<div class="wiz-step ${i<wizStep?'done':i===wizStep?'current':''}"></div>`).join('');
+
+  // Build sidebar checklist
+  let sbHtml='';
+  for(let i=0;i<total;i++){
+    const s=WIZ_STEPS[i];
+    const isDone=documents.some(d=>d.doc_type===s.docType&&d.month_key===wizMonthKey)||(i<wizStep&&wizStepUploaded[i]);
+    const isCurrent=i===wizStep;
+    const cls=isCurrent?'current':isDone?'done':'';
+    const icon=isDone?'✅':isCurrent?'➤':s.icon;
+    sbHtml+=`<div class="wiz-sidebar-item ${cls}" onclick="wizJumpTo(${i})">
+      <span class="wiz-sb-icon">${icon}</span>
+      <span class="wiz-sb-label">${s.label}</span>
+    </div>`;
+  }
+  document.getElementById('wizSidebar').innerHTML=sbHtml;
+
   document.getElementById('wizStepLabel').textContent=`Step ${wizStep+1} of ${total}`;
   document.getElementById('wizBack').style.display=wizStep>0?'inline-flex':'none';
   document.getElementById('wizNext').style.display='inline-flex';
@@ -3011,7 +3038,7 @@ async function wizUploadFile(input){
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
     const d=(monthlyDataCache[wizMonthKey+'_attendance']||{})[center]||{};
     document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${d.enrolled||0} children enrolled, ADA ${d.ada||0}, ${d.days||0} operating days</strong></div></div>`;
-    showToast('✅ '+step.label+' processed!','ok');
+    wizStepUploaded[wizStep]=true;showToast('✅ '+step.label+' processed!','ok');renderWizStep();
     return;
   }
 
@@ -3026,7 +3053,7 @@ async function wizUploadFile(input){
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
     const d=(monthlyDataCache[wizMonthKey+'_meals']||{})[center]||{};
     document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${d.children?.length||0} children, ${d.excluded4thMeal||0} 4th meals excluded by 3-meal rule</strong></div></div>`;
-    showToast('✅ '+step.label+' processed!','ok');
+    wizStepUploaded[wizStep]=true;showToast('✅ '+step.label+' processed!','ok');renderWizStep();
     return;
   }
 
@@ -3041,7 +3068,7 @@ async function wizUploadFile(input){
     document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — parsed and saved!';
     const d=(monthlyDataCache[wizMonthKey+'_cdc']||{})[center]||{};
     document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${d.qualifying||0} qualifying children from ${d.totalOnStatement||0} entries</strong></div></div>`;
-    showToast('✅ '+step.label+' processed!','ok');
+    wizStepUploaded[wizStep]=true;showToast('✅ '+step.label+' processed!','ok');renderWizStep();
     return;
   }
 
@@ -3061,7 +3088,7 @@ async function wizUploadFile(input){
         extra+=`<div class="alert alert-warn" style="margin-top:8px"><span>⚠️</span><div>Unmatched names: ${data.unmatched.join(', ')}</div></div>`;
       }
       document.getElementById('wizExtraContent').innerHTML=extra;
-      showToast('✅ '+step.label+' imported!','ok');
+      wizStepUploaded[wizStep]=true;showToast('✅ '+step.label+' imported!','ok');renderWizStep();
     }catch(e){
       document.getElementById('wiz-upload-status').textContent='❌ Import failed';
       document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-err" style="margin-top:16px"><span>❌</span><div>${e.message}</div></div>`;
@@ -3107,7 +3134,7 @@ async function wizUploadFile(input){
         <div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${pdf.numPages} pages scanned!</strong> ${matched} auto-matched, ${withHours} with hours detected. Click Next to review page-by-page and confirm.</div></div>`;
     }catch(e){document.getElementById('wizExtraContent').innerHTML=`<div class="alert alert-err" style="margin-top:16px"><span>❌</span><div>OCR error: ${e.message}. You can enter data manually in Staff Costs tab.</div></div>`;}
   }
-  showToast('✅ '+step.label+' uploaded!','ok');
+  wizStepUploaded[wizStep]=true;showToast('✅ '+step.label+' uploaded!','ok');renderWizStep();
 }
 
 // Receipt multi-upload with OCR for totals
