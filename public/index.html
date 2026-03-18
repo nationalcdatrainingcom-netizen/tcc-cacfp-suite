@@ -1391,7 +1391,13 @@ function renderMonthDocs(){
     {label:'Peace CDC eligibility',done:comp.hasPeaceCDC},
     {label:'Staff costs entered',done:comp.hasStaff},
     {label:'Food costs entered',done:comp.hasFood},
+    {label:'Playground staff hours imported',done:mDocs.some(d=>d.doc_type==='playground_staff_hours')},
+    {label:'T&A forms generated',done:mDocs.some(d=>d.doc_type==='ta_form')},
   ];
+
+  // Categorize docs for display
+  const taForms=mDocs.filter(d=>d.doc_type==='ta_form');
+  const otherDocs=mDocs.filter(d=>d.doc_type!=='ta_form'&&!d.doc_type?.startsWith('generated_'));
 
   document.getElementById('sp-monthdocs').innerHTML=`
     <div class="card"><div class="card-hdr"><h3>✅ Month Completion — ${ML[m]} ${fyYear(m)}</h3>
@@ -1412,12 +1418,21 @@ function renderMonthDocs(){
     </div>
 
     <div class="card"><div class="card-hdr"><h3>📁 Uploaded Documents</h3></div><div class="card-body">
-      ${uploaded.length>0?`<ul class="doc-list">${uploaded.map(d=>`<li><span style="font-size:1.2rem">📄</span><span class="doc-name">${d.filename}</span>
+      ${otherDocs.length>0?`<ul class="doc-list">${otherDocs.map(d=>`<li><span style="font-size:1.2rem">📄</span><span class="doc-name">${d.filename}</span>
         <span style="font-size:.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${d.doc_type}</span>
         <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
         <div class="doc-actions"><a href="/api/documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
         <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`).join('')}</ul>`
         :'<p style="color:var(--muted);text-align:center;padding:16px">No uploaded documents for this month.</p>'}
+    </div></div>
+
+    ${taForms.length>0?`<div class="card"><div class="card-hdr"><h3>📋 Generated T&A Forms (${taForms.length})</h3></div><div class="card-body">
+      <ul class="doc-list">${taForms.map(d=>`<li><span style="font-size:1.2rem">📋</span><span class="doc-name">${d.filename}</span>
+        <span style="font-size:.75rem;color:#fff;background:var(--navy);padding:2px 8px;border-radius:10px">T&A Form</span>
+        <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
+        <div class="doc-actions"><a href="/api/documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
+        <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`).join('')}</ul>
+    </div></div>`:''}
       <div style="margin-top:12px"><div class="upload-zone"><input type="file" onchange="uploadMonthDoc('${m}','other',this)"><div class="uz-icon">📎</div><div class="uz-label">Upload additional document</div></div></div>
     </div></div>
 
@@ -2859,11 +2874,14 @@ async function uploadPlaygroundCSV(input,center){
   document.getElementById(resultId).innerHTML='<div class="alert alert-warn" style="margin-top:6px">⏳ Importing...</div>';
   try{
     const fd=new FormData();
-    fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',currentMonth);
+    fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',currentMonth);fd.append('center',center);
     const res=await fetch('/api/playground-import',{method:'POST',headers:{'X-Access-PIN':PIN},body:fd});
     const data=await res.json();
     if(!res.ok)throw new Error(data.error);
     let resultHtml=`<div class="alert alert-ok" style="margin-top:6px">✅ ${data.imported} records imported.</div>`;
+    if(data.added&&data.added.length>0){
+      resultHtml+=`<div class="alert alert-ok" style="margin-top:4px">👤 ${data.added.length} new staff added to roster: ${data.added.join(', ')}<br><span style="font-size:.75rem">Default PINs shown above — update them in the Staff Time Entry app.</span></div>`;
+    }
     if(data.unmatched&&data.unmatched.length>0){
       resultHtml+=`<div class="alert alert-warn" style="margin-top:4px">⚠️ Unmatched: ${data.unmatched.join(', ')}</div>`;
     }
@@ -3234,7 +3252,7 @@ async function wizUploadFile(input){
   if(step.isPlayground){
     document.getElementById('wiz-upload-status').textContent='⏳ Importing staff hours...';
     const fd=new FormData();
-    fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);
+    fd.append('file',file);fd.append('fiscal_year_id',activeFY.id);fd.append('month_key',wizMonthKey);fd.append('center',center);
     try{
       const res=await fetch('/api/playground-import',{method:'POST',headers:{'X-Access-PIN':PIN},body:fd});
       const data=await res.json();
@@ -3242,6 +3260,9 @@ async function wizUploadFile(input){
       document.getElementById('wiz-upload-zone').classList.add('done');
       document.getElementById('wiz-upload-status').textContent='✅ '+file.name+' — imported!';
       let extra=`<div class="alert alert-ok" style="margin-top:16px"><span>✅</span><div><strong>${data.imported} staff records imported</strong></div></div>`;
+      if(data.added&&data.added.length>0){
+        extra+=`<div class="alert alert-ok" style="margin-top:8px"><span>👤</span><div><strong>${data.added.length} new staff added:</strong> ${data.added.join(', ')}</div></div>`;
+      }
       if(data.unmatched&&data.unmatched.length>0){
         extra+=`<div class="alert alert-warn" style="margin-top:8px"><span>⚠️</span><div>Unmatched names: ${data.unmatched.join(', ')}</div></div>`;
       }
