@@ -626,7 +626,10 @@ function renderStaffCosts(){
       <div class="totals-row"><span class="label">Combined FS Salaries</span><span class="val">${fmt(totalFS)}</span></div>
       <div class="totals-row"><span class="label">Benefits (7.65%)</span><span class="val">${fmt(ben)}</span></div>
       <div class="totals-row"><span class="label">Combined Admin Costs</span><span class="val">${fmt(totalAd)}</span></div>
-      <div class="totals-row big"><span class="label">TOTAL COST TO NFSA</span><span class="val">${fmt(totalFS+ben+totalAd)}</span></div></div>`;
+      <div class="totals-row big"><span class="label">TOTAL COST TO NFSA</span><span class="val">${fmt(totalFS+ben+totalAd)}</span></div></div>
+    <div style="margin-top:12px;text-align:right">
+      <button class="btn btn-primary" onclick="generateStaffCostReport('${m}')">📄 Generate Monthly Staff Cost Report</button>
+    </div>`;
 }
 
 function getDocExists(dt,mk,center){return documents.some(d=>d.doc_type===dt&&d.month_key===mk&&d.metadata?.center===center);}
@@ -2321,62 +2324,190 @@ function parseTimeAttendancePage(text){
 }
 
 function showBatchReview(center,monthKey){
+  batchReviewCenter=center;batchReviewMonth=monthKey;batchReviewPage=0;
+  // Pre-fill hourly rates from staff roster where matched
+  for(const r of batchResults){
+    if(r.matchedStaffId){
+      const s=staffList.find(s2=>s2.id===r.matchedStaffId);
+      if(s&&!r.hourlyRate)r.hourlyRate=parseFloat(s.hourly_rate)||null;
+    }
+  }
+  renderBatchPage();
+}
+
+let batchReviewCenter='',batchReviewMonth='',batchReviewPage=0;
+
+function renderBatchPage(){
+  const center=batchReviewCenter,monthKey=batchReviewMonth,pg=batchReviewPage;
   const centerStaff=staffList.filter(s=>s.center===center);
   const label=center==='niles'?'Niles':'Peace Boulevard';
+  const total=batchResults.length;
+  const r=batchResults[pg];
+  if(!r)return;
 
-  let html=`<h3 style="margin-bottom:4px">📑 Batch Scan Results — ${label}, ${ML[monthKey]} ${fyYear(monthKey)}</h3>
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">${batchResults.length} pages scanned. Review matches and fix any flagged items before saving.</p>`;
+  const confirmed=batchResults.filter(x=>x.confirmed).length;
+  const progressPct=total>0?Math.round((confirmed/total)*100):0;
 
-  const matched=batchResults.filter(r=>r.status==='matched').length;
-  const flagged=batchResults.filter(r=>r.status!=='matched').length;
-  const alertCount=batchResults.reduce((s,r)=>s+r.alerts.length,0);
+  // Staff dropdown options
+  const staffOpts=centerStaff.map(s=>`<option value="${s.id}" ${r.matchedStaffId===s.id?'selected':''}>${s.name} ($${parseFloat(s.hourly_rate||0).toFixed(2)}/hr)</option>`).join('');
 
-  html+=`<div style="display:flex;gap:12px;margin-bottom:16px">
-    <div class="alert alert-ok" style="flex:1;margin:0"><strong>${matched}</strong> auto-matched</div>
-    ${flagged>0?`<div class="alert alert-warn" style="flex:1;margin:0"><strong>${flagged}</strong> need review</div>`:''}
-    ${alertCount>0?`<div class="alert alert-err" style="flex:1;margin:0"><strong>${alertCount}</strong> alerts</div>`:''}
-  </div>`;
+  // Pre-fill rate from matched staff if not set by OCR
+  const displayRate=r.hourlyRate||(r.matchedStaffId?parseFloat(staffList.find(s=>s.id===r.matchedStaffId)?.hourly_rate)||'':'');
+  const fsH=r.totalCACFP_FS!==null?r.totalCACFP_FS:'';
+  const admH=r.totalCACFP_Admin!==null?r.totalCACFP_Admin:'';
+  const rateVal=displayRate||'';
+  const fsCost=(parseFloat(fsH)||0)*(parseFloat(rateVal)||0);
+  const admCost=(parseFloat(admH)||0)*(parseFloat(rateVal)||0);
 
-  html+='<div class="batch-results">';
-  for(const r of batchResults){
-    const staffOpts=centerStaff.map(s=>`<option value="${s.id}" ${r.matchedStaffId===s.id?'selected':''}>${s.name}</option>`).join('');
-    html+=`<div class="batch-row ${r.status==='matched'?'matched':r.status==='unrecognized'?'flagged':'pending'}">
-      <div class="page-num">${r.pageNum}</div>
-      <div class="info">
-        <div class="name">${r.name||'<em>Name not detected</em>'}</div>
-        <div class="detail">FS: ${r.totalCACFP_FS!==null?r.totalCACFP_FS+'h':'?'} | Admin: ${r.totalCACFP_Admin!==null?r.totalCACFP_Admin+'h':'?'} | Rate: ${r.hourlyRate?'$'+r.hourlyRate:'?'}</div>
-        ${r.alerts.length>0?'<div style="color:var(--error);font-size:.8rem;margin-top:2px">⚠️ '+r.alerts.join(', ')+'</div>':''}
+  let html=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0">📑 T&A Review — ${label}, ${ML[monthKey]} ${fyYear(monthKey)}</h3>
+      <span style="font-size:.85rem;color:var(--muted)">Page ${pg+1} of ${total}</span>
+    </div>
+    <div style="background:var(--bg);border-radius:8px;padding:6px 12px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:4px">
+        <span>${confirmed} of ${total} confirmed</span><span>${progressPct}%</span>
       </div>
-      <select onchange="batchResults[${batchResults.indexOf(r)}].matchedStaffId=parseInt(this.value)||null" style="width:150px">
-        <option value="">— Select staff —</option>
-        <option value="NEW">+ Add as new</option>
-        ${staffOpts}
-      </select>
-      <span class="status-icon">${r.status==='matched'?'✅':r.status==='unrecognized'?'🔍':'❓'}</span>
+      <div style="height:6px;background:#ddd;border-radius:3px;overflow:hidden">
+        <div style="width:${progressPct}%;height:100%;background:var(--success);transition:width .3s"></div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:0 24px;align-items:start">
+      <!-- Page thumbnails sidebar -->
+      <div style="display:flex;flex-direction:column;gap:4px;max-height:440px;overflow-y:auto;padding-right:8px">
+        ${batchResults.map((b,i)=>`<button onclick="batchReviewPage=${i};renderBatchPage()" style="
+          width:36px;height:36px;border-radius:6px;border:2px solid ${i===pg?'var(--primary)':b.confirmed?'var(--success)':'#ddd'};
+          background:${b.confirmed?'#e8f5e9':i===pg?'#e3f2fd':'#fff'};cursor:pointer;font-size:.75rem;font-weight:600;
+          color:${b.confirmed?'var(--success)':i===pg?'var(--primary)':'#999'}">${i+1}</button>`).join('')}
+      </div>
+
+      <!-- Current page review -->
+      <div class="card" style="margin:0;border:2px solid ${r.confirmed?'var(--success)':'var(--primary)'}">
+        <div class="card-body" style="padding:20px">
+          ${r.alerts.length>0?`<div class="alert alert-warn" style="margin-bottom:12px;font-size:.85rem">⚠️ ${r.alerts.join(' · ')}</div>`:''}
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <!-- Left: Staff Identity -->
+            <div>
+              <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">OCR Detected Name</label>
+              <div style="font-size:1rem;font-weight:500;margin-bottom:12px;padding:8px;background:#f8f8f8;border-radius:6px">${r.name||'<em style="color:#999">Not detected</em>'}</div>
+
+              <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Confirm / Assign Staff Member</label>
+              <select id="batchStaffSelect" onchange="batchSelectStaff(${pg},this.value)" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:.95rem">
+                <option value="">— Select staff —</option>
+                <option value="NEW" ${r.matchedStaffId==='NEW'?'selected':''}>+ Add as new staff member</option>
+                ${staffOpts}
+              </select>
+              <div id="batchNewNameWrap" style="margin-top:8px;display:${r.matchedStaffId==='NEW'?'block':'none'}">
+                <input id="batchNewName" type="text" placeholder="Enter new staff name" value="${r.newStaffName||r.name||''}" onchange="batchResults[${pg}].newStaffName=this.value" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px">
+              </div>
+            </div>
+
+            <!-- Right: Hours & Rate -->
+            <div>
+              <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Hourly Rate</label>
+              <div style="position:relative;margin-bottom:12px">
+                <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#999;font-weight:600">$</span>
+                <input id="batchRate" type="number" step="0.01" min="0" value="${rateVal}" onchange="batchUpdateField(${pg},'hourlyRate',parseFloat(this.value));renderBatchPage()" style="width:100%;padding:8px 8px 8px 24px;border:1px solid #ccc;border-radius:6px;font-size:.95rem">
+              </div>
+              <p style="font-size:.75rem;color:var(--muted);margin:-8px 0 12px 0">Rate is saved to staff profile and carries forward to future months</p>
+
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div>
+                  <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">FS Hours</label>
+                  <input id="batchFSH" type="number" step="0.25" min="0" value="${fsH}" onchange="batchUpdateField(${pg},'totalCACFP_FS',parseFloat(this.value));renderBatchPage()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:.95rem">
+                  <div style="font-size:.8rem;color:var(--muted);margin-top:4px">Cost: <strong>${fsCost>0?fmt(fsCost):'—'}</strong></div>
+                </div>
+                <div>
+                  <label style="font-size:.8rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Admin Hours</label>
+                  <input id="batchAdmH" type="number" step="0.25" min="0" value="${admH}" onchange="batchUpdateField(${pg},'totalCACFP_Admin',parseFloat(this.value));renderBatchPage()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:.95rem">
+                  <div style="font-size:.8rem;color:var(--muted);margin-top:4px">Cost: <strong>${admCost>0?fmt(admCost):'—'}</strong></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Confirm button for this page -->
+          <div style="margin-top:16px;display:flex;gap:8px;align-items:center;justify-content:space-between">
+            <div style="display:flex;gap:8px">
+              <button class="btn ${r.confirmed?'btn-outline':'btn-success'}" onclick="batchConfirmPage(${pg})">
+                ${r.confirmed?'✏️ Edit':'✅ Confirm Page '+( pg+1)}
+              </button>
+              ${r.confirmed?'<span style="color:var(--success);font-weight:600;font-size:.9rem">✅ Confirmed</span>':''}
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm btn-outline" onclick="batchReviewPage=Math.max(0,${pg}-1);renderBatchPage()" ${pg===0?'disabled':''}>← Prev</button>
+              <button class="btn btn-sm btn-outline" onclick="batchReviewPage=Math.min(${total-1},${pg}+1);renderBatchPage()" ${pg>=total-1?'disabled':''}>Next →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Save all confirmed -->
+    <div style="margin-top:16px;display:flex;gap:8px;justify-content:space-between;align-items:center">
+      <span style="font-size:.85rem;color:var(--muted)">${confirmed} of ${total} pages confirmed</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-success" onclick="saveBatchResults('${center}','${monthKey}')" ${confirmed===0?'disabled':''}>💾 Save ${confirmed} Confirmed Entries</button>
+        <button class="btn btn-outline" onclick="closeWizard()">Cancel</button>
+      </div>
     </div>`;
-  }
-  html+='</div>';
-  html+=`<div style="margin-top:16px;display:flex;gap:8px">
-    <button class="btn btn-success" onclick="saveBatchResults('${center}','${monthKey}')">✅ Save All Matched Results</button>
-    <button class="btn btn-outline" onclick="closeWizard()">Cancel</button>
-  </div>`;
 
   document.getElementById('wizBody').innerHTML=html;
   document.getElementById('wizProgress').innerHTML='';
-  document.getElementById('wizStepLabel').textContent='Batch Review';
+  document.getElementById('wizStepLabel').textContent='T&A Review — Page by Page';
   document.getElementById('wizBack').style.display='none';
   document.getElementById('wizNext').style.display='none';
   document.getElementById('wizardOverlay').classList.add('show');
 }
 
+function batchSelectStaff(pg,val){
+  const r=batchResults[pg];
+  if(val==='NEW'){
+    r.matchedStaffId='NEW';r.confirmed=false;
+    document.getElementById('batchNewNameWrap').style.display='block';
+  }else if(val){
+    r.matchedStaffId=parseInt(val);r.status='matched';
+    const s=staffList.find(s2=>s2.id===r.matchedStaffId);
+    if(s&&!r.hourlyRate)r.hourlyRate=parseFloat(s.hourly_rate)||null;
+    document.getElementById('batchNewNameWrap').style.display='none';
+    renderBatchPage();
+  }else{
+    r.matchedStaffId=null;r.status='unrecognized';r.confirmed=false;
+    document.getElementById('batchNewNameWrap').style.display='none';
+  }
+}
+
+function batchUpdateField(pg,field,val){batchResults[pg][field]=val;}
+
+function batchConfirmPage(pg){
+  const r=batchResults[pg];
+  if(r.confirmed){r.confirmed=false;renderBatchPage();return;}
+  if(!r.matchedStaffId&&r.matchedStaffId!=='NEW'){showToast('Please select or add a staff member first','err');return;}
+  r.confirmed=true;
+  // Auto-advance to next unconfirmed page
+  const nextUnconfirmed=batchResults.findIndex((b,i)=>i>pg&&!b.confirmed);
+  if(nextUnconfirmed>=0)batchReviewPage=nextUnconfirmed;
+  else if(batchResults.every(b=>b.confirmed)){}//stay
+  renderBatchPage();
+}
+
 async function saveBatchResults(center,monthKey){
   let saved=0,errors=0;
   for(const r of batchResults){
-    if(!r.matchedStaffId||r.matchedStaffId==='')continue;
-    if(r.matchedStaffId==='NEW'&&r.name){
-      try{const newS=await api('/api/staff',{method:'POST',body:{name:r.name,center,hourly_rate:r.hourlyRate||0}});r.matchedStaffId=newS.id;}catch(e){errors++;continue;}
+    if(!r.confirmed)continue;
+    if(r.matchedStaffId==='NEW'){
+      const newName=r.newStaffName||r.name||'Unknown';
+      try{const newS=await api('/api/staff',{method:'POST',body:{name:newName,center,hourly_rate:r.hourlyRate||0}});r.matchedStaffId=newS.id;}catch(e){errors++;continue;}
     }
-    const fsH=r.totalCACFP_FS||0,admH=r.totalCACFP_Admin||0,rate=r.hourlyRate||staffList.find(s=>s.id==r.matchedStaffId)?.hourly_rate||0;
+    const fsH=r.totalCACFP_FS||0,admH=r.totalCACFP_Admin||0;
+    const s=staffList.find(s2=>s2.id==r.matchedStaffId);
+    const rate=r.hourlyRate||parseFloat(s?.hourly_rate)||0;
+    // Also update staff's master rate if user entered a new rate
+    if(r.hourlyRate&&s&&parseFloat(s.hourly_rate)!==r.hourlyRate){
+      try{await api(`/api/staff/${r.matchedStaffId}`,{method:'PUT',body:{hourly_rate:r.hourlyRate}});}catch(e){}
+    }
     try{await api('/api/staff-time',{method:'POST',body:{staff_id:r.matchedStaffId,fiscal_year_id:activeFY.id,month_key:monthKey,food_service_hours:fsH,admin_hours:admH,hourly_rate_used:rate}});saved++;}
     catch(e){errors++;}
   }
@@ -2389,6 +2520,19 @@ async function saveBatchResults(center,monthKey){
   document.getElementById('wizBack').style.display='';document.getElementById('wizNext').style.display='';
   renderWizStep();
 }
+
+// ── MONTHLY STAFF COST REPORT ────────────────────────────
+async function generateStaffCostReport(monthKey){
+  try{
+    showToast('Generating staff cost report...','');
+    const res=await fetch('/api/generate-staff-report',{method:'POST',headers:{'Content-Type':'application/json','x-access-pin':accessPIN},body:JSON.stringify({fiscal_year_id:activeFY.id,month_key:monthKey})});
+    if(!res.ok)throw new Error('Generate failed');
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`Staff_Cost_Report_${monthKey}_${activeFY.label}.docx`;a.click();URL.revokeObjectURL(url);
+    showToast('✅ Staff Cost Report downloaded!','ok');
+  }catch(e){showToast('Error generating report: '+e.message,'err');}
+}
+
 
 // ═══════════════════════════════════════════════════
 // MONTHLY UPLOAD WIZARD
