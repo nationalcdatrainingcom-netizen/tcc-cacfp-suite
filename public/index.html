@@ -1214,15 +1214,28 @@ async function saveFoodCostField(mk,field,val){
 // ═══════════════════════════════════════════════════
 // CLAIMS — Full claim preparation with all data pulled in
 // ═══════════════════════════════════════════════════
-function renderClaims(){
+async function renderClaims(){
   const m=currentMonth;
   const att=monthlyDataCache[m+'_attendance']||{};
   const meals=monthlyDataCache[m+'_meals']||{};
   const cdc=monthlyDataCache[m+'_cdc']||{};
   const fc=monthlyDataCache[m+'_foodcosts']||{};
-  const stData=salaryTotals.find(r=>r.month_key===m);
-  const fsCost=parseFloat(stData?.food_service_cost)||0;
-  const admCost=parseFloat(stData?.admin_cost)||0;
+
+  // Pull fresh salary/admin data from merged T&A (daily_cacfp_entries + staff rates)
+  let fsCost=0,admCost=0;
+  try{
+    const taData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${m}`);
+    for(const s of taData){
+      const rate=parseFloat(s.hourly_rate)||0;
+      fsCost+=s.totalFS*rate;
+      admCost+=s.totalAdm*rate;
+    }
+  }catch(e){
+    // Fallback to old salaryTotals if merged endpoint fails
+    const stData=salaryTotals.find(r=>r.month_key===m);
+    fsCost=parseFloat(stData?.food_service_cost)||0;
+    admCost=parseFloat(stData?.admin_cost)||0;
+  }
   const benefits=fsCost*BEN_RATE;
   const foodCost=parseFloat(fc.total)||0;
   const totalExp=foodCost+fsCost+benefits+admCost;
