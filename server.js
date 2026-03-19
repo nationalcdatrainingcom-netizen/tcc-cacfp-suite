@@ -131,6 +131,8 @@ async function initDB() {
     VALUES ('2025-2026', 2025, 2026, true)
     ON CONFLICT (label) DO NOTHING;
   `);
+  // Add adult_meal column if not exists
+  try { await pool.query('ALTER TABLE daily_cacfp_entries ADD COLUMN IF NOT EXISTS adult_meal BOOLEAN DEFAULT false'); } catch(e) {}
   console.log('✅ Database tables ready');
 }
 
@@ -1835,6 +1837,30 @@ app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
         availableData: allMD.rows
       }
     });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ADULT MEAL TOTALS ────────────────────────────────────
+app.get('/api/adult-meals', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key } = req.query;
+    // Get daily adult meal counts aggregated by day
+    const { rows } = await pool.query(
+      `SELECT d.day_of_month, COUNT(*) as adult_count, 
+       ARRAY_AGG(s.name) as staff_names
+       FROM daily_cacfp_entries d
+       JOIN staff s ON s.id = d.staff_id
+       WHERE d.fiscal_year_id = $1 AND d.month_key = $2 AND d.adult_meal = true
+       GROUP BY d.day_of_month ORDER BY d.day_of_month`,
+      [fiscal_year_id, month_key]
+    );
+    // Also get total for the month
+    const totalRes = await pool.query(
+      `SELECT COUNT(*) as total FROM daily_cacfp_entries
+       WHERE fiscal_year_id = $1 AND month_key = $2 AND adult_meal = true`,
+      [fiscal_year_id, month_key]
+    );
+    res.json({ daily: rows, total: parseInt(totalRes.rows[0].total) || 0 });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
