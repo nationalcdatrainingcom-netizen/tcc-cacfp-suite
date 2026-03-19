@@ -345,6 +345,38 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             </div>
           </div>
 
+          <!-- Training Documentation -->
+          <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📚 Training Documentation</h3>
+            <button class="btn btn-sm btn-navy" onclick="showAddTraining()">+ Add Training</button></div>
+            <div class="card-body">
+              <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Track CACFP staff training and Civil Rights training. MDE requires documentation of training dates, topics, locations, and attendee names/signatures.</p>
+              <div id="trainingList">Loading...</div>
+              <div style="margin-top:12px"><button class="btn btn-sm btn-primary" onclick="generateTrainingReport()">📄 Generate Training Report</button></div>
+            </div>
+          </div>
+
+          <!-- Add Training Modal -->
+          <div id="addTrainingForm" style="display:none" class="card" style="margin-top:12px">
+            <div class="card-hdr"><h3>Add Training Session</h3></div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="form-group"><label>Date</label><input type="date" id="trDate"></div>
+                <div class="form-group"><label>Type</label><select id="trType"><option value="CACFP">CACFP Program Training</option><option value="Civil Rights">Civil Rights Training</option><option value="New Staff">New Staff Orientation</option><option value="Food Safety">Food Safety</option><option value="Other">Other</option></select></div>
+                <div class="form-group"><label>Topic</label><input type="text" id="trTopic" placeholder="e.g., Annual CACFP Requirements Review"></div>
+                <div class="form-group"><label>Location</label><input type="text" id="trLocation" placeholder="e.g., Niles Center"></div>
+                <div class="form-group"><label>Center</label><select id="trCenter"><option value="both">Both Centers</option><option value="niles">Niles</option><option value="peace">Peace Boulevard</option></select></div>
+                <div class="form-group"><label>Trainer</label><input type="text" id="trTrainer" placeholder="e.g., Mary Wardlaw"></div>
+              </div>
+              <div class="form-group" style="margin-top:8px"><label>Attendees (one per line)</label>
+                <textarea id="trAttendees" style="width:100%;height:100px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:.85rem" placeholder="Jane Smith&#10;John Doe&#10;..."></textarea></div>
+              <div class="form-group" style="margin-top:8px"><label>Notes</label><input type="text" id="trNotes" placeholder="Additional notes"></div>
+              <div style="display:flex;gap:8px;margin-top:12px">
+                <button class="btn btn-navy" onclick="saveTraining()">Save Training</button>
+                <button class="btn btn-outline" onclick="hideAddTraining()">Cancel</button>
+              </div>
+            </div>
+          </div>
+
           <!-- Portion Posters -->
           <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>🍽️ Classroom Portion Posters</h3></div>
             <div class="card-body">
@@ -540,7 +572,7 @@ function navTo(page){
   if(page==='documents')renderProgramDocs();
   if(page==='yer')renderYER();
   if(page==='dashboard')renderDashboard();
-  if(page==='monitoring')loadMonitoringList();
+  if(page==='monitoring'){loadMonitoringList();loadTrainingList();}
 }
 
 function monthSubTab(tab){
@@ -3973,6 +4005,87 @@ async function completeReview(){
     await api(`/api/monitoring/${activeReview.id}`,{method:'PUT',body:{status:'completed'}});
     showToast('✅ Review completed!','ok');
     closeReview();
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+// ═══════════════════════════════════════════════════
+// TRAINING DOCUMENTATION TRACKER
+// ═══════════════════════════════════════════════════
+async function loadTrainingList(){
+  try{
+    const records=await api(`/api/training?fiscal_year_id=${activeFY.id}`);
+    const el=document.getElementById('trainingList');
+    if(!el)return;
+    if(!records.length){el.innerHTML='<p style="color:var(--muted);text-align:center;padding:12px;font-size:.85rem">No training sessions recorded yet. Click + Add Training to log a session.</p>';return;}
+
+    const cacfp=records.filter(r=>r.training_type==='CACFP');
+    const cr=records.filter(r=>r.training_type==='Civil Rights');
+
+    let html=`<div style="display:flex;gap:8px;margin-bottom:12px">
+      <div style="padding:8px;background:#e8f5e9;border-radius:6px;text-align:center;flex:1"><div style="font-weight:700;font-size:1.1rem">${records.length}</div><div style="font-size:.7rem;color:var(--muted)">Total Sessions</div></div>
+      <div style="padding:8px;background:#e3f2fd;border-radius:6px;text-align:center;flex:1"><div style="font-weight:700;font-size:1.1rem">${cacfp.length}</div><div style="font-size:.7rem;color:var(--muted)">CACFP</div></div>
+      <div style="padding:8px;background:#fff8e1;border-radius:6px;text-align:center;flex:1"><div style="font-weight:700;font-size:1.1rem">${cr.length}</div><div style="font-size:.7rem;color:var(--muted)">Civil Rights</div></div>
+    </div>`;
+
+    html+=`<table class="staff-table" style="font-size:.8rem"><thead><tr><th>Date</th><th>Type</th><th>Topic</th><th>Trainer</th><th>Attendees</th><th></th></tr></thead><tbody>`;
+    for(const r of records){
+      const typeBadge=r.training_type==='CACFP'?'background:#e3f2fd;color:#1565c0':r.training_type==='Civil Rights'?'background:#fff8e1;color:#8D6E00':'background:#f5f5f5;color:#555';
+      const attCount=(r.attendees||[]).length;
+      html+=`<tr>
+        <td style="white-space:nowrap">${new Date(r.training_date).toLocaleDateString()}</td>
+        <td><span style="padding:2px 6px;border-radius:4px;font-size:.7rem;font-weight:600;${typeBadge}">${r.training_type}</span></td>
+        <td style="font-weight:500">${r.topic}</td>
+        <td>${r.trainer||'—'}</td>
+        <td><span title="${(r.attendees||[]).join(', ')}">${attCount} staff</span></td>
+        <td><button class="btn-remove" onclick="deleteTraining(${r.id})" title="Delete">✕</button></td>
+      </tr>`;
+    }
+    html+=`</tbody></table>`;
+    el.innerHTML=html;
+  }catch(e){}
+}
+
+function showAddTraining(){
+  document.getElementById('addTrainingForm').style.display='block';
+  document.getElementById('trDate').value=new Date().toISOString().split('T')[0];
+}
+function hideAddTraining(){document.getElementById('addTrainingForm').style.display='none';}
+
+async function saveTraining(){
+  const date=document.getElementById('trDate').value;
+  const type=document.getElementById('trType').value;
+  const topic=document.getElementById('trTopic').value;
+  if(!date||!topic){showToast('Date and topic are required','err');return;}
+  const attendees=document.getElementById('trAttendees').value.split('\n').map(a=>a.trim()).filter(Boolean);
+  try{
+    await api('/api/training',{method:'POST',body:{
+      fiscal_year_id:activeFY.id,
+      training_date:date,training_type:type,topic,
+      location:document.getElementById('trLocation').value,
+      center:document.getElementById('trCenter').value,
+      trainer:document.getElementById('trTrainer').value,
+      attendees,notes:document.getElementById('trNotes').value
+    }});
+    hideAddTraining();loadTrainingList();
+    showToast('✅ Training session recorded!','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function deleteTraining(id){
+  if(!confirm('Delete this training record?'))return;
+  try{await api(`/api/training/${id}`,{method:'DELETE'});loadTrainingList();showToast('Deleted','ok');}catch(e){}
+}
+
+async function generateTrainingReport(){
+  try{
+    showToast('Generating training report...','');
+    const res=await fetch('/api/generate-training-report',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},
+      body:JSON.stringify({fiscal_year_id:activeFY.id})});
+    if(!res.ok)throw new Error('Generate failed');
+    const blob=await res.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+    a.download=`Training_Documentation_${activeFY.label}.docx`;a.click();URL.revokeObjectURL(url);
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    showToast('✅ Training report generated!','ok');
   }catch(e){showToast('Error: '+e.message,'err');}
 }
 
