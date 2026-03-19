@@ -815,7 +815,7 @@ async function saveAttField(mk,center,field,val){
 // ═══════════════════════════════════════════════════
 // MEAL COUNTS — CSV Parser + 3-Meal Rule + A/B/C
 // ═══════════════════════════════════════════════════
-function renderMeals(){
+async function renderMeals(){
   const m=currentMonth,data=monthlyDataCache[m+'_meals']||{};
   let html='';
   for(const c of ['niles','peace']){
@@ -912,7 +912,42 @@ function renderMeals(){
     monthlyDataCache[m+'_meals']=data;
   }
 
+  // Adult Meals section
+  html+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><h3>👤 Adult Meals — ${ML[m]} ${fyYear(m)}</h3></div>
+    <div class="card-body" id="adultMealsSection"><p style="color:var(--muted);font-size:.85rem">Loading adult meal data...</p></div></div>`;
+
   document.getElementById('sp-meals').innerHTML=html;
+
+  // Load adult meal data async
+  try{
+    const am=await api(`/api/adult-meals?fiscal_year_id=${activeFY.id}&month_key=${m}`);
+    const amEl=document.getElementById('adultMealsSection');
+    if(!amEl)return;
+    if(am.total===0){
+      amEl.innerHTML=`<p style="color:var(--muted);font-size:.85rem;text-align:center;padding:12px">No adult meals recorded for this month. Staff mark "Meal?" in the daily time entry app.</p>`;
+      return;
+    }
+    let amHtml=`<div style="display:flex;gap:12px;margin-bottom:12px">
+      <div style="padding:10px;background:#fff8e1;border-radius:8px;text-align:center;flex:1">
+        <div style="font-size:1.3rem;font-weight:700;color:#8D6E00">${am.total}</div>
+        <div style="font-size:.75rem;color:var(--muted)">Total Adult Meals</div>
+      </div>
+      <div style="padding:10px;background:var(--bg);border-radius:8px;text-align:center;flex:1">
+        <div style="font-size:1.3rem;font-weight:700">${am.daily.length}</div>
+        <div style="font-size:.75rem;color:var(--muted)">Days with Adult Meals</div>
+      </div>
+    </div>`;
+    amHtml+=`<table class="staff-table" style="font-size:.8rem"><thead><tr><th>Day</th><th># Adults</th><th>Staff</th></tr></thead><tbody>`;
+    for(const d of am.daily){
+      amHtml+=`<tr><td style="font-weight:600">${d.day_of_month}</td><td>${d.adult_count}</td><td style="font-size:.75rem">${(d.staff_names||[]).join(', ')}</td></tr>`;
+    }
+    amHtml+=`</tbody></table>`;
+    amHtml+=`<p style="font-size:.75rem;color:var(--muted);margin-top:8px">Adult meals are recorded daily by each staff member in the Staff Time Entry app. This count is required for Section 401 of the monitoring review.</p>`;
+    amEl.innerHTML=amHtml;
+  }catch(e){
+    const amEl=document.getElementById('adultMealsSection');
+    if(amEl)amEl.innerHTML=`<p style="color:var(--muted);font-size:.85rem">Could not load adult meal data.</p>`;
+  }
 }
 
 async function parseMealCSV(mk,center,input,skipUpload){
