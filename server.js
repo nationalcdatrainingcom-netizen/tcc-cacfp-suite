@@ -930,6 +930,313 @@ app.post('/api/generate-ta-forms-all', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GENERATE COMPLETE STAFF DOCUMENTATION PACKAGE (.docx) ─
+app.post('/api/generate-staff-package', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, supervisor_signature } = req.body;
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
+    const fy = fyRes.rows[0]; if (!fy) return res.status(404).json({ error: 'FY not found' });
+
+    const ML = {oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
+    const fyYear = mk => ['oct','nov','dec'].includes(mk) ? fy.start_year : fy.end_year;
+    const year = fyYear(month_key);
+    const monthLabel = ML[month_key] + ' ' + year;
+    const MN = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+    const numDays = new Date(year, MN[month_key] + 1, 0).getDate();
+    const navy = '1B2A4A'; const gold = 'C5972C';
+    const fmtD = n => '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtN = n => n > 0 ? n.toFixed(2) : '';
+
+    const thinB = { top:{style:BorderStyle.SINGLE,size:1,color:'999999'}, bottom:{style:BorderStyle.SINGLE,size:1,color:'999999'}, left:{style:BorderStyle.SINGLE,size:1,color:'999999'}, right:{style:BorderStyle.SINGLE,size:1,color:'999999'} };
+    function cell(text, opts = {}) {
+      return new TableCell({
+        width: opts.w ? { size: opts.w, type: WidthType.PERCENTAGE } : undefined,
+        borders: thinB,
+        shading: opts.bg ? { type: ShadingType.SOLID, color: opts.bg } : undefined,
+        children: [new Paragraph({ alignment: opts.align || AlignmentType.CENTER,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 16, font: 'Calibri', color: opts.color || '333333' })] })]
+      });
+    }
+
+    // Get all staff with entries
+    const staffRes = await pool.query(
+      `SELECT DISTINCT s.id, s.name, s.center, s.hourly_rate FROM staff s
+       JOIN staff_pins sp ON sp.staff_id = s.id
+       LEFT JOIN daily_cacfp_entries d ON d.staff_id = s.id AND d.fiscal_year_id = $1 AND d.month_key = $2
+       LEFT JOIN playground_staff_hours p ON p.staff_id = s.id AND p.fiscal_year_id = $1 AND p.month_key = $2
+       WHERE s.is_active = true AND (d.id IS NOT NULL OR p.id IS NOT NULL)
+       ORDER BY s.center, s.name`,
+      [fiscal_year_id, month_key]
+    );
+
+    const sections = [];
+
+    // ── SECTION 1: SUMMARY PAGE ──
+    const summaryRows = [new TableRow({ children: [
+      cell('Staff Name', { bold: true, bg: navy, color: 'FFFFFF', w: 25 }),
+      cell('Center', { bold: true, bg: navy, color: 'FFFFFF', w: 12 }),
+      cell('Rate/Hr', { bold: true, bg: navy, color: 'FFFFFF', w: 10, align: AlignmentType.RIGHT }),
+      cell('FS Hours', { bold: true, bg: navy, color: 'FFFFFF', w: 10, align: AlignmentType.RIGHT }),
+      cell('FS Cost', { bold: true, bg: navy, color: 'FFFFFF', w: 13, align: AlignmentType.RIGHT }),
+      cell('Admin Hrs', { bold: true, bg: navy, color: 'FFFFFF', w: 10, align: AlignmentType.RIGHT }),
+      cell('Admin Cost', { bold: true, bg: navy, color: 'FFFFFF', w: 13, align: AlignmentType.RIGHT }),
+    ]})];
+
+    let grandFS = 0, grandAdm = 0, grandFSHrs = 0, grandAdmHrs = 0;
+
+    for (let si = 0; si < staffRes.rows.length; si++) {
+      const s = staffRes.rows[si];
+      const ceRes = await pool.query(
+        'SELECT COALESCE(SUM(food_service_hours),0) as tfs, COALESCE(SUM(admin_hours),0) as tadm FROM daily_cacfp_entries WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3',
+        [s.id, fiscal_year_id, month_key]
+      );
+      const rate = parseFloat(s.hourly_rate) || 0;
+      const fsH = parseFloat(ceRes.rows[0].tfs) || 0;
+      const admH = parseFloat(ceRes.rows[0].tadm) || 0;
+      grandFS += fsH * rate; grandAdm += admH * rate; grandFSHrs += fsH; grandAdmHrs += admH;
+      const bg = si % 2 === 0 ? undefined : 'F5F5F5';
+      summaryRows.push(new TableRow({ children: [
+        cell(s.name, { bg, align: AlignmentType.LEFT }),
+        cell(s.center === 'niles' ? 'Niles' : 'Peace Blvd', { bg }),
+        cell(fmtD(rate), { bg, align: AlignmentType.RIGHT }),
+        cell(fmtN(fsH), { bg, align: AlignmentType.RIGHT }),
+        cell(fsH > 0 ? fmtD(fsH * rate) : '—', { bg, align: AlignmentType.RIGHT }),
+        cell(fmtN(admH), { bg, align: AlignmentType.RIGHT }),
+        cell(admH > 0 ? fmtD(admH * rate) : '—', { bg, align: AlignmentType.RIGHT }),
+      ]}));
+    }
+
+    const benefits = grandFS * 0.0765;
+    summaryRows.push(new TableRow({ children: [
+      cell('TOTALS', { bold: true, bg: 'E0E0E0' }), cell('', { bg: 'E0E0E0' }),
+      cell('', { bg: 'E0E0E0' }),
+      cell(grandFSHrs.toFixed(2), { bold: true, bg: 'E0E0E0', align: AlignmentType.RIGHT }),
+      cell(fmtD(grandFS), { bold: true, bg: 'E0E0E0', align: AlignmentType.RIGHT }),
+      cell(grandAdmHrs.toFixed(2), { bold: true, bg: 'E0E0E0', align: AlignmentType.RIGHT }),
+      cell(fmtD(grandAdm), { bold: true, bg: 'E0E0E0', align: AlignmentType.RIGHT }),
+    ]}));
+
+    sections.push({
+      properties: { page: { margin: { top: 600, bottom: 600, left: 600, right: 600 },
+        size: { orientation: 'landscape', width: 15840, height: 12240 } } },
+      children: [
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+          new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 28, font: 'Calibri', color: navy }) ]}),
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+          new TextRun({ text: `CACFP Staff Cost Summary — ${monthLabel}`, size: 22, font: 'Calibri', color: '666666' }) ]}),
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [
+          new TextRun({ text: `FY ${fy.label} | Sponsor #990004457`, size: 18, font: 'Calibri', color: '999999' }) ]}),
+        new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: summaryRows }),
+        new Paragraph({ spacing: { before: 200 }, children: [
+          new TextRun({ text: `Food Service Salaries: ${fmtD(grandFS)} | Benefits (7.65%): ${fmtD(benefits)} | Admin Costs: ${fmtD(grandAdm)} | Total NFSA Cost: ${fmtD(grandFS + benefits + grandAdm)}`, size: 18, font: 'Calibri', color: '555555' }) ]}),
+        new Paragraph({ spacing: { before: 100 }, children: [
+          new TextRun({ text: `Staff count: ${staffRes.rows.length} | Generated: ${new Date().toLocaleDateString('en-US')}`, size: 16, font: 'Calibri', color: '999999' }) ]}),
+      ]
+    });
+
+    // ── SECTION 2+: INDIVIDUAL T&A FORMS ──
+    for (const s of staffRes.rows) {
+      const pgRes = await pool.query('SELECT * FROM playground_staff_hours WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [s.id, fiscal_year_id, month_key]);
+      const ceRes = await pool.query('SELECT * FROM daily_cacfp_entries WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [s.id, fiscal_year_id, month_key]);
+      const sigRes = await pool.query('SELECT * FROM monthly_signatures WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [s.id, fiscal_year_id, month_key]);
+      const sig = sigRes.rows[0] || {};
+      const pgMap = {}; pgRes.rows.forEach(r => { pgMap[r.day_of_month] = r; });
+      const ceMap = {}; ceRes.rows.forEach(r => { ceMap[r.day_of_month] = r; });
+      const rate = parseFloat(s.hourly_rate) || 0;
+
+      const hdrRow = new TableRow({ children: [
+        cell('Date', { bold: true, bg: navy, color: 'FFFFFF', w: 6, sz: 14 }),
+        cell('Start', { bold: true, bg: navy, color: 'FFFFFF', w: 11, sz: 14 }),
+        cell('End', { bold: true, bg: navy, color: 'FFFFFF', w: 11, sz: 14 }),
+        cell('Worked', { bold: true, bg: navy, color: 'FFFFFF', w: 11, sz: 14 }),
+        cell('Absent', { bold: true, bg: navy, color: 'FFFFFF', w: 11, sz: 14 }),
+        cell('Non-CACFP', { bold: true, bg: navy, color: 'FFFFFF', w: 13, sz: 14 }),
+        cell('CACFP FS', { bold: true, bg: '1a4a7a', color: 'FFFFFF', w: 13, sz: 14 }),
+        cell('CACFP Adm', { bold: true, bg: navy, color: 'FFFFFF', w: 13, sz: 14 }),
+      ]});
+
+      let tW = 0, tA = 0, tNC = 0, tFS = 0, tAd = 0;
+      const dayRows = [];
+      for (let d = 1; d <= numDays; d++) {
+        const pg = pgMap[d]; const ce = ceMap[d];
+        const w = parseFloat(pg?.total_worked) || 0;
+        const a = parseFloat(pg?.total_absent) || 0;
+        const fs = parseFloat(ce?.food_service_hours) || 0;
+        const ad = parseFloat(ce?.admin_hours) || 0;
+        const nc = Math.max(0, w - fs - ad);
+        tW += w; tA += a; tNC += nc; tFS += fs; tAd += ad;
+        const bg = (pg || ce) ? undefined : 'F8F8F8';
+        dayRows.push(new TableRow({ children: [
+          cell(String(d), { bold: true, bg, sz: 14 }),
+          cell(pg?.start_time || '', { bg, sz: 14 }),
+          cell(pg?.end_time || '', { bg, sz: 14 }),
+          cell(fmtN(w), { bg, sz: 14 }),
+          cell(fmtN(a), { bg, sz: 14 }),
+          cell(fmtN(nc), { bg, sz: 14 }),
+          cell(fmtN(fs), { bg: fs > 0 ? 'E6F1FB' : bg, sz: 14 }),
+          cell(fmtN(ad), { bg: ad > 0 ? 'E6F1FB' : bg, sz: 14 }),
+        ]}));
+      }
+      const totRow = new TableRow({ children: [
+        cell('', { bg: 'E0E0E0', sz: 14 }), cell('', { bg: 'E0E0E0', sz: 14 }),
+        cell('Totals', { bold: true, bg: 'E0E0E0', sz: 14 }), cell('', { bg: 'E0E0E0', sz: 14 }),
+        cell(tW.toFixed(2), { bold: true, bg: 'E0E0E0', sz: 14 }),
+        cell(tNC.toFixed(2), { bold: true, bg: 'E0E0E0', sz: 14 }),
+        cell(tFS.toFixed(2), { bold: true, bg: 'D4E8FB', sz: 14 }),
+        cell(tAd.toFixed(2), { bold: true, bg: 'E0E0E0', sz: 14 }),
+      ]});
+
+      sections.push({
+        properties: { page: { margin: { top: 500, bottom: 500, left: 600, right: 600 } } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 40 }, children: [
+            new TextRun({ text: 'Michigan Department of Education', size: 16, font: 'Calibri', color: '666666' }) ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 40 }, children: [
+            new TextRun({ text: 'Child and Adult Care Food Program', size: 16, font: 'Calibri', color: '666666' }) ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 100 }, children: [
+            new TextRun({ text: 'Time and Attendance / Time Distribution', bold: true, size: 22, font: 'Calibri', color: navy }) ]}),
+          new Paragraph({ spacing: { after: 60 }, children: [
+            new TextRun({ text: 'Name: ', bold: true, size: 18, font: 'Calibri' }),
+            new TextRun({ text: s.name, size: 18, font: 'Calibri', underline: {} }),
+            new TextRun({ text: '     Month/Year: ', bold: true, size: 18, font: 'Calibri' }),
+            new TextRun({ text: monthLabel, size: 18, font: 'Calibri', underline: {} }),
+          ]}),
+          new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [hdrRow, ...dayRows, totRow] }),
+          new Paragraph({ spacing: { before: 120, after: 60 }, children: [
+            new TextRun({ text: `Total CACFP Admin Time: ${tAd.toFixed(2)} hrs × $${rate.toFixed(2)} = ${fmtD(tAd * rate)}`, size: 16, font: 'Calibri' }) ]}),
+          new Paragraph({ spacing: { after: 60 }, children: [
+            new TextRun({ text: `Total CACFP FS Labor Time: ${tFS.toFixed(2)} hrs × $${rate.toFixed(2)} = ${fmtD(tFS * rate)}`, size: 16, font: 'Calibri' }) ]}),
+          new Paragraph({ spacing: { before: 120, after: 40 }, children: [
+            new TextRun({ text: 'Employee Signature: ', bold: true, size: 16, font: 'Calibri' }),
+            new TextRun({ text: sig.employee_signature || '________________', italics: !!sig.employee_signature, size: 16, font: 'Calibri', underline: {} }),
+            new TextRun({ text: '    Date: ', bold: true, size: 16, font: 'Calibri' }),
+            new TextRun({ text: sig.employee_signed_at ? new Date(sig.employee_signed_at).toLocaleDateString() : '________', size: 16, font: 'Calibri', underline: {} }),
+          ]}),
+          new Paragraph({ spacing: { after: 40 }, children: [
+            new TextRun({ text: 'Supervisor Signature: ', bold: true, size: 16, font: 'Calibri' }),
+            new TextRun({ text: supervisor_signature || sig.supervisor_signature || '________________', italics: true, size: 16, font: 'Calibri', underline: {} }),
+            new TextRun({ text: '    Date: ', bold: true, size: 16, font: 'Calibri' }),
+            new TextRun({ text: sig.supervisor_signed_at ? new Date(sig.supervisor_signed_at).toLocaleDateString() : new Date().toLocaleDateString(), size: 16, font: 'Calibri', underline: {} }),
+          ]}),
+          new Paragraph({ spacing: { before: 60 }, alignment: AlignmentType.RIGHT, children: [
+            new TextRun({ text: 'Rev. 3/08', size: 12, font: 'Calibri', color: '999999' }) ]}),
+        ]
+      });
+    }
+
+    const doc = new Document({ sections });
+    const buffer = await Packer.toBuffer(doc);
+    const filename = `CACFP_Staff_Package_${month_key}_${fy.label}.docx`;
+
+    // Store in documents
+    await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1,$2,'staff_package',$3,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$4,$5)`,
+      [fiscal_year_id, month_key, filename, buffer, JSON.stringify({ generated: true, staff_count: staffRes.rows.length, grandFS, grandAdm })]
+    );
+
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// ── GENERATE CHILD ATTENDANCE DETAIL REPORT (.docx) ──────
+app.post('/api/generate-attendance-report', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, center } = req.body;
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
+    const fy = fyRes.rows[0]; if (!fy) return res.status(404).json({ error: 'FY not found' });
+
+    const ML = {oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
+    const fyYear = mk => ['oct','nov','dec'].includes(mk) ? fy.start_year : fy.end_year;
+    const monthLabel = ML[month_key] + ' ' + fyYear(month_key);
+    const navy = '1B2A4A';
+    const fmtN = n => n > 0 ? n.toFixed(1) : '';
+    const thinB = { top:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, bottom:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, left:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, right:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'} };
+    function cell(text, opts = {}) {
+      return new TableCell({
+        width: opts.w ? { size: opts.w, type: WidthType.PERCENTAGE } : undefined,
+        borders: thinB,
+        shading: opts.bg ? { type: ShadingType.SOLID, color: opts.bg } : undefined,
+        children: [new Paragraph({ alignment: opts.align || AlignmentType.CENTER,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 14, font: 'Calibri', color: opts.color || '333333' })] })]
+      });
+    }
+
+    const mdRes = await pool.query(
+      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
+      [fiscal_year_id, month_key]
+    );
+    const attData = mdRes.rows[0]?.data || {};
+    const sections = [];
+
+    for (const c of center ? [center] : ['niles', 'peace']) {
+      const d = attData[c];
+      if (!d || !d.childData) continue;
+      const centerLabel = c === 'niles' ? 'Niles' : 'Peace Boulevard';
+      const dayHeaders = d.dayHeaders || [];
+
+      // Summary header row + day columns
+      const hdrCells = [
+        cell('Name', { bold: true, bg: navy, color: 'FFFFFF', sz: 12, align: AlignmentType.LEFT }),
+        cell('Class', { bold: true, bg: navy, color: 'FFFFFF', sz: 10 }),
+      ];
+      for (const dh of dayHeaders) hdrCells.push(cell(dh, { bold: true, bg: navy, color: 'FFFFFF', sz: 9 }));
+      hdrCells.push(cell('Days', { bold: true, bg: navy, color: 'FFFFFF', sz: 11 }));
+
+      const dataRows = [];
+      for (const ch of d.childData) {
+        const rowCells = [
+          cell(ch.name, { sz: 11, align: AlignmentType.LEFT }),
+          cell((ch.classroom || '').substring(0, 10), { sz: 9 }),
+        ];
+        const daily = ch.dailyStatus || [];
+        for (let i = 0; i < dayHeaders.length; i++) {
+          const st = daily[i] || '';
+          rowCells.push(cell(st === 'P' ? '✓' : '', { sz: 10, bg: st === 'P' ? 'E8F5E9' : undefined }));
+        }
+        rowCells.push(cell(String(ch.present || 0), { bold: true, sz: 11 }));
+        dataRows.push(new TableRow({ children: rowCells }));
+      }
+
+      sections.push({
+        properties: { page: { margin: { top: 500, bottom: 500, left: 400, right: 400 },
+          size: { orientation: 'landscape', width: 15840, height: 12240 } } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [
+            new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 24, font: 'Calibri', color: navy }) ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [
+            new TextRun({ text: `Child Attendance Report — ${centerLabel}`, size: 20, font: 'Calibri', color: '666666' }) ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [
+            new TextRun({ text: `${monthLabel} | FY ${fy.label}`, size: 16, font: 'Calibri', color: '999999' }) ]}),
+          new Paragraph({ spacing: { after: 80 }, children: [
+            new TextRun({ text: `Enrolled: ${d.enrolled}  |  Operating Days: ${d.days}  |  Total Child-Days Present: ${d.totalPresent}  |  ADA: ${d.ada}  (${d.enrolled > 0 ? ((d.ada/d.enrolled)*100).toFixed(1) : '0'}%)`, size: 16, font: 'Calibri', color: '555555' }) ]}),
+          new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [new TableRow({ children: hdrCells }), ...dataRows] }),
+          new Paragraph({ spacing: { before: 100 }, children: [
+            new TextRun({ text: `Generated: ${new Date().toLocaleDateString('en-US')}`, size: 14, font: 'Calibri', color: '999999' }) ]}),
+        ]
+      });
+    }
+
+    if (sections.length === 0) return res.status(400).json({ error: 'No attendance data found for this month' });
+
+    const doc = new Document({ sections });
+    const buffer = await Packer.toBuffer(doc);
+    const filename = `Child_Attendance_${center || 'All'}_${month_key}_${fy.label}.docx`;
+
+    await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1,$2,'attendance_report',$3,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$4,$5)`,
+      [fiscal_year_id, month_key, filename, buffer, JSON.stringify({ generated: true, center: center || 'all' })]
+    );
+
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
 // ── CHILD ATTENDANCE DETAIL REPORT ────────────────────────
 app.get('/api/child-attendance-report', authCheck, async (req, res) => {
   try {
