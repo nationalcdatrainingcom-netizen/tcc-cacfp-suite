@@ -3658,24 +3658,28 @@ async function autoPopulateFiveDay(startDate){
       }
     }
 
-    // Meal counts — try children array with daily data, then dayLabels, then dailyMealCounts
+    // Meal counts — use children's dailyDetail arrays + dayLabels
     if(centerMeals.children&&centerMeals.children.length>0){
       const monthNum=dates[0].getMonth();
       const yearNum=dates[0].getFullYear();
+      const dayLabels=centerMeals.dayLabels||[];
 
       for(let i=0;i<5;i++){
         const dd=dates[i];
         const dayOfMonth=dd.getDate();
         const dk='fiveday_'+(i+1);
 
+        // Find which index in dailyDetail corresponds to this day-of-month
         let dayIdx=-1;
-        if(centerMeals.dayLabels&&centerMeals.dayLabels.length>0){
-          for(let j=0;j<centerMeals.dayLabels.length;j++){
-            const lbl=centerMeals.dayLabels[j]||'';
+        if(dayLabels.length>0){
+          for(let j=0;j<dayLabels.length;j++){
+            const lbl=dayLabels[j]||'';
             const nums=lbl.match(/\d+/g);
             if(nums&&parseInt(nums[nums.length-1])===dayOfMonth){dayIdx=j;break;}
           }
-        }else{
+        }
+        if(dayIdx<0){
+          // Fallback: weekday position
           let weekdayCount=0;
           for(let d=1;d<=dayOfMonth;d++){
             const testDate=new Date(yearNum,monthNum,d);
@@ -3687,20 +3691,18 @@ async function autoPopulateFiveDay(startDate){
         }
 
         if(dayIdx>=0){
-          let bkfst=0,lunch=0,pmSnk=0;
+          let bkfst=0,amSnk=0,lunch=0,pmSnk=0;
           for(const child of centerMeals.children){
-            const dm=child.dailyMeals||child.dailyStatus||[];
-            if(dayIdx<dm.length){
-              const val=dm[dayIdx];
-              if(typeof val==='object'&&val){
-                if(val.breakfast)bkfst++;if(val.lunch)lunch++;if(val.pmSnack)pmSnk++;
-              }else if(typeof val==='string'){
-                // Could be a simple status like "BLS" (breakfast, lunch, snack)
-                if(val.includes('B'))bkfst++;if(val.includes('L'))lunch++;if(val.includes('S'))pmSnk++;
-              }
+            const dd2=child.dailyDetail;
+            if(dd2&&dayIdx<dd2.length){
+              if(dd2[dayIdx].bk)bkfst++;
+              if(dd2[dayIdx].am)amSnk++;
+              if(dd2[dayIdx].ln)lunch++;
+              if(dd2[dayIdx].pm&&!dd2[dayIdx].pmX)pmSnk++;
             }
           }
           if(bkfst>0){setField(dk+'_bkfst',bkfst);const el=document.getElementById(dk+'_bkfst');if(el){el.value=bkfst;imported++;}}
+          if(amSnk>0){setField(dk+'_amsnk',amSnk);const el=document.getElementById(dk+'_amsnk');if(el){el.value=amSnk;imported++;}}
           if(lunch>0){setField(dk+'_lunch',lunch);const el=document.getElementById(dk+'_lunch');if(el){el.value=lunch;imported++;}}
           if(pmSnk>0){setField(dk+'_pmsnk',pmSnk);const el=document.getElementById(dk+'_pmsnk');if(el){el.value=pmSnk;imported++;}}
         }
