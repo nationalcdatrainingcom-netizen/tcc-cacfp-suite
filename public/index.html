@@ -665,6 +665,24 @@ async function deactivateStaff(id){if(!confirm('Remove this staff member?'))retu
   try{await api(`/api/staff/${id}`,{method:'PUT',body:{is_active:false}});staffList=await api('/api/staff');renderStaffTA();showToast('Staff removed','ok');}catch(e){showToast('Error: '+e.message,'err');}
 }
 
+async function mergeStaffPick(removeId,removeName){
+  // Get all staff to pick who to merge into
+  const allStaff=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${currentMonth}`);
+  const others=allStaff.filter(s=>s.id!==removeId);
+  if(!others.length){showToast('No other staff to merge with','err');return;}
+  const options=others.map(s=>`${s.name} (${s.center})`).join('\n');
+  const choice=prompt(`Merge "${removeName}" INTO which staff member? All Playground hours, CACFP entries, and signatures will be moved to the selected person, and "${removeName}" will be deleted.\n\nType the exact name:\n\n${options}`);
+  if(!choice)return;
+  const target=others.find(s=>s.name.toLowerCase()===choice.toLowerCase().trim());
+  if(!target){showToast('Name not found — type exactly as shown','err');return;}
+  if(!confirm(`Merge all data from "${removeName}" into "${target.name}"? This cannot be undone.`))return;
+  try{
+    await api('/api/staff/merge',{method:'POST',body:{keep_id:target.id,remove_id:removeId}});
+    showToast(`✅ Merged "${removeName}" into "${target.name}"`,'ok');
+    staffList=await api('/api/staff');renderStaffTA();
+  }catch(e){showToast('Merge error: '+e.message,'err');}
+}
+
 // ═══════════════════════════════════════════════════
 // ATTENDANCE — CSV Parser + ADA Methodology Doc
 // ═══════════════════════════════════════════════════
@@ -2964,7 +2982,10 @@ async function renderStaffTA(){
         <td><input type="number" step="0.01" value="${rate||''}" onchange="updateStaffRate(${s.id},this.value)" style="width:70px;padding:4px;font-size:.85rem;text-align:center"></td>
         <td>${s.totalFS.toFixed(1)}</td>
         <td>${fsCost>0?fmt(fsCost):'—'}</td>
-        <td><button class="btn-remove" onclick="deactivateStaff(${s.id})" title="Remove">✕</button></td>
+        <td style="display:flex;gap:2px">
+          <button class="btn-remove" onclick="mergeStaffPick(${s.id},'${s.name.replace(/'/g,"\\'")}')" title="Merge with another record" style="font-size:.7rem">🔗</button>
+          <button class="btn-remove" onclick="deactivateStaff(${s.id})" title="Remove">✕</button>
+        </td>
       </tr>`;
     }
 
