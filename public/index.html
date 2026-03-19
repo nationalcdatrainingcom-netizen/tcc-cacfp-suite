@@ -345,6 +345,26 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             </div>
           </div>
 
+          <!-- Portion Posters -->
+          <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>🍽️ Classroom Portion Posters</h3></div>
+            <div class="card-body">
+              <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Generate printable CACFP meal pattern requirement posters for each classroom. Teachers laminate and post near the serving area.</p>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-primary" onclick="generateAllPosters('niles')">📄 All Niles Posters</button>
+                <button class="btn btn-primary" onclick="generateAllPosters('peace')">📄 All Peace Posters</button>
+              </div>
+              <details style="margin-top:12px"><summary style="font-size:.85rem;cursor:pointer;color:var(--navy);font-weight:600">Generate individual classroom posters</summary>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px" id="posterButtons"></div>
+                <script>setTimeout(()=>{const el=document.getElementById('posterButtons');if(!el)return;
+                  const rooms={niles:[{n:'Tiny Treasures',a:'Infants'},{n:'Koalas',a:'Toddlers'},{n:'Jellyfish',a:'Toddlers'},{n:'Fireflies',a:'3s'},{n:'Flamingos',a:'Multi-age/School-age'},{n:'Honey Bees',a:'4s and 5s'},{n:'Otters',a:'4s and 5s'}],
+                  peace:[{n:'Caterpillars',a:'Infants'},{n:'Butterflies',a:'Infants/Toddlers'},{n:'Dolphins',a:'Toddlers'},{n:'Kangas',a:'Toddlers'},{n:'Lions',a:'Toddlers'},{n:'Montessori',a:'Infants/Toddlers'},{n:'Bears',a:'2½'},{n:'Flamingos',a:'Multi-age 2½-4'},{n:'Penguins',a:'4s and 5s'},{n:'Dinos',a:'4s and 5s'},{n:'Tigers',a:'2s and 3s'}]};
+                  let h='';for(const[c,rs] of Object.entries(rooms)){h+=`<div style="font-weight:600;font-size:.8rem;color:var(--navy);grid-column:span 2;margin-top:4px">${c==='niles'?'Niles':'Peace'}</div>`;
+                  for(const r of rs){h+=`<button class="btn btn-sm btn-outline" onclick="generatePoster('${c}','${r.n}','${r.a}')" style="font-size:.75rem">${r.n} (${r.a})</button>`;}}
+                  el.innerHTML=h;},500);</script>
+              </details>
+            </div>
+          </div>
+
           <!-- Audit Cross-Check -->
           <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📋 Attendance vs Meal Count Cross-Check</h3></div>
             <div class="card-body">
@@ -3528,6 +3548,48 @@ function renderMonitoringForm(){
           <td><input type="text" class="mon-cmt" value="${fd[rk+'_cmt']||''}" onchange="setField('${rk}_cmt',this.value)"></td></tr>`;
       }
       html+=`</tbody></table></div>`;
+
+      // Portion Verification Worksheet
+      html+=`<div style="margin:12px 0;padding:10px;background:#e3f2fd;border:1px solid #90caf9;border-radius:8px">
+        <div style="font-weight:700;font-size:.9rem;color:var(--navy);margin-bottom:6px">📋 Portion Verification Worksheet</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">For each classroom observed, verify portions served match CACFP requirements for the age group.</div>`;
+      for(const rm of rooms){
+        const rk='portion_'+rm.name.replace(/\s/g,'_');
+        const ageMap={'Infants':['0-5mo','6-11mo'],'Infants/Toddlers':['6-11mo','1-2yr'],'Toddlers':['1-2yr'],'2s':['1-2yr'],'2½':['1-2yr','3-5yr'],'2s and 3s':['1-2yr','3-5yr'],'3s':['3-5yr'],'Multi-age 2½-4':['1-2yr','3-5yr'],'Multi-age/School-age':['3-5yr','6-12yr'],'4s and 5s':['3-5yr'],'School-age':['6-12yr']};
+        const ages=ageMap[rm.ages]||['3-5yr'];
+        html+=`<details style="margin-top:6px"><summary style="font-size:.85rem;cursor:pointer;font-weight:600">${rm.name} <span style="font-size:.75rem;color:var(--muted)">(${rm.ages})</span></summary>
+          <div style="padding:8px;font-size:.8rem">
+            <div style="margin-bottom:4px;font-weight:600;color:var(--navy)">Required portions for ${ages.map(a=>'Children '+a).join(' / ')}:</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px">`;
+        // Show key requirements based on age
+        const youngest=ages[0];
+        if(youngest==='0-5mo'||youngest==='6-11mo'){
+          html+=`<div style="padding:4px;background:#fff8e1;border-radius:4px;font-size:.75rem"><strong>Formula/Breast Milk:</strong> 4-8 fl oz</div>`;
+        }else{
+          const milkAmt=youngest==='1-2yr'?'½ cup':youngest==='3-5yr'?'¾ cup':'1 cup';
+          const meatAmt=youngest==='1-2yr'?'1 oz':youngest==='3-5yr'?'1½ oz':'2 oz';
+          const vegAmt=youngest==='1-2yr'?'⅛ cup':youngest==='3-5yr'?'¼ cup':'½ cup';
+          const grainAmt=youngest==='1-2yr'?'½ slice':youngest==='3-5yr'?'½ slice':'1 slice';
+          html+=`<div style="padding:4px;background:#fff8e1;border-radius:4px;font-size:.75rem"><strong>Milk:</strong> ${milkAmt}</div>
+            <div style="padding:4px;background:#e8f5e9;border-radius:4px;font-size:.75rem"><strong>Meat/Alt:</strong> ${meatAmt}</div>
+            <div style="padding:4px;background:#e3f2fd;border-radius:4px;font-size:.75rem"><strong>Vegetable:</strong> ${vegAmt}</div>
+            <div style="padding:4px;background:#fce4ec;border-radius:4px;font-size:.75rem"><strong>Fruit:</strong> ${vegAmt}</div>
+            <div style="padding:4px;background:#f3e5f5;border-radius:4px;font-size:.75rem"><strong>Grains:</strong> ${grainAmt}</div>`;
+        }
+        html+=`</div>
+            <div style="display:grid;grid-template-columns:1fr auto auto;gap:4px;align-items:center">
+              <div style="font-weight:600;font-size:.75rem">Component</div><div style="font-size:.75rem;text-align:center;width:50px">Meets?</div><div style="font-size:.75rem;width:120px">Notes</div>
+              <div>Milk served correctly</div>${ynaBtns(rk+'_milk',fd[rk+'_milk'])}<input type="text" class="mon-cmt" style="width:120px" value="${fd[rk+'_milk_note']||''}" onchange="setField('${rk}_milk_note',this.value)">
+              <div>Meat/protein portion</div>${ynaBtns(rk+'_meat',fd[rk+'_meat'])}<input type="text" class="mon-cmt" style="width:120px" value="${fd[rk+'_meat_note']||''}" onchange="setField('${rk}_meat_note',this.value)">
+              <div>Vegetable portion</div>${ynaBtns(rk+'_veg',fd[rk+'_veg'])}<input type="text" class="mon-cmt" style="width:120px" value="${fd[rk+'_veg_note']||''}" onchange="setField('${rk}_veg_note',this.value)">
+              <div>Fruit portion</div>${ynaBtns(rk+'_fruit',fd[rk+'_fruit'])}<input type="text" class="mon-cmt" style="width:120px" value="${fd[rk+'_fruit_note']||''}" onchange="setField('${rk}_fruit_note',this.value)">
+              <div>Grain/bread portion</div>${ynaBtns(rk+'_grain',fd[rk+'_grain'])}<input type="text" class="mon-cmt" style="width:120px" value="${fd[rk+'_grain_note']||''}" onchange="setField('${rk}_grain_note',this.value)">
+            </div>
+          </div>
+        </details>`;
+      }
+      html+=`</div>`;
+
       const mealQs=[
         {num:'603',text:'Minimum portion served met meal/snack requirements for age groups.'},
         {num:'604',text:'Procedures are in place to ensure minimum portions are served.'},
@@ -3911,6 +3973,29 @@ async function completeReview(){
     await api(`/api/monitoring/${activeReview.id}`,{method:'PUT',body:{status:'completed'}});
     showToast('✅ Review completed!','ok');
     closeReview();
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function generateAllPosters(center){
+  try{
+    showToast(`Generating ${center==='niles'?'Niles':'Peace'} posters...`,'');
+    const res=await fetch('/api/generate-all-posters',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},body:JSON.stringify({center})});
+    if(!res.ok)throw new Error('Generate failed');
+    const blob=await res.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+    a.download=`All_Portion_Posters_${center==='niles'?'Niles':'Peace'}.docx`;a.click();URL.revokeObjectURL(url);
+    showToast('✅ Posters generated!','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function generatePoster(center,name,ages){
+  try{
+    showToast(`Generating poster for ${name}...`,'');
+    const res=await fetch('/api/generate-portion-poster',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},
+      body:JSON.stringify({center,classroom_name:name,classroom_ages:ages})});
+    if(!res.ok)throw new Error('Generate failed');
+    const blob=await res.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+    a.download=`Portion_Poster_${name.replace(/\s/g,'_')}.docx`;a.click();URL.revokeObjectURL(url);
+    showToast('✅ Poster generated!','ok');
   }catch(e){showToast('Error: '+e.message,'err');}
 }
 
