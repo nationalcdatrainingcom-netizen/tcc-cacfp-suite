@@ -349,7 +349,19 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📋 Attendance vs Meal Count Cross-Check</h3></div>
             <div class="card-body">
               <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Compares child attendance records against meal counts to flag discrepancies.</p>
-              <button class="btn btn-primary" onclick="runAuditCrossCheck()">🔍 Run Cross-Check for Current Month</button>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <select id="crossCheckMonth" style="padding:8px;border:1px solid var(--border);border-radius:6px;font-size:.85rem">
+                  <option value="">Select month...</option>
+                </select>
+                <button class="btn btn-primary" onclick="runAuditCrossCheck()">🔍 Run Cross-Check</button>
+              </div>
+              <script>
+                setTimeout(()=>{const sel=document.getElementById('crossCheckMonth');if(sel&&typeof MO!=='undefined'){
+                  MO.forEach(m=>{const yr=typeof fyYear==='function'?fyYear(m):'';const o=document.createElement('option');o.value=m;o.textContent=(typeof ML!=='undefined'?ML[m]:m)+' '+yr;sel.appendChild(o);});
+                  if(typeof currentMonth!=='undefined'&&currentMonth)sel.value=currentMonth;
+                  else{const prev=MO[Math.max(0,new Date().getMonth()-1)];sel.value=prev;}
+                }},500);
+              </script>
               <div id="crossCheckResults" style="margin-top:12px"></div>
             </div>
           </div>
@@ -1762,9 +1774,22 @@ async function printMonthlyPackage(mk){
   const meals=monthlyDataCache[mk+'_meals']||{};
   const cdc=monthlyDataCache[mk+'_cdc']||{};
   const fc=monthlyDataCache[mk+'_foodcosts']||{};
-  const stData=salaryTotals.find(r=>r.month_key===mk);
-  const fsCost=parseFloat(stData?.food_service_cost)||0;
-  const admCost=parseFloat(stData?.admin_cost)||0;
+
+  // Pull fresh salary data from merged T&A (same as claim prep)
+  let fsCost=0,admCost=0;
+  let taStaffData=[];
+  try{
+    taStaffData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
+    for(const s of taStaffData){
+      const rate=parseFloat(s.hourly_rate)||0;
+      fsCost+=s.totalFS*rate;
+      admCost+=s.totalAdm*rate;
+    }
+  }catch(e){
+    const stData=salaryTotals.find(r=>r.month_key===mk);
+    fsCost=parseFloat(stData?.food_service_cost)||0;
+    admCost=parseFloat(stData?.admin_cost)||0;
+  }
   const benefits=fsCost*BEN_RATE;
   const foodCost=parseFloat(fc.total)||0;
   const totalExp=foodCost+fsCost+benefits+admCost;
@@ -1808,50 +1833,46 @@ async function printMonthlyPackage(mk){
   // 3. STAFF COSTS
   // ══════════════════════════════════════════════════
   html+=`<h2 class="page-break">3. Staff Costs</h2>`;
-  // Uploaded staff time distribution documents ONLY (not meal counts or attendance)
+  // Uploaded staff time distribution documents + T&A forms
   const staffDocs=mDocs.filter(d=>{const dt=d.doc_type||'';
-    return dt.startsWith('time_distribution_fs')||dt.startsWith('time_distribution_admin')||dt.startsWith('batch_time_forms');});
+    return dt.startsWith('time_distribution_fs')||dt.startsWith('time_distribution_admin')||dt.startsWith('batch_time_forms')||dt==='ta_form'||dt==='staff_package'||dt==='playground_staff_hours';});
   if(staffDocs.length>0){
-    html+=`<h4>Uploaded Time Distribution Documents</h4>`;
+    html+=`<h4>Uploaded Time & Attendance Documents</h4>`;
     for(const sd of staffDocs){
       const centerLabel=sd.metadata?.center?` (${cl(sd.metadata.center)})`:'';
       if(docImages[sd.id])html+=`<p style="font-size:9px;color:#666;margin:4px 0">${sd.filename}${centerLabel}</p><div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
       else html+=`<div class="doc-note">📄 ${sd.filename}${centerLabel} — ${sd.doc_type} — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}. Print this document separately from the Documents tab.</div>`;
     }
   }else{
-    html+=`<div class="doc-note">⚠️ No Time & Attendance / Time Distribution documents uploaded for this month yet.</div>`;
+    html+=`<div class="doc-note">⚠️ No Time & Attendance documents uploaded for this month yet.</div>`;
   }
-  // Staff cost totals
-  if(stData){
+  // Staff cost totals from merged T&A data
+  if(taStaffData.length>0){
     html+=`<h4>Staff Cost Summary</h4>
       <table><tr><th>Category</th><th style="text-align:right">Amount</th></tr>
         <tr><td>Food Service Salaries</td><td style="text-align:right">${fmt(fsCost)}</td></tr>
         <tr><td>Employee Benefits (7.65%)</td><td style="text-align:right">${fmt(benefits)}</td></tr>
         <tr><td>Administrative Costs</td><td style="text-align:right">${fmt(admCost)}</td></tr>
         <tr class="grand-row"><td>Total Staff Cost to NFSA</td><td style="text-align:right">${fmt(fsCost+benefits+admCost)}</td></tr></table>`;
-    // Per-staff detail
-    const monthEntries=staffTimeEntries.filter(e=>e.month_key===mk);
-    if(monthEntries.length>0){
-      for(const center of ['niles','peace']){
-        const cEntries=monthEntries.filter(e=>staffList.find(s=>s.id==e.staff_id)?.center===center);
-        if(cEntries.length===0)continue;
-        html+=`<h4>${cl(center)} Staff Detail</h4>
-          <table><tr><th>Name</th><th>Rate</th><th>FS Hours</th><th>FS Earned</th><th>Admin Hours</th><th>Admin Earned</th></tr>`;
-        let cFS=0,cAdm=0;
-        for(const e of cEntries){
-          const s=staffList.find(s2=>s2.id==e.staff_id);
-          const fsE=(parseFloat(e.food_service_hours)||0)*(parseFloat(e.hourly_rate_used)||0);
-          const adE=(parseFloat(e.admin_hours)||0)*(parseFloat(e.hourly_rate_used)||0);
-          cFS+=fsE;cAdm+=adE;
-          html+=`<tr><td>${s?.name||'Unknown'}</td><td>$${(parseFloat(e.hourly_rate_used)||0).toFixed(2)}</td>
-            <td>${e.food_service_hours||0}</td><td>${fmt(fsE)}</td>
-            <td>${e.admin_hours||0}</td><td>${fmt(adE)}</td></tr>`;
-        }
-        html+=`<tr class="total-row"><td colspan="3">Total ${cl(center)}</td><td>${fmt(cFS)}</td><td></td><td>${fmt(cAdm)}</td></tr></table>`;
+    // Per-center staff detail from merged T&A
+    for(const center of ['niles','peace']){
+      const cStaff=taStaffData.filter(s=>s.center===center&&(s.totalFS>0||s.totalAdm>0));
+      if(cStaff.length===0)continue;
+      let cFS=0,cAdm=0;
+      html+=`<h4>${cl(center)} Staff Detail</h4>
+        <table><tr><th>Name</th><th>Rate</th><th>FS Hours</th><th>FS Earned</th><th>Admin Hours</th><th>Admin Earned</th></tr>`;
+      for(const s of cStaff){
+        const rate=parseFloat(s.hourly_rate)||0;
+        const fsE=s.totalFS*rate;const adE=s.totalAdm*rate;
+        cFS+=fsE;cAdm+=adE;
+        html+=`<tr><td>${s.name}</td><td>$${rate.toFixed(2)}</td>
+          <td>${s.totalFS.toFixed(2)}</td><td>${fmt(fsE)}</td>
+          <td>${s.totalAdm.toFixed(2)}</td><td>${fmt(adE)}</td></tr>`;
       }
+      html+=`<tr class="total-row"><td colspan="3">Total ${cl(center)}</td><td>${fmt(cFS)}</td><td></td><td>${fmt(cAdm)}</td></tr></table>`;
     }
   }else{
-    html+=`<div class="doc-note">⚠️ No staff cost data entered for this month.</div>`;
+    html+=`<div class="doc-note">⚠️ No staff time data for this month. Staff enter hours in the Time Entry app.</div>`;
   }
 
   // ══════════════════════════════════════════════════
@@ -3277,15 +3298,19 @@ async function viewStaffTA(staffId){
 // ═══════════════════════════════════════════════════
 async function runAuditCrossCheck(){
   const panel=document.getElementById('crossCheckResults');
-  panel.innerHTML='<div class="alert alert-warn">⏳ Running cross-check...</div>';
+  const monthSel=document.getElementById('crossCheckMonth');
+  const mk=monthSel?.value||currentMonth||MO[Math.max(0,new Date().getMonth()-1)];
+  if(!mk){showToast('Select a month first','err');return;}
+  const monthLabel=ML[mk]||mk;
+  panel.innerHTML=`<div class="alert alert-warn">⏳ Running cross-check for ${monthLabel}...</div>`;
   try{
-    const data=await api(`/api/audit-crosscheck?fiscal_year_id=${activeFY.id}&month_key=${currentMonth||MO[new Date().getMonth()]}`);
+    const data=await api(`/api/audit-crosscheck?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
     const flags=data.flags||[];
     if(flags.length===0){
-      panel.innerHTML='<div class="alert alert-ok" style="margin:0"><span>✅</span><div><strong>No discrepancies found!</strong> Attendance records and meal counts are consistent.</div></div>';
+      panel.innerHTML=`<div class="alert alert-ok" style="margin:0"><span>✅</span><div><strong>No discrepancies found for ${monthLabel}!</strong> Attendance records and meal counts are consistent.</div></div>`;
       return;
     }
-    let html=`<div class="alert alert-err" style="margin-bottom:12px"><span>⚠️</span><div><strong>${flags.length} discrepancies found</strong></div></div>`;
+    let html=`<div class="alert alert-err" style="margin-bottom:12px"><span>⚠️</span><div><strong>${flags.length} discrepancies found in ${monthLabel}</strong></div></div>`;
     html+=`<table class="staff-table" style="font-size:.85rem"><thead><tr><th>Type</th><th>Center</th><th>Child</th><th>Detail</th></tr></thead><tbody>`;
     for(const f of flags){
       const typeLabel=f.type==='no_attendance'?'🔴 No attendance':f.type==='meal_exceeds_attendance'?'🟡 Meals > Attendance':'🟠 No meals';
