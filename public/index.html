@@ -345,6 +345,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             </div>
           </div>
 
+          <!-- MDE Administrative Review Preparation -->
+          <div class="card" style="margin-top:12px;border:2px solid var(--navy)"><div class="card-hdr" style="background:var(--navy);color:#fff"><h3 style="color:#fff">🏛️ MDE Administrative Review — August 4, 2026</h3>
+            <span class="badge" style="background:rgba(255,255,255,.2);color:#fff">Bob Smith | SmithB9@michigan.gov</span></div>
+            <div class="card-body">
+              <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Arriving 8:45–9:15 AM. Most recent 12 months of records on-site; 3 additional years accessible. Comprehensive on-site evaluation including meal service observation.</div>
+              <div id="reviewPrepDashboard">Loading...</div>
+            </div>
+          </div>
+
           <!-- Training Documentation -->
           <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📚 Training Documentation</h3>
             <button class="btn btn-sm btn-navy" onclick="showAddTraining()">+ Add Training</button></div>
@@ -496,7 +505,24 @@ const MO=['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep
 const ML={oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
 const RATES={breakfast:{A:2.46,B:2.16,C:0.40,addlB:0.30,addlC:2.06},lunch:{A:4.60,B:4.20,C:0.44,addlB:0.40,addlC:4.16},supper:{A:4.60,B:4.20,C:0.44,addlB:0.40,addlC:4.16},snack:{A:1.26,B:0.63,C:0.11,addlB:0.15,addlC:1.15}};
 const BEN_RATE=0.0765;
-const CORE_DOCS=[{key:'application',label:'CACFP Sponsor Application',icon:'📋'},{key:'approval_email',label:'MDE Renewal Approval Email',icon:'✉️'},{key:'agreement',label:'Agreement / Contract with MDE',icon:'📄'},{key:'budget',label:'Budget Narrative',icon:'💰'},{key:'training',label:'Staff Training Certifications',icon:'🎓'}];
+const CORE_DOCS=[
+  {key:'application',label:'CACFP Sponsor Application',icon:'📋'},
+  {key:'approval_email',label:'MDE Renewal Approval Email',icon:'✉️'},
+  {key:'agreement',label:'Agreement / Contract with MDE',icon:'📄'},
+  {key:'budget',label:'Budget Narrative',icon:'💰'},
+  {key:'training',label:'Staff Training Certifications',icon:'🎓'},
+  {key:'civil_rights_poster',label:'Civil Rights — USDA "And Justice for All" Poster',icon:'⚖️'},
+  {key:'civil_rights_statement',label:'Civil Rights — Nondiscrimination Statement',icon:'⚖️'},
+  {key:'civil_rights_procedure',label:'Civil Rights — Complaint Procedure',icon:'⚖️'},
+  {key:'civil_rights_ethnic_niles',label:'Civil Rights — Ethnic/Race Data (Niles)',icon:'⚖️'},
+  {key:'civil_rights_ethnic_peace',label:'Civil Rights — Ethnic/Race Data (Peace)',icon:'⚖️'},
+  {key:'hies_niles',label:'HIES Forms — Niles (by classroom, alphabetical)',icon:'📑'},
+  {key:'hies_peace',label:'HIES Forms — Peace (by classroom, alphabetical)',icon:'📑'},
+  {key:'special_dietary',label:'Special Dietary Needs Accommodations (Physician Statements)',icon:'🏥'},
+  {key:'infant_formula',label:'Infant Formula/Food Sign-Off Forms',icon:'🍼'},
+  {key:'enrollment_forms_niles',label:'Enrollment Forms — Niles (by classroom, alphabetical)',icon:'👶'},
+  {key:'enrollment_forms_peace',label:'Enrollment Forms — Peace (by classroom, alphabetical)',icon:'👶'},
+];
 const fmt=n=>'$'+(Math.abs(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fyYear=m=>activeFY?(['oct','nov','dec'].includes(m)?activeFY.start_year:activeFY.end_year):'';
 
@@ -572,7 +598,7 @@ function navTo(page){
   if(page==='documents')renderProgramDocs();
   if(page==='yer')renderYER();
   if(page==='dashboard')renderDashboard();
-  if(page==='monitoring'){loadMonitoringList();loadTrainingList();}
+  if(page==='monitoring'){loadMonitoringList();loadTrainingList();loadReviewPrepDashboard();}
 }
 
 function monthSubTab(tab){
@@ -1587,6 +1613,10 @@ function renderMonthDocs(){
     {label:'Food costs entered',done:comp.hasFood},
     {label:'Playground staff hours imported',done:mDocs.some(d=>d.doc_type==='playground_staff_hours')},
     {label:'T&A forms generated',done:mDocs.some(d=>d.doc_type==='ta_form')},
+    {label:'Breakfast menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_breakfast')},
+    {label:'AM Snack menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_am_snack')},
+    {label:'Lunch menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_lunch')},
+    {label:'PM Snack menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_pm_snack')},
   ];
 
   // Categorize docs for display
@@ -4009,8 +4039,162 @@ async function completeReview(){
 }
 
 // ═══════════════════════════════════════════════════
-// TRAINING DOCUMENTATION TRACKER
+// MDE REVIEW PREPARATION DASHBOARD
 // ═══════════════════════════════════════════════════
+async function loadReviewPrepDashboard(){
+  const el=document.getElementById('reviewPrepDashboard');
+  if(!el)return;
+  el.innerHTML='<p style="color:var(--muted);font-size:.85rem">Checking readiness...</p>';
+
+  try{
+    // Get all data for the fiscal year
+    const docs=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    const training=await api(`/api/training?fiscal_year_id=${activeFY.id}`);
+    const reviews=await api(`/api/monitoring?fiscal_year_id=${activeFY.id}`);
+    const progDocs=programDocs||[];
+
+    // Check 12 months of data
+    const months=['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep'];
+    const monthsWithAtt={niles:0,peace:0};
+    const monthsWithMeals={niles:0,peace:0};
+    const monthsWithStaff=0;
+    let monthsComplete=0;
+
+    for(const mk of months){
+      const hasNAtt=docs.some(d=>d.month_key===mk&&d.doc_type==='attendance_csv_niles');
+      const hasPAtt=docs.some(d=>d.month_key===mk&&d.doc_type==='attendance_csv_peace');
+      const hasNMeals=docs.some(d=>d.month_key===mk&&d.doc_type==='meal_counts_csv_niles');
+      const hasPMeals=docs.some(d=>d.month_key===mk&&d.doc_type==='meal_counts_csv_peace');
+      if(hasNAtt)monthsWithAtt.niles++;
+      if(hasPAtt)monthsWithAtt.peace++;
+      if(hasNMeals)monthsWithMeals.niles++;
+      if(hasPMeals)monthsWithMeals.peace++;
+      if(hasNAtt&&hasPAtt&&hasNMeals&&hasPMeals)monthsComplete++;
+    }
+
+    // Training checks
+    const hasCACFPTraining=training.some(t=>t.training_type==='CACFP');
+    const hasCRTraining=training.some(t=>t.training_type==='Civil Rights');
+    const hasNewStaffTraining=training.some(t=>t.training_type==='New Staff');
+
+    // Monitoring checks
+    const nilesReviews=reviews.filter(r=>r.center==='niles');
+    const peaceReviews=reviews.filter(r=>r.center==='peace');
+    const nilesUnannounced=nilesReviews.filter(r=>!r.announced).length;
+    const peaceUnannounced=peaceReviews.filter(r=>!r.announced).length;
+    const hasMealObs=reviews.some(r=>r.meal_observed&&r.meal_observed!==''&&!r.announced);
+
+    // Program documents checks
+    const hasProcurement=progDocs.some(d=>(d.doc_type||'').includes('procurement')||(d.filename||'').toLowerCase().includes('procurement'));
+    const hasCivilRights=progDocs.some(d=>(d.doc_type||'').startsWith('civil_rights'));
+    const hasCRPoster=progDocs.some(d=>d.doc_type==='civil_rights_poster');
+    const hasCRStatement=progDocs.some(d=>d.doc_type==='civil_rights_statement');
+    const hasCRProcedure=progDocs.some(d=>d.doc_type==='civil_rights_procedure');
+    const hasCREthnic=progDocs.some(d=>d.doc_type==='civil_rights_ethnic_niles')&&progDocs.some(d=>d.doc_type==='civil_rights_ethnic_peace');
+    const hasEnrollmentN=progDocs.some(d=>d.doc_type==='enrollment_forms_niles');
+    const hasEnrollmentP=progDocs.some(d=>d.doc_type==='enrollment_forms_peace');
+    const hasHIESN=progDocs.some(d=>d.doc_type==='hies_niles');
+    const hasHIESP=progDocs.some(d=>d.doc_type==='hies_peace');
+    const hasSpecialDiet=progDocs.some(d=>d.doc_type==='special_dietary');
+    const hasInfantWaiver=progDocs.some(d=>d.doc_type==='infant_formula');
+
+    // Monthly menu checks
+    let monthsWithMenus=0;
+    for(const mk of months){
+      const hasBk=docs.some(d=>d.month_key===mk&&d.doc_type==='menu_breakfast');
+      const hasLn=docs.some(d=>d.month_key===mk&&d.doc_type==='menu_lunch');
+      const hasAM=docs.some(d=>d.month_key===mk&&d.doc_type==='menu_am_snack');
+      const hasPM=docs.some(d=>d.month_key===mk&&d.doc_type==='menu_pm_snack');
+      if(hasBk&&hasLn&&hasAM&&hasPM)monthsWithMenus++;
+    }
+
+    // Build checklist
+    const sections=[
+      {title:'📅 Monthly Claim Documentation (12 months)',items:[
+        {label:'Niles attendance records',status:monthsWithAtt.niles>=12?'complete':monthsWithAtt.niles>0?'partial':'missing',detail:`${monthsWithAtt.niles}/12 months`},
+        {label:'Peace attendance records',status:monthsWithAtt.peace>=12?'complete':monthsWithAtt.peace>0?'partial':'missing',detail:`${monthsWithAtt.peace}/12 months`},
+        {label:'Niles meal count records',status:monthsWithMeals.niles>=12?'complete':monthsWithMeals.niles>0?'partial':'missing',detail:`${monthsWithMeals.niles}/12 months`},
+        {label:'Peace meal count records',status:monthsWithMeals.peace>=12?'complete':monthsWithMeals.peace>0?'partial':'missing',detail:`${monthsWithMeals.peace}/12 months`},
+        {label:'Staff time & attendance forms',status:docs.some(d=>d.doc_type==='ta_form'||d.doc_type==='staff_package')?'complete':'missing',detail:docs.filter(d=>d.doc_type==='ta_form').length+' T&A forms generated'},
+        {label:'Food cost receipts/invoices',status:docs.some(d=>d.doc_type==='food_receipts')?'complete':'missing',detail:docs.filter(d=>d.doc_type==='food_receipts').length+' receipts uploaded'},
+        {label:'Monthly documentation packages complete',status:monthsComplete>=12?'complete':monthsComplete>0?'partial':'missing',detail:`${monthsComplete}/12 months fully complete`},
+      ]},
+      {title:'📚 Annual Documentation',items:[
+        {label:'CACFP staff training documentation',status:hasCACFPTraining?'complete':'missing',detail:hasCACFPTraining?training.filter(t=>t.training_type==='CACFP').length+' sessions recorded':'No CACFP training logged'},
+        {label:'Civil Rights training documentation',status:hasCRTraining?'complete':'missing',detail:hasCRTraining?training.filter(t=>t.training_type==='Civil Rights').length+' sessions recorded':'No Civil Rights training logged'},
+        {label:'New staff training (before CACFP operations)',status:hasNewStaffTraining?'complete':'na',detail:hasNewStaffTraining?'Documented':'Log if applicable'},
+        {label:'Procurement documentation',status:hasProcurement?'complete':'missing',detail:'Upload to Program Documents'},
+        {label:'Enrollment forms — Niles',status:hasEnrollmentN?'complete':'missing',detail:'By classroom, alphabetical → Program Documents'},
+        {label:'Enrollment forms — Peace',status:hasEnrollmentP?'complete':'missing',detail:'By classroom, alphabetical → Program Documents'},
+        {label:'HIES forms — Niles',status:hasHIESN?'complete':'missing',detail:'By classroom, alphabetical → Program Documents'},
+        {label:'HIES forms — Peace',status:hasHIESP?'complete':'missing',detail:'By classroom, alphabetical → Program Documents'},
+      ]},
+      {title:'⚖️ Civil Rights Compliance',items:[
+        {label:'USDA "And Justice for All" poster',status:hasCRPoster?'complete':'missing',detail:'Upload photo/scan → Program Documents'},
+        {label:'Nondiscrimination statement on materials',status:hasCRStatement?'complete':'missing',detail:'Upload documentation → Program Documents'},
+        {label:'Complaint filing procedure',status:hasCRProcedure?'complete':'missing',detail:'Upload procedure document → Program Documents'},
+        {label:'Ethnic/race data forms — Niles',status:progDocs.some(d=>d.doc_type==='civil_rights_ethnic_niles')?'complete':'missing',detail:'Upload completed forms → Program Documents'},
+        {label:'Ethnic/race data forms — Peace',status:progDocs.some(d=>d.doc_type==='civil_rights_ethnic_peace')?'complete':'missing',detail:'Upload completed forms → Program Documents'},
+      ]},
+      {title:'🔍 Site Monitoring (min 3/year/site, 2+ unannounced, 1+ meal obs)',items:[
+        {label:'Niles site reviews',status:nilesReviews.length>=3?'complete':nilesReviews.length>0?'partial':'missing',detail:`${nilesReviews.length}/3 reviews (${nilesUnannounced} unannounced)`},
+        {label:'Peace site reviews',status:peaceReviews.length>=3?'complete':peaceReviews.length>0?'partial':'missing',detail:`${peaceReviews.length}/3 reviews (${peaceUnannounced} unannounced)`},
+        {label:'Unannounced review with meal observation',status:hasMealObs?'complete':'missing',detail:hasMealObs?'Completed':'Required: at least 1 unannounced with meal obs'},
+        {label:'Five-day meal count reconciliation at each review',status:reviews.filter(r=>r.status==='completed').length>0?'complete':'missing',detail:`${reviews.filter(r=>r.status==='completed').length} completed reviews`},
+      ]},
+      {title:'🍽️ Menu & Meal Pattern',items:[
+        {label:'Monthly menus uploaded (breakfast, AM snack, lunch, PM snack)',status:monthsWithMenus>=12?'complete':monthsWithMenus>0?'partial':'missing',detail:`${monthsWithMenus}/12 months with all 4 menus. Upload via Monthly Wizard.`},
+        {label:'Product documentation (PFS, CN labels)',status:'missing',detail:'Upload to Program Documents → Other'},
+        {label:'Portion posters in classrooms',status:'na',detail:'Generate from Monitoring → Portion Posters'},
+      ]},
+      {title:'📋 Other Required',items:[
+        {label:'Special dietary needs / physician statements',status:hasSpecialDiet?'complete':'na',detail:hasSpecialDiet?'Uploaded to Program Documents':'Upload if applicable → Program Documents'},
+        {label:'Infant formula/food sign-off forms',status:hasInfantWaiver?'complete':'missing',detail:'Required for each infant when parent provides formula → Program Documents'},
+        {label:'General ledger / NFSA financial tracking',status:'complete',detail:'Available on YER page'},
+      ]},
+    ];
+
+    let totalItems=0,completeItems=0,partialItems=0,missingItems=0;
+    for(const sec of sections)for(const item of sec.items){
+      totalItems++;
+      if(item.status==='complete')completeItems++;
+      else if(item.status==='partial')partialItems++;
+      else if(item.status==='missing')missingItems++;
+    }
+    const pct=totalItems>0?Math.round(completeItems/totalItems*100):0;
+
+    let html=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+      <div style="padding:10px;background:var(--bg);border-radius:8px;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:var(--navy)">${pct}%</div><div style="font-size:.7rem;color:var(--muted)">Ready</div></div>
+      <div style="padding:10px;background:#e8f5e9;border-radius:8px;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:var(--success)">${completeItems}</div><div style="font-size:.7rem;color:var(--muted)">Complete</div></div>
+      <div style="padding:10px;background:#fff8e1;border-radius:8px;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:#8D6E00">${partialItems}</div><div style="font-size:.7rem;color:var(--muted)">In Progress</div></div>
+      <div style="padding:10px;background:#fce4ec;border-radius:8px;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:var(--error)">${missingItems}</div><div style="font-size:.7rem;color:var(--muted)">Missing</div></div>
+    </div>`;
+
+    for(const sec of sections){
+      html+=`<div style="margin-bottom:12px"><div style="font-weight:700;font-size:.9rem;color:var(--navy);margin-bottom:6px">${sec.title}</div>`;
+      for(const item of sec.items){
+        const icon=item.status==='complete'?'✅':item.status==='partial'?'🟡':item.status==='na'?'⬜':'🔴';
+        const color=item.status==='complete'?'var(--success)':item.status==='partial'?'#8D6E00':item.status==='na'?'var(--muted)':'var(--error)';
+        html+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f5f5f5">
+          <span style="font-size:1rem">${icon}</span>
+          <div style="flex:1"><div style="font-size:.85rem;font-weight:500">${item.label}</div>
+            <div style="font-size:.75rem;color:${color}">${item.detail}</div></div>
+        </div>`;
+      }
+      html+=`</div>`;
+    }
+
+    html+=`<div style="margin-top:12px;padding:10px;background:#e3f2fd;border-radius:8px;font-size:.8rem">
+      <strong>Days until review:</strong> ${Math.ceil((new Date('2026-08-04')-new Date())/(1000*60*60*24))} days
+      <br><strong>Reviewer:</strong> Bob Smith (SmithB9@michigan.gov) | Arriving 8:45–9:15 AM
+      <br><strong>Tip:</strong> Upload missing documents to Program Documents. Complete monthly reporting through the wizard. Schedule remaining site monitoring reviews.
+    </div>`;
+
+    el.innerHTML=html;
+  }catch(e){
+    el.innerHTML=`<div class="alert alert-err">Error loading prep data: ${e.message}</div>`;
+  }
+}
 async function loadTrainingList(){
   try{
     const records=await api(`/api/training?fiscal_year_id=${activeFY.id}`);
@@ -4119,6 +4303,10 @@ const WIZ_STEPS=[
   {id:'wiz_mealcounts_peace',label:'Meal Counts — Peace Blvd',icon:'🍽️',center:'peace',desc:'Upload the Peace Boulevard CACFP Detailed report from Playground App.',accept:'.csv',docType:'meal_counts_csv_peace'},
   {id:'wiz_cdc_niles',label:'CDC Statement — Niles',icon:'🏥',center:'niles',desc:'Upload the Niles CDC statement for this month to calculate eligibility percentage.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_niles'},
   {id:'wiz_cdc_peace',label:'CDC Statement — Peace Blvd',icon:'🏥',center:'peace',desc:'Upload the Peace Boulevard CDC statement for this month.',accept:'.pdf,.png,.jpg',docType:'cdc_statement_peace'},
+  {id:'wiz_menu_breakfast',label:'Menu — Breakfast',icon:'🥞',center:'both',desc:'Upload the breakfast menu for this month. Include month, dates, and specific food components for each day.',accept:'.pdf,.png,.jpg,.jpeg,.doc,.docx',docType:'menu_breakfast'},
+  {id:'wiz_menu_amsnack',label:'Menu — AM Snack',icon:'🍎',center:'both',desc:'Upload the AM snack menu for this month.',accept:'.pdf,.png,.jpg,.jpeg,.doc,.docx',docType:'menu_am_snack'},
+  {id:'wiz_menu_lunch',label:'Menu — Lunch',icon:'🥗',center:'both',desc:'Upload the lunch menu for this month. Must include all required components for each age group.',accept:'.pdf,.png,.jpg,.jpeg,.doc,.docx',docType:'menu_lunch'},
+  {id:'wiz_menu_pmsnack',label:'Menu — PM Snack',icon:'🍪',center:'both',desc:'Upload the PM snack menu for this month.',accept:'.pdf,.png,.jpg,.jpeg,.doc,.docx',docType:'menu_pm_snack'},
   {id:'wiz_playground_niles',label:'Staff Hours — Niles',icon:'👥',center:'niles',desc:'Upload the Niles Daily Staff Hours report from Playground App. This provides start/end times and breaks for each staff member to complete their T&A forms.',accept:'.csv',docType:'playground_staff_hours_niles',isPlayground:true},
   {id:'wiz_playground_peace',label:'Staff Hours — Peace Blvd',icon:'👥',center:'peace',desc:'Upload the Peace Boulevard Daily Staff Hours report from Playground App.',accept:'.csv',docType:'playground_staff_hours_peace',isPlayground:true},
   {id:'wiz_foodcost',label:'Food Receipts & Invoices',icon:'🧾',center:'both',desc:'Upload all food vendor receipts and invoices for this month. Include receipts from JA Foods, Amazon, Sam\'s Club, grocery stores, and any other food suppliers. You can upload multiple files — each receipt total will be extracted and added to the monthly food cost.',accept:'.pdf,.png,.jpg,.jpeg',docType:'food_receipts',isMultiUpload:true},
