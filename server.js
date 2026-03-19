@@ -2125,6 +2125,204 @@ app.get('/api/adult-meals', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── CACFP MEAL PATTERN REQUIREMENTS ──────────────────────
+const MEAL_PATTERNS = {
+  'Infants 0-5mo': {
+    breakfast: { components: ['Iron-fortified formula or breast milk: 4-6 fl oz'] },
+    lunch: { components: ['Iron-fortified formula or breast milk: 4-6 fl oz'] },
+    snack: { components: ['Iron-fortified formula or breast milk: 4-6 fl oz'] }
+  },
+  'Infants 6-11mo': {
+    breakfast: { components: ['Iron-fortified formula or breast milk: 6-8 fl oz', 'Iron-fortified infant cereal: 0-4 tbsp (as developmentally ready)'] },
+    lunch: { components: ['Iron-fortified formula or breast milk: 6-8 fl oz', 'Iron-fortified infant cereal and/or meat/meat alt: 0-4 tbsp', 'Vegetable, fruit, or both: 0-4 tbsp'] },
+    snack: { components: ['Iron-fortified formula or breast milk: 2-4 fl oz', 'Crackers/bread or infant cereal: 0-½ slice or 0-4 tbsp'] }
+  },
+  'Children 1-2yr': {
+    breakfast: { components: ['Milk (unflavored whole): ½ cup', 'Grains: ½ slice bread or ¼ cup cereal', 'Fruit, vegetable, or both: ¼ cup'] },
+    lunch: { components: ['Milk (unflavored whole): ½ cup', 'Meat/meat alternate: 1 oz', 'Vegetable: ⅛ cup', 'Fruit: ⅛ cup', 'Grains: ½ slice bread'] },
+    snack: { components: ['Select 2 of 5 components:', 'Milk: ½ cup', 'Meat/meat alternate: ½ oz', 'Vegetable, fruit, or both: ½ cup', 'Grains: ½ slice bread'] }
+  },
+  'Children 3-5yr': {
+    breakfast: { components: ['Milk (unflavored low-fat or fat-free): ¾ cup', 'Grains: ½ slice bread or ⅓ cup cereal', 'Fruit, vegetable, or both: ½ cup'] },
+    lunch: { components: ['Milk (unflavored low-fat or fat-free): ¾ cup', 'Meat/meat alternate: 1½ oz', 'Vegetable: ¼ cup', 'Fruit: ¼ cup', 'Grains: ½ slice bread'] },
+    snack: { components: ['Select 2 of 5 components:', 'Milk: ½ cup', 'Meat/meat alternate: ½ oz', 'Vegetable, fruit, or both: ½ cup', 'Grains: ½ slice bread'] }
+  },
+  'Children 6-12yr': {
+    breakfast: { components: ['Milk (unflavored or flavored low-fat/fat-free): 1 cup', 'Grains: 1 slice bread or ¾ cup cereal', 'Fruit, vegetable, or both: ½ cup'] },
+    lunch: { components: ['Milk (unflavored or flavored low-fat/fat-free): 1 cup', 'Meat/meat alternate: 2 oz', 'Vegetable: ½ cup', 'Fruit: ¼ cup', 'Grains: 1 slice bread'] },
+    snack: { components: ['Select 2 of 5 components:', 'Milk: 1 cup', 'Meat/meat alternate: 1 oz', 'Vegetable, fruit, or both: ¾ cup', 'Grains: 1 slice bread'] }
+  }
+};
+
+// Map classroom age groups to meal pattern categories
+const CLASSROOM_AGE_MAP = {
+  'Infants': ['Infants 0-5mo', 'Infants 6-11mo'],
+  'Infants/Toddlers': ['Infants 6-11mo', 'Children 1-2yr'],
+  'Toddlers': ['Children 1-2yr'],
+  '2s': ['Children 1-2yr'],
+  '2½': ['Children 1-2yr', 'Children 3-5yr'],
+  '2s and 3s': ['Children 1-2yr', 'Children 3-5yr'],
+  '3s': ['Children 3-5yr'],
+  'Multi-age 2½-4': ['Children 1-2yr', 'Children 3-5yr'],
+  'Multi-age/School-age': ['Children 3-5yr', 'Children 6-12yr'],
+  '4s and 5s': ['Children 3-5yr'],
+  'School-age': ['Children 6-12yr']
+};
+
+// Generate classroom portion poster .docx
+app.post('/api/generate-portion-poster', authCheck, async (req, res) => {
+  try {
+    const { center, classroom_name, classroom_ages } = req.body;
+    const ageGroups = CLASSROOM_AGE_MAP[classroom_ages] || ['Children 3-5yr'];
+    const navy = '1B2A4A'; const gold = 'C5972C';
+
+    const border = { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' };
+    const borders = { top: border, bottom: border, left: border, right: border };
+    const cm = { top: 80, bottom: 80, left: 120, right: 120 };
+
+    function cell(text, opts = {}) {
+      return new TableCell({
+        borders, margins: cm,
+        width: opts.w ? { size: opts.w, type: WidthType.DXA } : undefined,
+        shading: opts.bg ? { type: ShadingType.CLEAR, fill: opts.bg } : undefined,
+        children: [new Paragraph({ alignment: opts.align || AlignmentType.LEFT,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 22, font: 'Arial', color: opts.color || '333333' })] })]
+      });
+    }
+
+    const sections = [];
+    for (const ageGroup of ageGroups) {
+      const pattern = MEAL_PATTERNS[ageGroup];
+      if (!pattern) continue;
+
+      const tableWidth = 9360;
+      const rows = [];
+
+      // Header
+      rows.push(new TableRow({ children: [
+        cell('Meal', { bold: true, bg: navy, color: 'FFFFFF', w: 1800, sz: 24 }),
+        cell('Required Components & Minimum Portions', { bold: true, bg: navy, color: 'FFFFFF', w: 7560, sz: 24 }),
+      ] }));
+
+      for (const [meal, data] of Object.entries(pattern)) {
+        const mealLabel = meal.charAt(0).toUpperCase() + meal.slice(1);
+        const bg = meal === 'breakfast' ? 'FFF8E1' : meal === 'lunch' ? 'E8F5E9' : 'E3F2FD';
+        for (let i = 0; i < data.components.length; i++) {
+          rows.push(new TableRow({ children: [
+            cell(i === 0 ? mealLabel : '', { bold: i === 0, bg: i === 0 ? bg : undefined, w: 1800, sz: 22 }),
+            cell(data.components[i], { w: 7560, sz: 22, bg: i === 0 ? bg : undefined }),
+          ] }));
+        }
+      }
+
+      sections.push({
+        properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 720, bottom: 720, left: 1440, right: 1440 } } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [
+            new TextRun({ text: "The Children's Center", bold: true, size: 32, font: 'Arial', color: navy }) ] }),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+            new TextRun({ text: 'CACFP Meal Pattern Requirements', size: 28, font: 'Arial', color: gold }) ] }),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [
+            new TextRun({ text: `${classroom_name} — ${ageGroup}`, bold: true, size: 36, font: 'Arial', color: navy }) ] }),
+          new Table({ width: { size: tableWidth, type: WidthType.DXA }, columnWidths: [1800, 7560], rows }),
+          new Paragraph({ spacing: { before: 200 }, alignment: AlignmentType.CENTER, children: [
+            new TextRun({ text: 'Ensure all components are served in the minimum portions listed above.', size: 20, font: 'Arial', color: '666666', italics: true }) ] }),
+          new Paragraph({ spacing: { before: 60 }, alignment: AlignmentType.CENTER, children: [
+            new TextRun({ text: 'Questions? Contact your CACFP coordinator.', size: 18, font: 'Arial', color: '999999' }) ] }),
+        ]
+      });
+    }
+
+    if (sections.length === 0) return res.status(400).json({ error: 'No meal patterns found for this age group' });
+
+    const doc = new Document({ sections });
+    const buffer = await Packer.toBuffer(doc);
+    const filename = `Portion_Poster_${classroom_name.replace(/\s/g, '_')}.docx`;
+
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// Generate all classroom posters for a center
+app.post('/api/generate-all-posters', authCheck, async (req, res) => {
+  try {
+    const { center } = req.body;
+    const rooms = CLASSROOMS[center] || [];
+    const navy = '1B2A4A'; const gold = 'C5972C';
+
+    const border = { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' };
+    const borders = { top: border, bottom: border, left: border, right: border };
+    const cm = { top: 80, bottom: 80, left: 120, right: 120 };
+    function cell(text, opts = {}) {
+      return new TableCell({
+        borders, margins: cm,
+        width: opts.w ? { size: opts.w, type: WidthType.DXA } : undefined,
+        shading: opts.bg ? { type: ShadingType.CLEAR, fill: opts.bg } : undefined,
+        children: [new Paragraph({ alignment: opts.align || AlignmentType.LEFT,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 22, font: 'Arial', color: opts.color || '333333' })] })]
+      });
+    }
+
+    const sections = [];
+    for (const room of rooms) {
+      const ageGroups = CLASSROOM_AGE_MAP[room.ages] || ['Children 3-5yr'];
+      for (const ageGroup of ageGroups) {
+        const pattern = MEAL_PATTERNS[ageGroup];
+        if (!pattern) continue;
+        const tableWidth = 9360;
+        const rows = [new TableRow({ children: [
+          cell('Meal', { bold: true, bg: navy, color: 'FFFFFF', w: 1800, sz: 24 }),
+          cell('Required Components & Minimum Portions', { bold: true, bg: navy, color: 'FFFFFF', w: 7560, sz: 24 }),
+        ] })];
+        for (const [meal, data] of Object.entries(pattern)) {
+          const mealLabel = meal.charAt(0).toUpperCase() + meal.slice(1);
+          const bg = meal === 'breakfast' ? 'FFF8E1' : meal === 'lunch' ? 'E8F5E9' : 'E3F2FD';
+          for (let i = 0; i < data.components.length; i++) {
+            rows.push(new TableRow({ children: [
+              cell(i === 0 ? mealLabel : '', { bold: i === 0, bg: i === 0 ? bg : undefined, w: 1800, sz: 22 }),
+              cell(data.components[i], { w: 7560, sz: 22, bg: i === 0 ? bg : undefined }),
+            ] }));
+          }
+        }
+        sections.push({
+          properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 720, bottom: 720, left: 1440, right: 1440 } } },
+          children: [
+            new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [
+              new TextRun({ text: "The Children's Center", bold: true, size: 32, font: 'Arial', color: navy }) ] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+              new TextRun({ text: 'CACFP Meal Pattern Requirements', size: 28, font: 'Arial', color: gold }) ] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [
+              new TextRun({ text: `${room.name} — ${ageGroup}`, bold: true, size: 36, font: 'Arial', color: navy }) ] }),
+            new Table({ width: { size: tableWidth, type: WidthType.DXA }, columnWidths: [1800, 7560], rows }),
+            new Paragraph({ spacing: { before: 200 }, alignment: AlignmentType.CENTER, children: [
+              new TextRun({ text: 'Ensure all components are served in the minimum portions listed above.', size: 20, font: 'Arial', color: '666666', italics: true }) ] }),
+          ]
+        });
+      }
+    }
+
+    const doc = new Document({ sections });
+    const buffer = await Packer.toBuffer(doc);
+    const cLabel = center === 'niles' ? 'Niles' : 'Peace';
+    const filename = `All_Portion_Posters_${cLabel}.docx`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// Get meal pattern requirements for a classroom (for monitoring worksheet)
+app.get('/api/meal-patterns/:ages', authCheck, (req, res) => {
+  const ageGroups = CLASSROOM_AGE_MAP[req.params.ages] || ['Children 3-5yr'];
+  const patterns = {};
+  for (const ag of ageGroups) {
+    if (MEAL_PATTERNS[ag]) patterns[ag] = MEAL_PATTERNS[ag];
+  }
+  res.json(patterns);
+});
+
 // ── MERGE DUPLICATE STAFF ─────────────────────────────────
 app.post('/api/staff/merge', authCheck, async (req, res) => {
   try {
