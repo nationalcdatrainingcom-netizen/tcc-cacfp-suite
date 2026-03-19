@@ -322,21 +322,41 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <!-- MONITORING -->
       <div class="page" id="page-monitoring">
         <h2 style="margin-bottom:20px">Monitoring</h2>
-        <div class="card"><div class="card-hdr"><h3>🔍 CACFP Monitoring</h3><span class="badge" style="background:#fff3e0;color:#e65100">Coming Soon</span></div>
-          <div class="card-body">
-            <p style="color:var(--muted);margin-bottom:16px">The monitoring component will include site visit documentation, corrective action tracking, and compliance review tools.</p>
-            <div id="auditCrossCheck"></div>
+
+        <!-- Review List / New Review -->
+        <div id="monitoringHome">
+          <div class="card"><div class="card-hdr"><h3>🔍 Site Monitoring Reviews</h3>
+            <button class="btn btn-sm btn-navy" onclick="startNewReview()">+ New Review</button></div>
+            <div class="card-body" id="monitoringList">Loading...</div>
+          </div>
+
+          <!-- New Review Form -->
+          <div class="card" id="newReviewForm" style="display:none;margin-top:12px">
+            <div class="card-hdr"><h3>Start New Monitoring Review</h3></div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="form-group"><label>Center</label><select id="monCenter"><option value="niles">Niles</option><option value="peace">Peace Boulevard</option></select></div>
+                <div class="form-group"><label>Review Date</label><input type="date" id="monDate" value="${new Date().toISOString().split('T')[0]}"></div>
+                <div class="form-group"><label>Type</label><select id="monAnnounced"><option value="false">Unannounced</option><option value="true">Announced</option></select></div>
+                <div class="form-group"><label>Meal to Observe</label><select id="monMeal"><option value="">Select...</option><option value="Breakfast">Breakfast</option><option value="AM Snack">AM Snack</option><option value="Lunch">Lunch</option><option value="PM Snack">PM Snack</option><option value="Supper">Supper</option></select></div>
+                <div class="form-group"><label>Monitor Name</label><input type="text" id="monMonitor" value="Mary Wardlaw"></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-navy" onclick="createReview()">Start Review</button><button class="btn btn-outline" onclick="hideNewReview()">Cancel</button></div>
+            </div>
+          </div>
+
+          <!-- Audit Cross-Check -->
+          <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📋 Attendance vs Meal Count Cross-Check</h3></div>
+            <div class="card-body">
+              <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Compares child attendance records against meal counts to flag discrepancies.</p>
+              <button class="btn btn-primary" onclick="runAuditCrossCheck()">🔍 Run Cross-Check for Current Month</button>
+              <div id="crossCheckResults" style="margin-top:12px"></div>
+            </div>
           </div>
         </div>
 
-        <!-- Audit Cross-Check -->
-        <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📋 Attendance vs Meal Count Cross-Check</h3></div>
-          <div class="card-body">
-            <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Compares child attendance records against meal counts to flag discrepancies.</p>
-            <button class="btn btn-primary" onclick="runAuditCrossCheck()">🔍 Run Cross-Check for Current Month</button>
-            <div id="crossCheckResults" style="margin-top:12px"></div>
-          </div>
-        </div>
+        <!-- Active Review Form (hidden until a review is opened) -->
+        <div id="monitoringFormView" style="display:none"></div>
       </div>
 
       <!-- SETTINGS -->
@@ -488,6 +508,7 @@ function navTo(page){
   if(page==='documents')renderProgramDocs();
   if(page==='yer')renderYER();
   if(page==='dashboard')renderDashboard();
+  if(page==='monitoring')loadMonitoringList();
 }
 
 function monthSubTab(tab){
@@ -3220,6 +3241,329 @@ async function runAuditCrossCheck(){
   }catch(e){
     panel.innerHTML=`<div class="alert alert-err">Error: ${e.message}</div>`;
   }
+}
+
+// ═══════════════════════════════════════════════════
+// MONITORING SYSTEM
+// ═══════════════════════════════════════════════════
+let activeReview=null,reviewPrefill=null;
+
+async function loadMonitoringList(){
+  try{
+    const reviews=await api(`/api/monitoring?fiscal_year_id=${activeFY.id}`);
+    const el=document.getElementById('monitoringList');
+    if(!reviews.length){el.innerHTML='<p style="color:var(--muted);text-align:center;padding:16px">No monitoring reviews yet. Click + New Review to start.</p>';return;}
+    let html='';
+    for(const r of reviews){
+      const cLabel=r.center==='niles'?'Niles':'Peace';
+      const statusBadge=r.status==='completed'?'<span class="badge" style="background:#e8f5e9;color:var(--success)">Completed</span>':'<span class="badge" style="background:#fff3e0;color:#e65100">In Progress</span>';
+      html+=`<div class="roster-row">
+        <div><div class="name">${cLabel} — ${new Date(r.review_date).toLocaleDateString()}</div>
+        <div class="detail">${r.announced?'Announced':'Unannounced'} | ${r.meal_observed||'No meal observed'} | Monitor: ${r.monitor_name||'—'}</div></div>
+        <div style="display:flex;gap:6px;align-items:center">${statusBadge}
+          <button class="btn btn-sm btn-primary" onclick="openReview(${r.id})">Open</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteReview(${r.id})">✕</button>
+        </div>
+      </div>`;
+    }
+    el.innerHTML=html;
+  }catch(e){}
+}
+
+function startNewReview(){document.getElementById('newReviewForm').style.display='block';}
+function hideNewReview(){document.getElementById('newReviewForm').style.display='none';}
+
+async function createReview(){
+  try{
+    const r=await api('/api/monitoring',{method:'POST',body:{
+      fiscal_year_id:activeFY.id,
+      center:document.getElementById('monCenter').value,
+      review_date:document.getElementById('monDate').value,
+      announced:document.getElementById('monAnnounced').value==='true',
+      meal_observed:document.getElementById('monMeal').value,
+      monitor_name:document.getElementById('monMonitor').value
+    }});
+    hideNewReview();
+    openReview(r.id);
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function deleteReview(id){
+  if(!confirm('Delete this monitoring review?'))return;
+  try{await api(`/api/monitoring/${id}`,{method:'DELETE'});loadMonitoringList();showToast('Deleted','ok');}catch(e){}
+}
+
+async function openReview(id){
+  try{
+    activeReview=await api(`/api/monitoring/${id}`);
+    reviewPrefill=await api(`/api/monitoring/${id}/prefill`);
+    document.getElementById('monitoringHome').style.display='none';
+    renderMonitoringForm();
+    document.getElementById('monitoringFormView').style.display='block';
+  }catch(e){showToast('Error loading review: '+e.message,'err');}
+}
+
+function closeReview(){
+  document.getElementById('monitoringFormView').style.display='none';
+  document.getElementById('monitoringHome').style.display='block';
+  loadMonitoringList();
+}
+
+function renderMonitoringForm(){
+  const r=activeReview;const p=reviewPrefill;
+  const fd=r.form_data||{};
+  const cLabel=r.center==='niles'?'Niles':'Peace Boulevard';
+  const rooms=p.classrooms||[];
+
+  // Helper for Yes/No/NA touch buttons
+  const ynaBtns=(key,cur)=>`<div style="display:flex;gap:4px" data-yna="${key}">
+    <button class="yna-btn ${cur==='Y'?'sel-y':''}" onclick="setYNA('${key}','Y')">Yes</button>
+    <button class="yna-btn ${cur==='N'?'sel-n':''}" onclick="setYNA('${key}','N')">No</button>
+    <button class="yna-btn ${cur==='NA'?'sel-na':''}" onclick="setYNA('${key}','NA')">N/A</button>
+  </div>`;
+  const cmtInput=(key,val)=>`<input type="text" class="mon-cmt" value="${(val||'').replace(/"/g,'&quot;')}" onchange="setComment('${key}',this.value)" placeholder="Comments">`;
+
+  // Build all sections
+  const SECTIONS=[
+    {title:'Section 100. General Information',items:[
+      {num:'101',text:'The facility\'s license is current.',extra:'License expiration date:'},
+      {num:'102',text:'The facility is within its licensed capacity.',extra:'License capacity:'},
+      {num:'103',text:'The facility offers drinking water to participants throughout the day.'},
+    ]},
+    {title:'Section 200. Training',items:[
+      {num:'201',text:'NEW FACILITIES/NEW STAFF: Staff have received training from the sponsor prior to CACFP operations/responsibilities.'},
+      {num:'202',text:'The facility conducted annual CACFP training for all key staff.'},
+      {num:'203',text:'Sponsor training documentation includes: date(s), location(s), topics, names and/or signatures of participants.'},
+    ]},
+    {title:'Section 300. Civil Rights',items:[
+      {num:'301',text:'The sponsor has ensured there is no separation by race, color, sex, age, disability or national origin in the classroom, eating areas, seating arrangements, program administration, or instructional records.'},
+      {num:'302',text:'Potentially eligible persons and households have an equal opportunity to participate in CACFP.'},
+      {num:'303',text:'The current USDA "And Justice for All" poster is displayed in a conspicuous location.'},
+      {num:'304',text:'The current USDA nondiscrimination statement is on all materials distributed to the public and on websites.'},
+      {num:'305',text:'Front-line facility staff have been trained on civil rights requirements and can verbalize action to take if a parent/guardian/participant desires to file a complaint.'},
+    ]},
+    {title:'Section 400. Records and Recordkeeping',items:[
+      {num:'401',text:'A daily count is maintained for all meals served to adults who work in the program.'},
+      {num:'402',text:'The facility claims no more than 2 meals/1 snack or 1 meal/2 snacks per participant per day.'},
+      {num:'405',text:'Meals are only claimed for participants within the CACFP age requirements.'},
+      {num:'406',text:'Facility daily attendance records are maintained.'},
+      {num:'407',text:'Meal attendance is taken at the point of service.'},
+      {num:'408',text:'Meal attendance records are available and up to date.'},
+    ]},
+    {title:'Section 500. Menus',items:[
+      {num:'501',text:'Menu(s) meet program requirements and include: month, date and specific components.'},
+      {num:'502',text:'Menu(s) are available for meals claimed.'},
+      {num:'503',text:'Nutritional labels and/or product formulation statements have been verified.'},
+      {num:'504',text:'There is a procedure in place for site staff to record menu substitutions.'},
+      {num:'505',text:'100% juice is limited to one meal/snack service per day.'},
+      {num:'506',text:'At least one serving of grains per day is whole grain or whole grain-rich.'},
+      {num:'507',text:'Grain based desserts are not served as creditable components.'},
+      {num:'508',text:'A meat/meat alternate was not served more than 3x weekly to replace the entire grain component at breakfast.'},
+      {num:'509',text:'Yogurt contains no more than 23 grams of sugar per 6 ounces.'},
+      {num:'510',text:'Breakfast cereals contain no more than 6 grams of sugar per dry ounce.'},
+      {num:'511',text:'At lunch and supper at least 1 vegetable and 1 fruit or 2 vegetables are served.'},
+      {num:'512',text:'Unflavored whole milk is served to children ages 1-2 years old.'},
+      {num:'513',text:'Unflavored low-fat milk is served to children ages 2-5 years old.'},
+      {num:'514',text:'CACFP Request for Special Dietary Needs Accommodations forms are available.'},
+      {num:'516',text:'The facility offers formula and developmentally appropriate foods to infants.'},
+      {num:'517',text:'An Infant Formula/Food Sign-off form is on file for each child when parent provides formula.'},
+    ]},
+    {title:'Section 600. Meal Observation',isSpecial:'meal_observation'},
+    {title:'Section 700. Health and Safety',items:[
+      {num:'701',text:'Were imminent threats to the health and safety of participants observed? If yes, describe and notify authorities.'},
+    ]},
+    {title:'Section 800. Enrollment',items:[
+      {num:'801',text:'Current enrollment documentation is on file for each participant.'},
+      {num:'802',text:'Enrollment forms are updated annually.'},
+      {num:'803',text:'Enrollment forms contain: Participant Name, Dated signature, Normal days and hours, Meals normally received.'},
+      {num:'804',text:'Are enrolled participants informed of WIC benefits?'},
+      {num:'805',text:'The Parent Information Sheet is distributed to enrolled participants.'},
+    ]},
+    {title:'Section 900. Meal Count Reconciliation',isSpecial:'five_day'},
+    {title:'Section 1000. Previous Reviews and Findings',isSpecial:'findings'},
+  ];
+
+  let html=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h2 style="margin:0">🔍 Monitoring Review — ${cLabel}</h2>
+    <div style="display:flex;gap:8px"><button class="btn btn-sm btn-outline" onclick="closeReview()">← Back</button>
+      <button class="btn btn-sm btn-success" onclick="saveReview()">💾 Save</button>
+      <button class="btn btn-sm btn-navy" onclick="completeReview()">✅ Complete</button></div>
+  </div>`;
+
+  // Header info
+  html+=`<div class="card" style="margin-bottom:12px"><div class="card-body">
+    <div style="text-align:center;margin-bottom:8px;font-size:.85rem;color:var(--muted)">Child and Adult Care Food Program — Monitoring Review for Sponsored Facilities</div>
+    <div class="form-grid">
+      <div class="form-group"><label>${r.announced?'☑':'☐'} Announced  ${!r.announced?'☑':'☐'} Unannounced</label></div>
+      <div class="form-group"><label>Meal Observed</label><input type="text" value="${r.meal_observed||''}" onchange="activeReview.meal_observed=this.value"></div>
+      <div class="form-group"><label>Sponsor Name & Agreement #</label><input type="text" value="The Children's Center, Inc. #990004457" readonly></div>
+      <div class="form-group"><label>Date</label><input type="date" value="${r.review_date?r.review_date.split('T')[0]:''}" onchange="activeReview.review_date=this.value"></div>
+      <div class="form-group"><label>Facility Name & Address</label><input type="text" value="${cLabel}" readonly></div>
+      <div class="form-group"><label>Arrival Time</label><input type="time" value="${fd.arrival_time||''}" onchange="setField('arrival_time',this.value)"></div>
+    </div>
+  </div></div>`;
+
+  // CSS for YNA buttons
+  html+=`<style>
+    .yna-btn{padding:8px 14px;border:1.5px solid var(--border);border-radius:6px;background:#fff;font-size:.85rem;font-weight:600;cursor:pointer;min-width:44px;min-height:44px;transition:all .15s}
+    .yna-btn:active{transform:scale(.95)}
+    .yna-btn.sel-y{background:#e8f5e9;border-color:var(--success);color:var(--success)}
+    .yna-btn.sel-n{background:#fce4ec;border-color:var(--error);color:var(--error)}
+    .yna-btn.sel-na{background:#f5f5f5;border-color:var(--muted);color:var(--muted)}
+    .mon-cmt{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:.8rem}
+    .mon-item{display:grid;grid-template-columns:40px 1fr 140px 1fr;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #f0eeea}
+    .mon-item .num{font-weight:700;color:var(--navy);font-size:.85rem}
+    .mon-item .q{font-size:.85rem;line-height:1.3}
+    @media(max-width:768px){.mon-item{grid-template-columns:1fr;gap:6px}.mon-item .num{font-size:.9rem}}
+  </style>`;
+
+  // Render each section
+  for(const sec of SECTIONS){
+    html+=`<div class="card" style="margin-bottom:8px"><div class="card-hdr"><h3 style="font-size:.95rem">${sec.title}</h3></div><div class="card-body">`;
+
+    if(sec.isSpecial==='meal_observation'){
+      // Meal observation with classroom grid
+      html+=`<div style="font-size:.85rem;font-weight:600;margin-bottom:8px">Meal Observed: ${r.meal_observed||'(select above)'}</div>`;
+      html+=`<div style="margin-bottom:12px;font-size:.85rem;font-weight:600">Participants observed at meal service:</div>`;
+      html+=`<div style="overflow-x:auto"><table class="staff-table" style="font-size:.8rem"><thead><tr><th>Room</th><th>Participants</th><th>Program Adults</th><th>Point of Service</th><th>Milk %</th><th>Comments</th></tr></thead><tbody>`;
+      for(const rm of rooms){
+        const rk='room_'+rm.name.replace(/\s/g,'_');
+        html+=`<tr><td style="font-weight:500;white-space:nowrap">${rm.name}<br><span style="font-size:.7rem;color:var(--muted)">${rm.ages}</span></td>
+          <td><input type="number" class="mon-cmt" style="width:60px" value="${fd[rk+'_parts']||''}" onchange="setField('${rk}_parts',this.value)"></td>
+          <td><input type="number" class="mon-cmt" style="width:60px" value="${fd[rk+'_adults']||''}" onchange="setField('${rk}_adults',this.value)"></td>
+          <td><input type="text" class="mon-cmt" style="width:80px" value="${fd[rk+'_pos']||''}" onchange="setField('${rk}_pos',this.value)"></td>
+          <td><input type="text" class="mon-cmt" style="width:60px" value="${fd[rk+'_milk']||''}" onchange="setField('${rk}_milk',this.value)"></td>
+          <td><input type="text" class="mon-cmt" value="${fd[rk+'_cmt']||''}" onchange="setField('${rk}_cmt',this.value)"></td></tr>`;
+      }
+      html+=`</tbody></table></div>`;
+      // Meal observation Y/N questions 603-610
+      const mealQs=[
+        {num:'603',text:'Minimum portion served met meal/snack requirements for age groups.'},
+        {num:'604',text:'Procedures are in place to ensure minimum portions are served.'},
+        {num:'605',text:'Meal/snack served met the appropriate meal pattern for components and age.'},
+        {num:'606',text:'Meal/snack served was the same as on posted menu for the day.'},
+        {num:'607',text:'The meal/snack served is within the approved meal service times.'},
+        {num:'608',text:'Meal attendance was taken at the point of service during meal observed.'},
+        {num:'609',text:'Was the appropriate variety of milk served to each age group?'},
+      ];
+      for(const q of mealQs){
+        html+=`<div class="mon-item"><div class="num">${q.num}</div><div class="q">${q.text}</div>${ynaBtns(q.num,fd[q.num])}${cmtInput(q.num+'_cmt',fd[q.num+'_cmt'])}</div>`;
+      }
+    }else if(sec.isSpecial==='five_day'){
+      html+=`<div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Complete the Five-Day Aggregate Reconciliation using the last full week of the previous month (${ML[reviewPrefill.prevMonth]||reviewPrefill.prevMonth}).</div>`;
+      html+=`<div style="overflow-x:auto"><table class="staff-table" style="font-size:.8rem"><thead><tr><th>Date</th><th># Attendance</th><th>Breakfast MC</th><th>AM Snack MC</th><th>Lunch MC</th><th>PM Snack MC</th><th>Discrepancy?</th></tr></thead><tbody>`;
+      for(let d=1;d<=5;d++){
+        const dk='fiveday_'+d;
+        html+=`<tr>
+          <td><input type="text" class="mon-cmt" style="width:80px" value="${fd[dk+'_date']||''}" onchange="setField('${dk}_date',this.value)" placeholder="Date"></td>
+          <td><input type="number" class="mon-cmt" style="width:60px" value="${fd[dk+'_att']||''}" onchange="setField('${dk}_att',this.value)"></td>
+          <td><input type="number" class="mon-cmt" style="width:60px" value="${fd[dk+'_bkfst']||''}" onchange="setField('${dk}_bkfst',this.value)"></td>
+          <td><input type="number" class="mon-cmt" style="width:60px" value="${fd[dk+'_amsnk']||''}" onchange="setField('${dk}_amsnk',this.value)"></td>
+          <td><input type="number" class="mon-cmt" style="width:60px" value="${fd[dk+'_lunch']||''}" onchange="setField('${dk}_lunch',this.value)"></td>
+          <td><input type="number" class="mon-cmt" style="width:60px" value="${fd[dk+'_pmsnk']||''}" onchange="setField('${dk}_pmsnk',this.value)"></td>
+          <td>${ynaBtns(dk+'_disc',fd[dk+'_disc'])}</td></tr>`;
+      }
+      html+=`</tbody></table></div>`;
+      html+=`<div class="mon-item"><div class="num">901</div><div class="q">Do enrollment, daily center attendance, and meal attendance reconcile?</div>${ynaBtns('901',fd['901'])}${cmtInput('901_cmt',fd['901_cmt'])}</div>`;
+      html+=`<div class="mon-item"><div class="num">902</div><div class="q">Compare the number of participants present during the meal observation to the claimed numbers. Do the numbers compare?</div>${ynaBtns('902',fd['902'])}${cmtInput('902_cmt',fd['902_cmt'])}</div>`;
+    }else if(sec.isSpecial==='findings'){
+      html+=`<div class="mon-item"><div class="num">1001</div><div class="q">There were findings from previous review.</div>${ynaBtns('1001',fd['1001'])}${cmtInput('1001_cmt',fd['1001_cmt'])}</div>`;
+      html+=`<div class="mon-item"><div class="num">1002</div><div class="q">Findings from previous review were corrected.</div>${ynaBtns('1002',fd['1002'])}${cmtInput('1002_cmt',fd['1002_cmt'])}</div>`;
+      html+=`<div class="mon-item"><div class="num">1003</div><div class="q">Has there been a change to the facility's administrative staff?</div>${ynaBtns('1003',fd['1003'])}${cmtInput('1003_cmt',fd['1003_cmt'])}</div>`;
+      // Auto-generated findings from any "NO" responses
+      html+=`<div style="margin-top:16px;padding:12px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px">
+        <div style="font-weight:600;font-size:.9rem;margin-bottom:8px">Auto-Generated Findings (from "No" responses):</div>
+        <div id="autoFindings">Click "Save" to generate findings from No responses.</div>
+      </div>`;
+      html+=`<div class="form-group" style="margin-top:12px"><label>Additional Findings & Recommendations for Corrective Action</label>
+        <textarea style="width:100%;height:100px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:.85rem" onchange="setField('findings_text',this.value)">${fd.findings_text||''}</textarea></div>`;
+      html+=`<div class="form-grid" style="margin-top:12px">
+        <div class="form-group"><label>Monitor Signature</label><input type="text" value="${fd.monitor_sig||''}" onchange="setField('monitor_sig',this.value)" style="font-style:italic"></div>
+        <div class="form-group"><label>Departure Time</label><input type="time" value="${fd.departure_time||''}" onchange="setField('departure_time',this.value)"></div>
+        <div class="form-group"><label>Site Representative Signature</label><input type="text" value="${fd.site_rep_sig||''}" onchange="setField('site_rep_sig',this.value)" style="font-style:italic"></div>
+        <div class="form-group"><label>Date</label><input type="date" value="${fd.sig_date||r.review_date?.split('T')[0]||''}" onchange="setField('sig_date',this.value)"></div>
+      </div>`;
+    }else{
+      for(const q of sec.items){
+        html+=`<div class="mon-item"><div class="num">${q.num}</div><div class="q">${q.text}${q.extra?'<br><span style="font-size:.8rem;color:var(--muted)">'+q.extra+'</span>':''}</div>${ynaBtns(q.num,fd[q.num])}${cmtInput(q.num+'_cmt',fd[q.num+'_cmt'])}</div>`;
+      }
+    }
+    html+=`</div></div>`;
+  }
+
+  // Bottom save/complete bar
+  html+=`<div style="display:flex;gap:8px;margin-top:12px;justify-content:center">
+    <button class="btn btn-success" onclick="saveReview()">💾 Save Progress</button>
+    <button class="btn btn-navy" onclick="completeReview()">✅ Complete Review</button>
+    <button class="btn btn-outline" onclick="closeReview()">← Back to List</button>
+  </div>`;
+
+  document.getElementById('monitoringFormView').innerHTML=html;
+}
+
+function setYNA(key,val){
+  if(!activeReview.form_data)activeReview.form_data={};
+  activeReview.form_data[key]=val;
+  // Update button visuals
+  const container=document.querySelector(`[data-yna="${key}"]`);
+  if(container){
+    container.querySelectorAll('.yna-btn').forEach(b=>{
+      b.className='yna-btn';
+      if(b.textContent==='Yes'&&val==='Y')b.classList.add('sel-y');
+      if(b.textContent==='No'&&val==='N')b.classList.add('sel-n');
+      if(b.textContent==='N/A'&&val==='NA')b.classList.add('sel-na');
+    });
+  }
+}
+
+function setComment(key,val){
+  if(!activeReview.form_data)activeReview.form_data={};
+  activeReview.form_data[key]=val;
+}
+
+function setField(key,val){
+  if(!activeReview.form_data)activeReview.form_data={};
+  activeReview.form_data[key]=val;
+}
+
+async function saveReview(){
+  try{
+    // Generate findings from NO responses
+    const fd=activeReview.form_data||{};
+    const findings=[];
+    for(const k in fd){
+      if(fd[k]==='N'&&!k.endsWith('_cmt')&&!k.endsWith('_disc')){
+        findings.push({item:k,comment:fd[k+'_cmt']||''});
+      }
+    }
+    activeReview.findings=findings;
+
+    await api(`/api/monitoring/${activeReview.id}`,{method:'PUT',body:{
+      form_data:activeReview.form_data,
+      findings:activeReview.findings,
+      meal_observed:activeReview.meal_observed,
+      monitor_name:activeReview.monitor_name,
+      review_date:activeReview.review_date
+    }});
+
+    // Update auto-findings display
+    const af=document.getElementById('autoFindings');
+    if(af){
+      if(findings.length===0){af.innerHTML='<span style="color:var(--success)">✅ No findings — all items passed.</span>';}
+      else{af.innerHTML=findings.map(f=>`<div style="padding:4px 0;border-bottom:1px solid #eee"><strong>${f.item}:</strong> ${f.comment||'No comment provided'}</div>`).join('');}
+    }
+    showToast('✅ Review saved!','ok');
+  }catch(e){showToast('Save error: '+e.message,'err');}
+}
+
+async function completeReview(){
+  if(!confirm('Mark this monitoring review as complete?'))return;
+  await saveReview();
+  try{
+    await api(`/api/monitoring/${activeReview.id}`,{method:'PUT',body:{status:'completed'}});
+    showToast('✅ Review completed!','ok');
+    closeReview();
+  }catch(e){showToast('Error: '+e.message,'err');}
 }
 
 const WIZ_STEPS=[
