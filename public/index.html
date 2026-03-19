@@ -3597,65 +3597,63 @@ async function autoPopulateFiveDay(startDate){
     if(el)el.value=dateStr;
   }
 
-  // Try to auto-import attendance and meal data from CACFP suite
+  // Auto-import attendance and meal data from prefill (already loaded from server)
   try{
     const center=activeReview.center;
-    const prevMK=reviewPrefill?.prevMonth;
-    if(!prevMK)throw new Error('No previous month data');
+    const centerAtt=reviewPrefill?.attendance||{};
+    const centerMeals=reviewPrefill?.meals||{};
 
-    // Get attendance data
-    const attKey=prevMK+'_attendance';
-    let attData=monthlyDataCache[attKey];
-    if(!attData){
-      try{const mdRes=await api(`/api/monthly-data?fiscal_year_id=${activeFY.id}&month_key=${prevMK}&data_type=attendance`);
-        if(Array.isArray(mdRes)&&mdRes.length>0&&mdRes[0].data)attData=mdRes[0].data;
-        else if(mdRes&&mdRes.data)attData=mdRes.data;
-      }catch(e){}
-    }
-    const centerAtt=attData?.[center];
+    let imported=0;
 
-    // Get meal count data
-    const mealKey=prevMK+'_meals';
-    let mealData=monthlyDataCache[mealKey];
-    if(!mealData){
-      try{const mdRes=await api(`/api/monthly-data?fiscal_year_id=${activeFY.id}&month_key=${prevMK}&data_type=meals`);
-        if(Array.isArray(mdRes)&&mdRes.length>0&&mdRes[0].data)mealData=mdRes[0].data;
-        else if(mdRes&&mdRes.data)mealData=mdRes.data;
-      }catch(e){}
-    }
-    const centerMeals=mealData?.[center];
-
-    // Populate from daily attendance data if available
-    if(centerAtt?.dailyTotals&&centerAtt?.dayHeaders){
+    // Populate from daily attendance totals
+    if(centerAtt.dailyTotals&&centerAtt.dayHeaders){
       for(let i=0;i<5;i++){
         const dd=dates[i];
         const dayOfMonth=dd.getDate();
-        // Match by day-of-month index in the attendance arrays
-        // dayHeaders are like "Mon 3", "Tue 4" — extract the day number
+        // Find the matching day in dayHeaders (format: "Mon 23", "Tue 24", etc)
         let attIdx=-1;
         for(let j=0;j<centerAtt.dayHeaders.length;j++){
-          const hdr=centerAtt.dayHeaders[j];
-          const dayMatch=hdr.match(/(\d+)/);
-          if(dayMatch&&parseInt(dayMatch[1])===dayOfMonth){attIdx=j;break;}
+          const hdr=centerAtt.dayHeaders[j]||'';
+          const nums=hdr.match(/\d+/g);
+          if(nums){
+            const headerDay=parseInt(nums[nums.length-1]);
+            if(headerDay===dayOfMonth){attIdx=j;break;}
+          }
         }
         const dk='fiveday_'+(i+1);
         if(attIdx>=0&&centerAtt.dailyTotals[attIdx]!==undefined){
           const attCount=centerAtt.dailyTotals[attIdx];
           setField(dk+'_att',attCount);
           const el=document.getElementById(dk+'_att');
-          if(el)el.value=attCount;
+          if(el){el.value=attCount;imported++;}
         }
       }
     }
 
-    // If we got enrollment, set it
-    if(centerAtt?.enrolled){
-      showToast(`Dates populated + ${centerAtt.enrolled} enrolled. Attendance imported where available. Enter meal counts from center records.`,'ok');
+    // Populate meal counts if available (meals data has totals per type)
+    // Meal data structure varies — try to extract daily if available
+    if(centerMeals.dailyMealCounts){
+      for(let i=0;i<5;i++){
+        const dd=dates[i];
+        const dayOfMonth=dd.getDate();
+        const dmc=centerMeals.dailyMealCounts[dayOfMonth];
+        if(!dmc)continue;
+        const dk='fiveday_'+(i+1);
+        if(dmc.breakfast!==undefined){setField(dk+'_bkfst',dmc.breakfast);const el=document.getElementById(dk+'_bkfst');if(el){el.value=dmc.breakfast;imported++;}}
+        if(dmc.amSnack!==undefined){setField(dk+'_amsnk',dmc.amSnack);const el=document.getElementById(dk+'_amsnk');if(el){el.value=dmc.amSnack;imported++;}}
+        if(dmc.lunch!==undefined){setField(dk+'_lunch',dmc.lunch);const el=document.getElementById(dk+'_lunch');if(el){el.value=dmc.lunch;imported++;}}
+        if(dmc.pmSnack!==undefined){setField(dk+'_pmsnk',dmc.pmSnack);const el=document.getElementById(dk+'_pmsnk');if(el){el.value=dmc.pmSnack;imported++;}}
+      }
+    }
+
+    if(imported>0){
+      showToast(`Dates populated + ${imported} data fields imported from ${ML[reviewPrefill.prevMonth]||reviewPrefill.prevMonth}. Verify against center records.`,'ok');
     }else{
-      showToast('Dates populated. Enter attendance and meal counts from center records.','ok');
+      showToast(`Dates populated. No daily data found for ${ML[reviewPrefill.prevMonth]||reviewPrefill.prevMonth} — enter manually from center records.`,'ok');
     }
   }catch(e){
-    showToast('Five-day dates populated. Import data not available — enter manually from center records.','ok');
+    console.error('Five-day import error:',e);
+    showToast('Five-day dates populated. Enter data manually from center records.','ok');
   }
 }
 
