@@ -568,11 +568,44 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
       const key = fullName.toLowerCase();
       let staff = staffMap[key];
       if (!staff) {
-        // Try last,first match
+        const fnLow = firstName.toLowerCase();
+        const lnLow = lastName.toLowerCase();
+        // Common nickname mappings
+        const NICKNAMES = {abby:'abigail',abigail:'abby',mike:'michael',michael:'mike',
+          liz:'elizabeth',elizabeth:'liz',beth:'elizabeth',bill:'william',william:'bill',
+          bob:'robert',robert:'bob',rob:'robert',jim:'james',james:'jim',jimmy:'james',
+          joe:'joseph',joseph:'joe',jen:'jennifer',jennifer:'jen',jenny:'jennifer',
+          kate:'katherine',katherine:'kate',kathy:'katherine',cathy:'catherine',catherine:'cathy',
+          dan:'daniel',daniel:'dan',dave:'david',david:'dave',tom:'thomas',thomas:'tom',
+          tony:'anthony',anthony:'tony',chris:'christopher',christopher:'chris',
+          matt:'matthew',matthew:'matt',nick:'nicholas',nicholas:'nick',
+          sam:'samuel',samuel:'sam',samantha:'sam',steve:'steven',steven:'steve',
+          pat:'patricia',patricia:'pat',ed:'edward',edward:'ed',alex:'alexander',
+          rick:'richard',richard:'rick',dick:'richard',will:'william',josh:'joshua',joshua:'josh',
+          meg:'megan',megan:'meg',maddie:'madison',madison:'maddie',mandy:'amanda',amanda:'mandy'};
+        const nickVariants = [fnLow];
+        if (NICKNAMES[fnLow]) nickVariants.push(NICKNAMES[fnLow]);
+        // Also check if any nickname maps TO this name
+        for (const [nick, full] of Object.entries(NICKNAMES)) {
+          if (full === fnLow && !nickVariants.includes(nick)) nickVariants.push(nick);
+        }
+
         for (const s of staffRes.rows) {
           const parts = s.name.toLowerCase().split(' ');
-          if (parts.length >= 2 && firstName.toLowerCase() === parts[0] && lastName.toLowerCase() === parts[parts.length-1]) { staff = s; break; }
-          if (parts.length >= 2 && lastName.toLowerCase() === parts[parts.length-1] && firstName.toLowerCase().startsWith(parts[0].substring(0,3))) { staff = s; break; }
+          if (parts.length < 2) continue;
+          const sFirst = parts[0];
+          const sLast = parts[parts.length - 1];
+          if (sLast !== lnLow) continue; // Last name must match exactly
+
+          // Check all nickname variants
+          for (const variant of nickVariants) {
+            if (variant === sFirst) { staff = s; break; }
+          }
+          if (staff) break;
+
+          // Prefix match (3+ chars)
+          if (fnLow.length >= 3 && sFirst.startsWith(fnLow.substring(0, 3))) { staff = s; break; }
+          if (sFirst.length >= 3 && fnLow.startsWith(sFirst.substring(0, 3))) { staff = s; break; }
         }
       }
       if (!staff) {
@@ -1802,6 +1835,32 @@ app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
         availableData: allMD.rows
       }
     });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── MERGE DUPLICATE STAFF ─────────────────────────────────
+app.post('/api/staff/merge', authCheck, async (req, res) => {
+  try {
+    const { keep_id, remove_id } = req.body;
+    if (!keep_id || !remove_id) return res.status(400).json({ error: 'Need keep_id and remove_id' });
+    if (keep_id === remove_id) return res.status(400).json({ error: 'Cannot merge with self' });
+
+    // Move all data from remove_id to keep_id
+    await pool.query('UPDATE daily_cacfp_entries SET staff_id=$1 WHERE staff_id=$2', [keep_id, remove_id]);
+    await pool.query('UPDATE playground_staff_hours SET staff_id=$1 WHERE staff_id=$2 AND NOT EXISTS (SELECT 1 FROM playground_staff_hours p2 WHERE p2.staff_id=$1 AND p2.fiscal_year_id=playground_staff_hours.fiscal_year_id AND p2.month_key=playground_staff_hours.month_key AND p2.day_of_month=playground_staff_hours.day_of_month)', [keep_id, remove_id]);
+    await pool.query('UPDATE monthly_signatures SET staff_id=$1 WHERE staff_id=$2 AND NOT EXISTS (SELECT 1 FROM monthly_signatures m2 WHERE m2.staff_id=$1 AND m2.fiscal_year_id=monthly_signatures.fiscal_year_id AND m2.month_key=monthly_signatures.month_key)', [keep_id, remove_id]);
+    await pool.query('UPDATE staff_time_entries SET staff_id=$1 WHERE staff_id=$2 AND NOT EXISTS (SELECT 1 FROM staff_time_entries s2 WHERE s2.staff_id=$1 AND s2.fiscal_year_id=staff_time_entries.fiscal_year_id AND s2.month_key=staff_time_entries.month_key)', [keep_id, remove_id]);
+
+    // Delete remaining duplicates that couldn't be moved
+    await pool.query('DELETE FROM playground_staff_hours WHERE staff_id=$1', [remove_id]);
+    await pool.query('DELETE FROM monthly_signatures WHERE staff_id=$1', [remove_id]);
+    await pool.query('DELETE FROM staff_time_entries WHERE staff_id=$1', [remove_id]);
+    await pool.query('DELETE FROM daily_cacfp_entries WHERE staff_id=$1', [remove_id]);
+    await pool.query('DELETE FROM staff_pins WHERE staff_id=$1', [remove_id]);
+    await pool.query('DELETE FROM staff WHERE id=$1', [remove_id]);
+
+    const kept = (await pool.query('SELECT * FROM staff WHERE id=$1', [keep_id])).rows[0];
+    res.json({ ok: true, kept });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
