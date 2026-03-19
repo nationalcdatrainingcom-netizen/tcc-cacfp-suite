@@ -1758,6 +1758,267 @@ app.delete('/api/monitoring/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GENERATE MONITORING REVIEW .docx ─────────────────────
+app.post('/api/monitoring/:id/generate-docx', authCheck, async (req, res) => {
+  try {
+    const review = (await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id])).rows[0];
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+
+    const fd = review.form_data || {};
+    const findings = review.findings || [];
+    const center = review.center;
+    const cLabel = center === 'niles' ? 'Niles' : 'Peace Boulevard';
+    const rooms = CLASSROOMS[center] || [];
+    const navy = '1B2A4A';
+    const revDate = review.review_date ? new Date(review.review_date).toLocaleDateString() : '';
+
+    const thinB = {top:{style:BorderStyle.SINGLE,size:1,color:'999999'},bottom:{style:BorderStyle.SINGLE,size:1,color:'999999'},left:{style:BorderStyle.SINGLE,size:1,color:'999999'},right:{style:BorderStyle.SINGLE,size:1,color:'999999'}};
+    function c(text,opts={}){
+      return new TableCell({
+        width:opts.w?{size:opts.w,type:WidthType.PERCENTAGE}:undefined,borders:thinB,
+        shading:opts.bg?{type:ShadingType.SOLID,color:opts.bg}:undefined,
+        children:[new Paragraph({alignment:opts.align||AlignmentType.LEFT,
+          children:[new TextRun({text:text||'',bold:opts.bold||false,size:opts.sz||16,font:'Calibri',color:opts.color||'333333'})]})]
+      });
+    }
+    function ynCell(key){
+      const v=fd[key];
+      // Reverse items: 701,1001,1003 and fiveday discrepancies
+      const REV=new Set(['701','1001','1003']);
+      const isRev=REV.has(key)||key.includes('_disc');
+      const yMark=v==='Y'?'☑':'☐';const nMark=v==='N'?'☑':'☐';const naMark=v==='NA'?'☑':'☐';
+      return [c(yMark,{align:AlignmentType.CENTER,sz:14,w:6,bg:v==='Y'?(isRev?'FCE4EC':'E8F5E9'):undefined}),
+              c(nMark,{align:AlignmentType.CENTER,sz:14,w:6,bg:v==='N'?(isRev?'E8F5E9':'FCE4EC'):undefined}),
+              c(naMark,{align:AlignmentType.CENTER,sz:14,w:6})];
+    }
+    function secRow(num,text,key){
+      return new TableRow({children:[
+        c(num,{bold:true,sz:14,w:6}),c(text,{sz:14,w:52}),
+        ...ynCell(key),c(fd[key+'_cmt']||'',{sz:12,w:24})
+      ]});
+    }
+    function secHdr(title){
+      return new TableRow({children:[
+        c(title,{bold:true,bg:navy,color:'FFFFFF',sz:16,w:58}),
+        c('Yes',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:6,align:AlignmentType.CENTER}),
+        c('No',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:6,align:AlignmentType.CENTER}),
+        c('N/A',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:6,align:AlignmentType.CENTER}),
+        c('Comments',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:24})
+      ]});
+    }
+
+    const allRows = [];
+
+    // Page 1: Header + Sections 100-300
+    allRows.push(secHdr('Section 100. General Information'));
+    allRows.push(secRow('101',"The facility's license is current.",'101'));
+    allRows.push(secRow('102','The facility is within its licensed capacity.','102'));
+    allRows.push(secRow('103','The facility offers drinking water to participants throughout the day.','103'));
+    allRows.push(secHdr('Section 200. Training'));
+    allRows.push(secRow('201','NEW FACILITIES/NEW STAFF: Staff have received training prior to CACFP operations.','201'));
+    allRows.push(secRow('202','The facility conducted annual CACFP training for all key staff.','202'));
+    allRows.push(secRow('203','Sponsor training documentation includes: date(s), location(s), topics, names/signatures.','203'));
+    allRows.push(secHdr('Section 300. Civil Rights'));
+    allRows.push(secRow('301','No separation by race, color, sex, age, disability or national origin.','301'));
+    allRows.push(secRow('302','Potentially eligible persons have equal opportunity to participate in CACFP.','302'));
+    allRows.push(secRow('303','Current USDA "And Justice for All" poster is displayed.','303'));
+    allRows.push(secRow('304','USDA nondiscrimination statement is on all materials and websites.','304'));
+    allRows.push(secRow('305','Front-line staff trained on civil rights and complaint procedures.','305'));
+    allRows.push(secHdr('Section 400. Records and Recordkeeping'));
+    allRows.push(secRow('401','A daily count is maintained for all meals served to adults.','401'));
+    allRows.push(secRow('402','No more than 2 meals/1 snack or 1 meal/2 snacks per participant per day.','402'));
+    allRows.push(secRow('405','Meals only claimed for participants within CACFP age requirements.','405'));
+    allRows.push(secRow('406','Facility daily attendance records are maintained.','406'));
+    allRows.push(secRow('407','Meal attendance is taken at the point of service.','407'));
+    allRows.push(secRow('408','Meal attendance records are available and up to date.','408'));
+    allRows.push(secHdr('Section 500. Menus'));
+    allRows.push(secRow('501','Menu(s) meet program requirements (month, date, components).','501'));
+    allRows.push(secRow('502','Menu(s) are available for meals claimed.','502'));
+    allRows.push(secRow('503','Nutritional labels/PFS verified for meal pattern requirements.','503'));
+    allRows.push(secRow('504','Procedure in place for recording menu substitutions.','504'));
+    allRows.push(secRow('505','100% juice limited to one meal/snack per day.','505'));
+    allRows.push(secRow('506','At least one serving of grains per day is whole grain-rich.','506'));
+    allRows.push(secRow('507','Grain based desserts not served as creditable components.','507'));
+    allRows.push(secRow('508','Meat/meat alternate not served more than 3x weekly replacing grain at breakfast.','508'));
+    allRows.push(secRow('509','Yogurt ≤ 23g sugar per 6oz.','509'));
+    allRows.push(secRow('510','Breakfast cereal ≤ 6g sugar per dry ounce.','510'));
+    allRows.push(secRow('511','Lunch/supper: at least 1 vegetable and 1 fruit or 2 vegetables.','511'));
+    allRows.push(secRow('512','Unflavored whole milk for children ages 1-2.','512'));
+    allRows.push(secRow('513','Unflavored low-fat milk for children ages 2-5.','513'));
+    allRows.push(secRow('514','Special Dietary Needs Accommodations forms available.','514'));
+    allRows.push(secRow('516','Facility offers formula and developmentally appropriate foods to infants.','516'));
+    allRows.push(secRow('517','Infant Formula/Food Sign-off form on file when parent provides formula.','517'));
+
+    // Meal observation questions
+    allRows.push(secHdr('Section 600. Meal Observation'));
+    allRows.push(secRow('603','Minimum portion served met requirements for age groups.','603'));
+    allRows.push(secRow('604','Procedures in place to ensure minimum portions are served.','604'));
+    allRows.push(secRow('605','Meal/snack met appropriate meal pattern for components and age.','605'));
+    allRows.push(secRow('606','Meal/snack same as posted menu for the day.','606'));
+    allRows.push(secRow('607','Meal/snack within approved meal service times.','607'));
+    allRows.push(secRow('608','Meal attendance taken at point of service during observation.','608'));
+    allRows.push(secRow('609','Appropriate variety of milk served to each age group.','609'));
+    allRows.push(secHdr('Section 700. Health and Safety'));
+    allRows.push(secRow('701','Were imminent threats to health/safety observed? (Yes=threat found)','701'));
+    allRows.push(secHdr('Section 800. Enrollment'));
+    allRows.push(secRow('801','Current enrollment documentation on file for each participant.','801'));
+    allRows.push(secRow('802','Enrollment forms updated annually.','802'));
+    allRows.push(secRow('803','Forms contain: name, dated signature, normal days/hours, meals received.','803'));
+    allRows.push(secRow('804','Enrolled participants informed of WIC benefits.','804'));
+    allRows.push(secRow('805','Parent Information Sheet distributed to enrolled participants.','805'));
+    allRows.push(secHdr('Section 900. Meal Count Reconciliation'));
+    allRows.push(secRow('901','Enrollment, attendance, and meal attendance reconcile.','901'));
+    allRows.push(secRow('902','Participants present during observation match claimed numbers.','902'));
+    allRows.push(secHdr('Section 1000. Previous Reviews'));
+    allRows.push(secRow('1001','There were findings from previous review. (Yes=findings exist)','1001'));
+    allRows.push(secRow('1002','Findings from previous review were corrected.','1002'));
+    allRows.push(secRow('1003','Change to facility administrative staff. (Yes=change occurred)','1003'));
+
+    // Classroom observation table
+    const classroomRows = [new TableRow({children:[
+      c('Room',{bold:true,bg:'E0E0E0',sz:14}),c('Participants',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('Adults',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),c('POS',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('Milk %',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),c('Comments',{bold:true,bg:'E0E0E0',sz:14})
+    ]})];
+    for(const rm of rooms){
+      const rk='room_'+rm.name.replace(/\s/g,'_');
+      classroomRows.push(new TableRow({children:[
+        c(rm.name+' ('+rm.ages+')',{sz:13}),
+        c(fd[rk+'_parts']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[rk+'_adults']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[rk+'_pos']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[rk+'_milk']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[rk+'_cmt']||'',{sz:12})
+      ]}));
+    }
+
+    // Five-Day Reconciliation table
+    const fdayHdr = new TableRow({children:[
+      c('Day',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('Date',{bold:true,bg:'E0E0E0',sz:14}),
+      c('# Attend',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('Bkfst MC',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('AM Snk',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('Lunch MC',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('PM Snk',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+      c('Discrep?',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
+    ]});
+    const fdayRows=[fdayHdr];
+    for(let d=1;d<=5;d++){
+      const dk='fiveday_'+d;
+      const disc=fd[dk+'_disc'];
+      fdayRows.push(new TableRow({children:[
+        c(String(d),{bold:true,sz:14,align:AlignmentType.CENTER}),
+        c(fd[dk+'_date']||'',{sz:13}),
+        c(fd[dk+'_att']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[dk+'_bkfst']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[dk+'_amsnk']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[dk+'_lunch']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(fd[dk+'_pmsnk']||'',{sz:13,align:AlignmentType.CENTER}),
+        c(disc==='Y'?'Yes':disc==='N'?'No':'',{sz:13,align:AlignmentType.CENTER,bg:disc==='Y'?'FCE4EC':undefined}),
+      ]}));
+    }
+    if(fd.fiveday_verified){
+      fdayRows.push(new TableRow({children:[
+        c(`Verified by: ${fd.fiveday_verified_initials||''}`,{bold:true,bg:'E8F5E9',sz:13}),
+        c('',{}),c('',{}),c('',{}),c('',{}),c('',{}),c('',{}),c('',{})
+      ]}));
+    }
+
+    // Findings summary
+    const findingsParas = [];
+    if(findings.length===0){
+      findingsParas.push(new Paragraph({spacing:{after:60},children:[
+        new TextRun({text:'☑ No Finding(s)',bold:true,size:18,font:'Calibri',color:'2E7D32'})]}));
+    }else{
+      findingsParas.push(new Paragraph({spacing:{after:60},children:[
+        new TextRun({text:'☑ Corrective action by site is required',bold:true,size:18,font:'Calibri',color:'C62828'})]}));
+      for(const f of findings){
+        findingsParas.push(new Paragraph({spacing:{after:40},children:[
+          new TextRun({text:`• Item ${f.item}: `,bold:true,size:16,font:'Calibri'}),
+          new TextRun({text:f.comment||'No comment',size:16,font:'Calibri'})]}));
+      }
+    }
+    if(fd.findings_text){
+      findingsParas.push(new Paragraph({spacing:{before:100,after:60},children:[
+        new TextRun({text:'Additional Findings & Recommendations:',bold:true,size:16,font:'Calibri'})]}));
+      findingsParas.push(new Paragraph({spacing:{after:60},children:[
+        new TextRun({text:fd.findings_text,size:16,font:'Calibri'})]}));
+    }
+
+    const doc = new Document({
+      sections: [{
+        properties:{page:{margin:{top:500,bottom:500,left:600,right:600}}},
+        children:[
+          // Header
+          new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:40},children:[
+            new TextRun({text:'Child and Adult Care Food Program',bold:true,size:22,font:'Calibri',color:navy})]}),
+          new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:80},children:[
+            new TextRun({text:'Monitoring Review for Sponsored Facilities',size:18,font:'Calibri',color:'666666'})]}),
+          new Paragraph({spacing:{after:40},children:[
+            new TextRun({text:`${review.announced?'☑':'☐'} Announced   ${!review.announced?'☑':'☐'} Unannounced`,size:16,font:'Calibri'}),
+            new TextRun({text:`          Meal Observed: ${review.meal_observed||''}`,size:16,font:'Calibri'})]}),
+          new Paragraph({spacing:{after:40},children:[
+            new TextRun({text:`Sponsor: The Children's Center, Inc.  #990004457`,size:16,font:'Calibri'}),
+            new TextRun({text:`     Date: ${revDate}`,size:16,font:'Calibri'}),
+            new TextRun({text:`     Arrival: ${fd.arrival_time||''}`,size:16,font:'Calibri'})]}),
+          new Paragraph({spacing:{after:80},children:[
+            new TextRun({text:`Facility: ${cLabel}`,size:16,font:'Calibri'})]}),
+
+          // Main review table
+          new Paragraph({spacing:{after:40},children:[
+            new TextRun({text:'REVIEW AREAS',bold:true,size:20,font:'Calibri',color:navy})]}),
+          new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:allRows}),
+
+          // Classroom observation
+          new Paragraph({spacing:{before:200,after:60},children:[
+            new TextRun({text:'Meal Observation — Classroom Detail',bold:true,size:18,font:'Calibri',color:navy})]}),
+          new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:classroomRows}),
+
+          // Five-Day Reconciliation
+          new Paragraph({spacing:{before:200,after:60},children:[
+            new TextRun({text:'Five-Day Aggregate Meal Count Reconciliation',bold:true,size:18,font:'Calibri',color:navy})]}),
+          new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:fdayRows}),
+
+          // Findings
+          new Paragraph({spacing:{before:200,after:60},children:[
+            new TextRun({text:'Findings and Recommendations for Corrective Action',bold:true,size:18,font:'Calibri',color:navy})]}),
+          ...findingsParas,
+
+          // Signatures
+          new Paragraph({spacing:{before:200,after:40},children:[
+            new TextRun({text:'Monitor Signature: ',bold:true,size:16,font:'Calibri'}),
+            new TextRun({text:fd.monitor_sig||'________________',italics:!!fd.monitor_sig,size:16,font:'Calibri',underline:{}}),
+            new TextRun({text:`     Date: ${fd.sig_date||revDate}`,size:16,font:'Calibri'}),
+            new TextRun({text:`     Departure: ${fd.departure_time||''}`,size:16,font:'Calibri'})]}),
+          new Paragraph({spacing:{after:40},children:[
+            new TextRun({text:'Site Representative: ',bold:true,size:16,font:'Calibri'}),
+            new TextRun({text:fd.site_rep_sig||'________________',italics:!!fd.site_rep_sig,size:16,font:'Calibri',underline:{}}),
+            new TextRun({text:`     Date: ${fd.sig_date||revDate}`,size:16,font:'Calibri'})]}),
+          new Paragraph({spacing:{before:60},alignment:AlignmentType.RIGHT,children:[
+            new TextRun({text:'Rev. 3/2023',size:12,font:'Calibri',color:'999999'})]}),
+        ]
+      }]
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+    const filename = `Monitoring_Review_${center}_${revDate.replace(/\//g,'-')}.docx`;
+
+    // Store in documents
+    const fyId = review.fiscal_year_id;
+    const mk = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][new Date(review.review_date).getMonth()];
+    await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1,$2,'monitoring_review',$3,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$4,$5)`,
+      [fyId, mk, filename, buffer, JSON.stringify({review_id:review.id,center,date:revDate})]
+    );
+
+    res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);
+    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch(e){ console.error(e); res.status(500).json({error:e.message}); }
+});
+
 // Get pre-populated data for a monitoring review (pulls from CACFP suite data)
 app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
   try {
