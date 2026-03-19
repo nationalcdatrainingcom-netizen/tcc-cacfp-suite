@@ -242,6 +242,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <div class="nav-item" onclick="navTo('revenue')"><span class="icon">💰</span> Revenue</div>
     <div class="nav-item" onclick="navTo('documents')"><span class="icon">🗂️</span> Docs</div>
     <div class="nav-item" onclick="navTo('yer')"><span class="icon">📊</span> YER</div>
+    <div class="nav-item" onclick="navTo('monitoring')"><span class="icon">🔍</span> Monitoring</div>
   </div>
 
   <div class="app-layout">
@@ -253,6 +254,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <div class="nav-item" onclick="navTo('documents')"><span class="icon">🗂️</span> Program Documents</div>
       <div class="nav-divider"></div>
       <div class="nav-item" onclick="navTo('yer')"><span class="icon">📊</span> Year End Report</div>
+      <div class="nav-item" onclick="navTo('monitoring')"><span class="icon">🔍</span> Monitoring</div>
       <div class="nav-item" onclick="navTo('settings')"><span class="icon">⚙️</span> Settings</div>
     </nav>
 
@@ -314,6 +316,26 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div class="card"><div class="card-hdr"><h3>📊 CNP-YER Summary</h3><span class="badge" id="yerFyBadge"></span></div><div class="card-body" id="yerBody"></div></div>
         <div style="display:flex;gap:12px;margin-top:16px">
           <button class="btn btn-primary" onclick="downloadGL()">⬇️ Download NFSA General Ledger (.docx)</button>
+        </div>
+      </div>
+
+      <!-- MONITORING -->
+      <div class="page" id="page-monitoring">
+        <h2 style="margin-bottom:20px">Monitoring</h2>
+        <div class="card"><div class="card-hdr"><h3>🔍 CACFP Monitoring</h3><span class="badge" style="background:#fff3e0;color:#e65100">Coming Soon</span></div>
+          <div class="card-body">
+            <p style="color:var(--muted);margin-bottom:16px">The monitoring component will include site visit documentation, corrective action tracking, and compliance review tools.</p>
+            <div id="auditCrossCheck"></div>
+          </div>
+        </div>
+
+        <!-- Audit Cross-Check -->
+        <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📋 Attendance vs Meal Count Cross-Check</h3></div>
+          <div class="card-body">
+            <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Compares child attendance records against meal counts to flag discrepancies.</p>
+            <button class="btn btn-primary" onclick="runAuditCrossCheck()">🔍 Run Cross-Check for Current Month</button>
+            <div id="crossCheckResults" style="margin-top:12px"></div>
+          </div>
         </div>
       </div>
 
@@ -646,18 +668,31 @@ function renderAttendance(){
       </div>
       ${hasDetail?`
         <div class="extracted-preview" style="margin-top:16px">
-          <h4>📋 ADA Calculation Methodology</h4>
-          <div class="extracted-row"><span class="lbl">Total children enrolled:</span><span class="val">${d.enrolled}</span></div>
-          <div class="extracted-row"><span class="lbl">Operating days (weekdays with attendance):</span><span class="val">${d.days}</span></div>
-          <div class="extracted-row"><span class="lbl">Total child-days present:</span><span class="val">${d.totalPresent?.toLocaleString()}</span></div>
-          <div class="extracted-row"><span class="lbl">ADA = Total Present ÷ Operating Days:</span><span class="val">${d.totalPresent} ÷ ${d.days} = <strong>${d.ada}</strong></span></div>
-          <div class="extracted-row"><span class="lbl">ADA % of enrolled:</span><span class="val">${d.enrolled>0?((d.ada/d.enrolled)*100).toFixed(1):'0'}%</span></div>
-          <p style="font-size:.8rem;color:var(--muted);margin-top:8px">Classrooms: ${d.classrooms?.join(', ')||'N/A'}</p>
-          <details style="margin-top:8px"><summary style="font-size:.8rem;cursor:pointer;color:var(--navy)">View daily breakdown (${d.childData?.length} children)</summary>
-            <div style="max-height:200px;overflow-y:auto;font-size:.75rem;margin-top:8px">
-              <table class="staff-table"><thead><tr><th>Name</th><th>Classroom</th><th>Present</th><th>Absent</th></tr></thead><tbody>
-              ${(d.childData||[]).map(ch=>`<tr><td>${ch.name}</td><td>${ch.classroom}</td><td>${ch.present}</td><td>${ch.absent}</td></tr>`).join('')}
-              </tbody></table>
+          <h4>📊 Monthly Attendance Summary — ${cl}</h4>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin:12px 0">
+            <div style="padding:8px;background:var(--bg);border-radius:6px;text-align:center"><div style="font-size:.75rem;color:var(--muted)">Enrolled</div><div style="font-size:1.1rem;font-weight:600">${d.enrolled}</div></div>
+            <div style="padding:8px;background:var(--bg);border-radius:6px;text-align:center"><div style="font-size:.75rem;color:var(--muted)">Operating Days</div><div style="font-size:1.1rem;font-weight:600">${d.days}</div></div>
+            <div style="padding:8px;background:var(--bg);border-radius:6px;text-align:center"><div style="font-size:.75rem;color:var(--muted)">Total Child-Days</div><div style="font-size:1.1rem;font-weight:600">${d.totalPresent?.toLocaleString()}</div></div>
+            <div style="padding:8px;background:var(--bg);border-radius:6px;text-align:center"><div style="font-size:.75rem;color:var(--muted)">ADA</div><div style="font-size:1.1rem;font-weight:600">${d.ada} <span style="font-size:.75rem;color:var(--muted)">(${d.enrolled>0?((d.ada/d.enrolled)*100).toFixed(1):'0'}%)</span></div></div>
+          </div>
+          <details style="margin-top:8px" open><summary style="font-size:.85rem;cursor:pointer;color:var(--navy);font-weight:600">Daily Attendance Grid (${d.childData?.length} children)</summary>
+            <div style="max-height:400px;overflow:auto;font-size:.7rem;margin-top:8px">
+              <table style="border-collapse:collapse;width:100%">
+                <thead><tr style="background:var(--navy);color:#fff">
+                  <th style="padding:4px 6px;position:sticky;left:0;background:var(--navy);z-index:1;text-align:left;min-width:120px">Name</th>
+                  <th style="padding:4px 3px;min-width:30px">Cls</th>
+                  ${(d.dayHeaders||[]).map(dh=>`<th style="padding:2px;min-width:22px;text-align:center">${dh}</th>`).join('')}
+                  <th style="padding:4px;min-width:30px">Days</th>
+                </tr></thead>
+                <tbody>
+                ${(d.childData||[]).map(ch=>`<tr>
+                  <td style="padding:3px 6px;border:1px solid #eee;position:sticky;left:0;background:#fff;font-weight:500;white-space:nowrap">${ch.name}</td>
+                  <td style="padding:2px 3px;border:1px solid #eee;text-align:center;font-size:.65rem;color:var(--muted)">${(ch.classroom||'').substring(0,8)}</td>
+                  ${(ch.dailyStatus||[]).map(s=>`<td style="padding:2px;border:1px solid #eee;text-align:center;${s==='P'?'background:#e8f5e9;color:#2e7d32;font-weight:700':'color:#ddd'}">${s==='P'?'✓':s==='A'?'·':''}</td>`).join('')}
+                  <td style="padding:3px;border:1px solid #eee;text-align:center;font-weight:600">${ch.present}</td>
+                </tr>`).join('')}
+                </tbody>
+              </table>
             </div>
           </details>
         </div>`:''}
@@ -683,8 +718,9 @@ async function parseAttendanceCSV(mk,center,input,skipUpload){
   if(!headerLine){showToast('Could not find header row','err');return;}
   const cols=headerLine.split(',');
   const dayIndices=[];
+  const dayHeaders=[];
   for(let i=3;i<cols.length;i++){
-    if(cols[i].match(/Mon|Tue|Wed|Thu|Fri/))dayIndices.push(i);
+    if(cols[i].match(/Mon|Tue|Wed|Thu|Fri/)){dayIndices.push(i);dayHeaders.push(cols[i].trim().replace(/\s*\d{1,2}\/\d{1,2}\/\d{2,4}/,'').substring(0,3)+' '+(cols[i].match(/\d{1,2}\/(\d{1,2})/)?.[1]||''));}
   }
 
   const children=[];
@@ -700,13 +736,15 @@ async function parseAttendanceCSV(mk,center,input,skipUpload){
     const name=parts[1].trim()+' '+parts[2].trim();
     classrooms.add(classroom);
     let present=0,absent=0;
+    const dailyStatus=[];
     dayIndices.forEach((di,idx)=>{
       const val=(parts[di]||'').trim();
+      dailyStatus.push(val==='P'?'P':val==='A'?'A':'');
       if(val==='P'){present++;dailyTotals[idx]++;}
       else if(val==='A')absent++;
     });
     totalPresent+=present;
-    children.push({name,classroom,present,absent});
+    children.push({name,classroom,present,absent,dailyStatus});
   }
 
   const operatingDays=dayIndices.length;
@@ -715,7 +753,7 @@ async function parseAttendanceCSV(mk,center,input,skipUpload){
 
   const data=monthlyDataCache[mk+'_attendance']||{};
   data[center]={enrolled,ada,days:operatingDays,capacity:center==='niles'?105:164,
-    totalPresent,classrooms:[...classrooms],childData:children,dailyTotals,_filename:file.name};
+    totalPresent,classrooms:[...classrooms],childData:children,dailyTotals,dayHeaders,_filename:file.name};
   monthlyDataCache[mk+'_attendance']=data;
   try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'attendance',data}});}catch(e){}
   renderAttendance();
@@ -3120,6 +3158,33 @@ async function viewStaffTA(staffId){
   }
 }
 // ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// AUDIT CROSS-CHECK (Attendance vs Meals)
+// ═══════════════════════════════════════════════════
+async function runAuditCrossCheck(){
+  const panel=document.getElementById('crossCheckResults');
+  panel.innerHTML='<div class="alert alert-warn">⏳ Running cross-check...</div>';
+  try{
+    const data=await api(`/api/audit-crosscheck?fiscal_year_id=${activeFY.id}&month_key=${currentMonth||MO[new Date().getMonth()]}`);
+    const flags=data.flags||[];
+    if(flags.length===0){
+      panel.innerHTML='<div class="alert alert-ok" style="margin:0"><span>✅</span><div><strong>No discrepancies found!</strong> Attendance records and meal counts are consistent.</div></div>';
+      return;
+    }
+    let html=`<div class="alert alert-err" style="margin-bottom:12px"><span>⚠️</span><div><strong>${flags.length} discrepancies found</strong></div></div>`;
+    html+=`<table class="staff-table" style="font-size:.85rem"><thead><tr><th>Type</th><th>Center</th><th>Child</th><th>Detail</th></tr></thead><tbody>`;
+    for(const f of flags){
+      const typeLabel=f.type==='no_attendance'?'🔴 No attendance':f.type==='meal_exceeds_attendance'?'🟡 Meals > Attendance':'🟠 No meals';
+      const centerLabel=f.center==='niles'?'Niles':'Peace';
+      html+=`<tr><td>${typeLabel}</td><td>${centerLabel}</td><td style="font-weight:500">${f.child}</td><td style="font-size:.8rem">${f.detail}</td></tr>`;
+    }
+    html+=`</tbody></table>`;
+    panel.innerHTML=html;
+  }catch(e){
+    panel.innerHTML=`<div class="alert alert-err">Error: ${e.message}</div>`;
+  }
+}
+
 const WIZ_STEPS=[
   {id:'wiz_attendance_niles',label:'Attendance — Niles',icon:'📊',center:'niles',desc:'Upload the Niles Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_niles'},
   {id:'wiz_attendance_peace',label:'Attendance — Peace Blvd',icon:'📊',center:'peace',desc:'Upload the Peace Boulevard Attendance Overview report from Playground App.',accept:'.csv',docType:'attendance_csv_peace'},
