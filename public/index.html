@@ -698,6 +698,11 @@ function renderAttendance(){
         </div>`:''}
     </div></div>`;
   }
+  html+=`<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn btn-primary" onclick="generateAttendanceReport('niles')">📄 Niles Attendance Report</button>
+    <button class="btn btn-primary" onclick="generateAttendanceReport('peace')">📄 Peace Attendance Report</button>
+    <button class="btn btn-navy" onclick="generateAttendanceReport()">📦 Both Centers Report</button>
+  </div>`;
   document.getElementById('sp-attendance').innerHTML=html;
 }
 
@@ -2750,6 +2755,37 @@ async function generateStaffCostReport(monthKey){
   }catch(e){showToast('Error generating report: '+e.message,'err');}
 }
 
+async function generateStaffPackage(){
+  try{
+    if(!confirm(`Generate the complete Staff Documentation Package for ${ML[currentMonth]}? This includes the summary page and all individual T&A forms.`))return;
+    showToast('Generating staff documentation package...','');
+    const res=await fetch('/api/generate-staff-package',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},
+      body:JSON.stringify({fiscal_year_id:activeFY.id,month_key:currentMonth,supervisor_signature:'Mary Wardlaw'})});
+    if(!res.ok){const e=await res.json();throw new Error(e.error||'Generate failed');}
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+    a.download=`CACFP_Staff_Package_${currentMonth}_${activeFY.label}.docx`;a.click();URL.revokeObjectURL(url);
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    showToast('✅ Staff Documentation Package generated and saved!','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function generateAttendanceReport(center){
+  try{
+    const label=center?(center==='niles'?'Niles':'Peace'):'Both Centers';
+    showToast(`Generating ${label} attendance report...`,'');
+    const body={fiscal_year_id:activeFY.id,month_key:currentMonth};
+    if(center)body.center=center;
+    const res=await fetch('/api/generate-attendance-report',{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN},body:JSON.stringify(body)});
+    if(!res.ok){const e=await res.json();throw new Error(e.error||'Generate failed');}
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+    a.download=`Child_Attendance_${center||'All'}_${currentMonth}_${activeFY.label}.docx`;a.click();URL.revokeObjectURL(url);
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    showToast(`✅ ${label} Attendance Report generated and saved!`,'ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
 // ═══════════════════════════════════════════════════
 // STAFF T&A REVIEW PANEL
 // ═══════════════════════════════════════════════════
@@ -2846,6 +2882,7 @@ async function renderStaffTA(){
       if(readyToGenerate.length>0){
         html+=`<button class="btn btn-primary" onclick="generateAllTAForms()">📄 Generate All ${readyToGenerate.length} T&A Forms</button>`;
       }
+      html+=`<button class="btn btn-navy" onclick="generateStaffPackage()">📦 Complete Staff Documentation Package</button>`;
       html+=`</div>`;
     }
 
