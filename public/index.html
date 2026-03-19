@@ -3621,22 +3621,35 @@ async function autoPopulateFiveDay(startDate){
     let imported=0;
 
     // Populate from daily attendance totals
-    if(centerAtt.dailyTotals&&centerAtt.dayHeaders){
+    if(centerAtt.dailyTotals&&centerAtt.dailyTotals.length>0){
+      const monthNum=dates[0].getMonth();
+      const yearNum=dates[0].getFullYear();
+
       for(let i=0;i<5;i++){
         const dd=dates[i];
         const dayOfMonth=dd.getDate();
-        // Find the matching day in dayHeaders (format: "Mon 23", "Tue 24", etc)
         let attIdx=-1;
-        for(let j=0;j<centerAtt.dayHeaders.length;j++){
-          const hdr=centerAtt.dayHeaders[j]||'';
-          const nums=hdr.match(/\d+/g);
-          if(nums){
-            const headerDay=parseInt(nums[nums.length-1]);
-            if(headerDay===dayOfMonth){attIdx=j;break;}
+
+        if(centerAtt.dayHeaders&&centerAtt.dayHeaders.length>0){
+          for(let j=0;j<centerAtt.dayHeaders.length;j++){
+            const hdr=centerAtt.dayHeaders[j]||'';
+            const nums=hdr.match(/\d+/g);
+            if(nums&&parseInt(nums[nums.length-1])===dayOfMonth){attIdx=j;break;}
+          }
+        }else{
+          // No dayHeaders — dailyTotals indexed by weekday position in the month
+          let weekdayCount=0;
+          for(let d=1;d<=dayOfMonth;d++){
+            const testDate=new Date(yearNum,monthNum,d);
+            if(testDate.getDay()!==0&&testDate.getDay()!==6){
+              if(d===dayOfMonth){attIdx=weekdayCount;break;}
+              weekdayCount++;
+            }
           }
         }
+
         const dk='fiveday_'+(i+1);
-        if(attIdx>=0&&centerAtt.dailyTotals[attIdx]!==undefined){
+        if(attIdx>=0&&attIdx<centerAtt.dailyTotals.length){
           const attCount=centerAtt.dailyTotals[attIdx];
           setField(dk+'_att',attCount);
           const el=document.getElementById(dk+'_att');
@@ -3645,19 +3658,52 @@ async function autoPopulateFiveDay(startDate){
       }
     }
 
-    // Populate meal counts if available (meals data has totals per type)
-    // Meal data structure varies — try to extract daily if available
-    if(centerMeals.dailyMealCounts){
+    // Meal counts — try children array with daily data, then dayLabels, then dailyMealCounts
+    if(centerMeals.children&&centerMeals.children.length>0){
+      const monthNum=dates[0].getMonth();
+      const yearNum=dates[0].getFullYear();
+
       for(let i=0;i<5;i++){
         const dd=dates[i];
         const dayOfMonth=dd.getDate();
-        const dmc=centerMeals.dailyMealCounts[dayOfMonth];
-        if(!dmc)continue;
         const dk='fiveday_'+(i+1);
-        if(dmc.breakfast!==undefined){setField(dk+'_bkfst',dmc.breakfast);const el=document.getElementById(dk+'_bkfst');if(el){el.value=dmc.breakfast;imported++;}}
-        if(dmc.amSnack!==undefined){setField(dk+'_amsnk',dmc.amSnack);const el=document.getElementById(dk+'_amsnk');if(el){el.value=dmc.amSnack;imported++;}}
-        if(dmc.lunch!==undefined){setField(dk+'_lunch',dmc.lunch);const el=document.getElementById(dk+'_lunch');if(el){el.value=dmc.lunch;imported++;}}
-        if(dmc.pmSnack!==undefined){setField(dk+'_pmsnk',dmc.pmSnack);const el=document.getElementById(dk+'_pmsnk');if(el){el.value=dmc.pmSnack;imported++;}}
+
+        let dayIdx=-1;
+        if(centerMeals.dayLabels&&centerMeals.dayLabels.length>0){
+          for(let j=0;j<centerMeals.dayLabels.length;j++){
+            const lbl=centerMeals.dayLabels[j]||'';
+            const nums=lbl.match(/\d+/g);
+            if(nums&&parseInt(nums[nums.length-1])===dayOfMonth){dayIdx=j;break;}
+          }
+        }else{
+          let weekdayCount=0;
+          for(let d=1;d<=dayOfMonth;d++){
+            const testDate=new Date(yearNum,monthNum,d);
+            if(testDate.getDay()!==0&&testDate.getDay()!==6){
+              if(d===dayOfMonth){dayIdx=weekdayCount;break;}
+              weekdayCount++;
+            }
+          }
+        }
+
+        if(dayIdx>=0){
+          let bkfst=0,lunch=0,pmSnk=0;
+          for(const child of centerMeals.children){
+            const dm=child.dailyMeals||child.dailyStatus||[];
+            if(dayIdx<dm.length){
+              const val=dm[dayIdx];
+              if(typeof val==='object'&&val){
+                if(val.breakfast)bkfst++;if(val.lunch)lunch++;if(val.pmSnack)pmSnk++;
+              }else if(typeof val==='string'){
+                // Could be a simple status like "BLS" (breakfast, lunch, snack)
+                if(val.includes('B'))bkfst++;if(val.includes('L'))lunch++;if(val.includes('S'))pmSnk++;
+              }
+            }
+          }
+          if(bkfst>0){setField(dk+'_bkfst',bkfst);const el=document.getElementById(dk+'_bkfst');if(el){el.value=bkfst;imported++;}}
+          if(lunch>0){setField(dk+'_lunch',lunch);const el=document.getElementById(dk+'_lunch');if(el){el.value=lunch;imported++;}}
+          if(pmSnk>0){setField(dk+'_pmsnk',pmSnk);const el=document.getElementById(dk+'_pmsnk');if(el){el.value=pmSnk;imported++;}}
+        }
       }
     }
 
