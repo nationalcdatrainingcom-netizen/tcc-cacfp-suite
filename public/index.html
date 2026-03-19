@@ -3475,13 +3475,19 @@ function renderMonitoringForm(){
           <td>${ynaBtns(dk+'_disc',fd[dk+'_disc'])}</td></tr>`;
       }
       html+=`</tbody></table></div>`;
-      html+=`<div style="margin-top:8px;padding:8px;background:#e3f2fd;border-radius:6px;font-size:.8rem" id="fiveDayVerify">
-        <div style="font-weight:600;margin-bottom:4px">Auto-populated data verification</div>
-        ${fd.fiveday_verified?`<span style="color:var(--success);font-weight:600">✅ Verified by ${fd.fiveday_verified_initials||'—'}</span>`
-        :`<span style="color:var(--muted)">After importing data, verify against center records:</span>
-         <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+      html+=`<div style="margin-top:10px;padding:12px;background:#e3f2fd;border:1px solid #90caf9;border-radius:8px;font-size:.8rem" id="fiveDayVerify">
+        <div style="font-weight:700;margin-bottom:6px;color:var(--navy)">📋 Monitor Verification Instructions</div>
+        <div style="margin-bottom:8px;line-height:1.5">
+          <strong>Step 1:</strong> Compare the auto-populated attendance counts above against the center's original daily attendance sign-in sheets for each of the five days. Confirm child counts match.<br>
+          <strong>Step 2:</strong> Compare the meal counts above against the center's original point-of-service meal count records (from the Playground App daily meal reports). Verify breakfast, snack, and lunch counts match for each day.<br>
+          <strong>Step 3:</strong> For any discrepancy between attendance and meal counts, or between the auto-populated data and the center's records, mark "Yes" in the Discrepancy column and note the details in Section 900 comments below.<br>
+          <strong>Step 4:</strong> Once all five days have been verified against center documentation, enter your initials below and tap Verify to certify the data is accurate.
+        </div>
+        ${fd.fiveday_verified?`<div style="padding:8px;background:#e8f5e9;border-radius:6px;margin-top:4px"><span style="color:var(--success);font-weight:700">✅ Verified by ${fd.fiveday_verified_initials||'—'} — Data confirmed against center Playground records</span></div>`
+        :`<div style="margin-top:6px;display:flex;gap:8px;align-items:center">
            <input type="text" id="verifyInitials" placeholder="Monitor initials" style="width:100px;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:.85rem">
            <button class="btn btn-sm btn-success" onclick="verifyFiveDay()">✅ Verify Data</button>
+           <span style="color:var(--muted);font-size:.75rem">Enter initials after confirming all 5 days against center records</span>
          </div>`}
       </div>`;
       html+=`<div class="mon-item"><div class="num">901</div><div class="q">Do enrollment, daily center attendance, and meal attendance reconcile?</div>${ynaBtns('901',fd['901'])}${cmtInput('901_cmt',fd['901_cmt'])}</div>`;
