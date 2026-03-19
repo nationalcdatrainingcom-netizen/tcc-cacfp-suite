@@ -1601,7 +1601,177 @@ app.post('/api/generate-gl', authCheck, async (req, res) => {
 });
 
 // ── START ─────────────────────────────────────────────────
+// First add monitoring tables
+async function initMonitoringTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS monitoring_reviews (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      center VARCHAR(50) NOT NULL,
+      review_date DATE,
+      announced BOOLEAN DEFAULT false,
+      meal_observed VARCHAR(50),
+      monitor_name VARCHAR(150),
+      arrival_time VARCHAR(20),
+      departure_time VARCHAR(20),
+      status VARCHAR(20) DEFAULT 'in_progress',
+      form_data JSONB DEFAULT '{}',
+      findings JSONB DEFAULT '[]',
+      five_day_data JSONB DEFAULT '{}',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS monitoring_schedule (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      center VARCHAR(50) NOT NULL,
+      planned_date DATE,
+      announced BOOLEAN DEFAULT false,
+      includes_meal_obs BOOLEAN DEFAULT false,
+      review_id INTEGER REFERENCES monitoring_reviews(id) ON DELETE SET NULL,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  console.log('✅ Monitoring tables ready');
+}
+
+// ── MONITORING API ───────────────────────────────────────
+
+// Classroom definitions
+const CLASSROOMS = {
+  niles: [
+    {name:'Tiny Treasures',ages:'Infants'},{name:'Koalas',ages:'Toddlers'},{name:'Jellyfish',ages:'Toddlers'},
+    {name:'Fireflies',ages:'3s'},{name:'Flamingos',ages:'Multi-age/School-age'},
+    {name:'Honey Bees',ages:'4s and 5s'},{name:'Otters',ages:'4s and 5s'}
+  ],
+  peace: [
+    {name:'Caterpillars',ages:'Infants'},{name:'Butterflies',ages:'Infants/Toddlers'},
+    {name:'Dolphins',ages:'Toddlers'},{name:'Kangas',ages:'Toddlers'},{name:'Lions',ages:'Toddlers'},
+    {name:'Montessori',ages:'Infants/Toddlers'},{name:'Bears',ages:'2½'},
+    {name:'Flamingos',ages:'Multi-age 2½-4'},{name:'Penguins',ages:'4s and 5s'},
+    {name:'Dinos',ages:'4s and 5s'},{name:'Tigers',ages:'2s and 3s'}
+  ]
+};
+
+app.get('/api/classrooms/:center', authCheck, (req, res) => {
+  res.json(CLASSROOMS[req.params.center] || []);
+});
+
+// List all monitoring reviews
+app.get('/api/monitoring', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, center } = req.query;
+    let q = 'SELECT * FROM monitoring_reviews WHERE 1=1';
+    const p = [];
+    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND fiscal_year_id=$${p.length}`; }
+    if (center) { p.push(center); q += ` AND center=$${p.length}`; }
+    q += ' ORDER BY review_date DESC';
+    const { rows } = await pool.query(q, p);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get single review
+app.get('/api/monitoring/:id', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id]);
+    res.json(rows[0] || null);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Create new review
+app.post('/api/monitoring', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, center, review_date, announced, meal_observed, monitor_name } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO monitoring_reviews (fiscal_year_id, center, review_date, announced, meal_observed, monitor_name, form_data)
+       VALUES ($1,$2,$3,$4,$5,$6,'{}') RETURNING *`,
+      [fiscal_year_id, center, review_date, announced || false, meal_observed || '', monitor_name || '']
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Save form data (auto-save as monitor fills it out)
+app.put('/api/monitoring/:id', authCheck, async (req, res) => {
+  try {
+    const { form_data, findings, five_day_data, status, arrival_time, departure_time, announced, meal_observed, monitor_name, review_date } = req.body;
+    const sets = []; const vals = []; let n = 0;
+    if (form_data !== undefined) { n++; sets.push(`form_data=$${n}`); vals.push(JSON.stringify(form_data)); }
+    if (findings !== undefined) { n++; sets.push(`findings=$${n}`); vals.push(JSON.stringify(findings)); }
+    if (five_day_data !== undefined) { n++; sets.push(`five_day_data=$${n}`); vals.push(JSON.stringify(five_day_data)); }
+    if (status) { n++; sets.push(`status=$${n}`); vals.push(status); }
+    if (arrival_time) { n++; sets.push(`arrival_time=$${n}`); vals.push(arrival_time); }
+    if (departure_time) { n++; sets.push(`departure_time=$${n}`); vals.push(departure_time); }
+    if (announced !== undefined) { n++; sets.push(`announced=$${n}`); vals.push(announced); }
+    if (meal_observed) { n++; sets.push(`meal_observed=$${n}`); vals.push(meal_observed); }
+    if (monitor_name) { n++; sets.push(`monitor_name=$${n}`); vals.push(monitor_name); }
+    if (review_date) { n++; sets.push(`review_date=$${n}`); vals.push(review_date); }
+    sets.push('updated_at=NOW()');
+    n++; vals.push(req.params.id);
+    const { rows } = await pool.query(`UPDATE monitoring_reviews SET ${sets.join(',')} WHERE id=$${n} RETURNING *`, vals);
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete review
+app.delete('/api/monitoring/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM monitoring_reviews WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get pre-populated data for a monitoring review (pulls from CACFP suite data)
+app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
+  try {
+    const review = (await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id])).rows[0];
+    if (!review) return res.status(404).json({ error: 'Not found' });
+
+    const center = review.center;
+    const fyId = review.fiscal_year_id;
+
+    // Get previous month's data for five-day reconciliation
+    const ML_ORDER = ['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep'];
+    const reviewDate = new Date(review.review_date);
+    const prevMonth = reviewDate.getMonth() === 0 ? 11 : reviewDate.getMonth() - 1;
+    const prevMonthKeys = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    const prevMK = prevMonthKeys[prevMonth];
+
+    // Attendance data for previous month
+    const attRes = await pool.query(
+      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
+      [fyId, prevMK]
+    );
+    const attData = attRes.rows[0]?.data?.[center] || {};
+
+    // Meal data for previous month
+    const mealRes = await pool.query(
+      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='meals'`,
+      [fyId, prevMK]
+    );
+    const mealData = mealRes.rows[0]?.data?.[center] || {};
+
+    // Enrollment count
+    const enrolled = attData.enrolled || 0;
+
+    res.json({
+      center,
+      classrooms: CLASSROOMS[center] || [],
+      enrollment: enrolled,
+      attendance: attData,
+      meals: mealData,
+      prevMonth: prevMK,
+      sponsorName: "The Children's Center, Inc.",
+      agreementNum: '990004457'
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 initDB().then(() => {
+  return initMonitoringTables();
+}).then(() => {
   app.listen(PORT, () => console.log(`🍽️ TCC CACFP Suite v4 running on port ${PORT}`));
 }).catch(err => {
   console.error('DB init error:', err);
