@@ -1733,28 +1733,53 @@ app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
     const fyId = review.fiscal_year_id;
 
     // Get previous month's data for five-day reconciliation
-    const ML_ORDER = ['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep'];
     const reviewDate = new Date(review.review_date);
     const prevMonth = reviewDate.getMonth() === 0 ? 11 : reviewDate.getMonth() - 1;
     const prevMonthKeys = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
     const prevMK = prevMonthKeys[prevMonth];
 
-    // Attendance data for previous month
-    const attRes = await pool.query(
-      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
-      [fyId, prevMK]
-    );
-    const attData = attRes.rows[0]?.data?.[center] || {};
+    // Also try the SAME month as the review (monitor might be reviewing current month data)
+    const sameMK = prevMonthKeys[reviewDate.getMonth()];
 
-    // Meal data for previous month
-    const mealRes = await pool.query(
-      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='meals'`,
-      [fyId, prevMK]
-    );
-    const mealData = mealRes.rows[0]?.data?.[center] || {};
+    // Try previous month first, fall back to same month
+    let attData = {};
+    let mealData = {};
+    let usedMonth = prevMK;
 
-    // Enrollment count
+    for (const mk of [prevMK, sameMK]) {
+      const attRes = await pool.query(
+        `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
+        [fyId, mk]
+      );
+      if (attRes.rows.length > 0 && attRes.rows[0].data?.[center]) {
+        attData = attRes.rows[0].data[center];
+        usedMonth = mk;
+        break;
+      }
+    }
+
+    for (const mk of [prevMK, sameMK]) {
+      const mealRes = await pool.query(
+        `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='meals'`,
+        [fyId, mk]
+      );
+      if (mealRes.rows.length > 0 && mealRes.rows[0].data?.[center]) {
+        mealData = mealRes.rows[0].data[center];
+        break;
+      }
+    }
+
+    // Check what monthly_data exists for debugging
+    const allMD = await pool.query(
+      `SELECT month_key, data_type, 
+       CASE WHEN data->$2 IS NOT NULL THEN true ELSE false END as has_center_data
+       FROM monthly_data WHERE fiscal_year_id=$1 ORDER BY month_key`,
+      [fyId, center]
+    );
+
     const enrolled = attData.enrolled || 0;
+    const hasDailyTotals = !!(attData.dailyTotals && attData.dailyTotals.length > 0);
+    const hasDayHeaders = !!(attData.dayHeaders && attData.dayHeaders.length > 0);
 
     res.json({
       center,
@@ -1762,9 +1787,20 @@ app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
       enrollment: enrolled,
       attendance: attData,
       meals: mealData,
-      prevMonth: prevMK,
+      prevMonth: usedMonth,
       sponsorName: "The Children's Center, Inc.",
-      agreementNum: '990004457'
+      agreementNum: '990004457',
+      _debug: {
+        reviewDate: review.review_date,
+        triedMonths: [prevMK, sameMK],
+        usedMonth,
+        hasDailyTotals,
+        hasDayHeaders,
+        dayHeadersSample: (attData.dayHeaders || []).slice(0, 5),
+        dailyTotalsSample: (attData.dailyTotals || []).slice(0, 5),
+        mealDataKeys: Object.keys(mealData),
+        availableData: allMD.rows
+      }
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
