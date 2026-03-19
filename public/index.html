@@ -3608,6 +3608,15 @@ async function autoPopulateFiveDay(startDate){
     const center=activeReview.center;
     const centerAtt=reviewPrefill?.attendance||{};
     const centerMeals=reviewPrefill?.meals||{};
+    const dbg=reviewPrefill?._debug||{};
+
+    console.log('Five-Day Debug:',JSON.stringify(dbg,null,2));
+    console.log('Attendance keys:',Object.keys(centerAtt));
+    console.log('Has dailyTotals:',!!centerAtt.dailyTotals,'length:',centerAtt.dailyTotals?.length);
+    console.log('Has dayHeaders:',!!centerAtt.dayHeaders,'length:',centerAtt.dayHeaders?.length);
+    console.log('dayHeaders sample:',centerAtt.dayHeaders?.slice(0,5));
+    console.log('dailyTotals sample:',centerAtt.dailyTotals?.slice(0,5));
+    console.log('Meal data keys:',Object.keys(centerMeals));
 
     let imported=0;
 
@@ -3655,7 +3664,8 @@ async function autoPopulateFiveDay(startDate){
     if(imported>0){
       showToast(`Dates populated + ${imported} data fields imported from ${ML[reviewPrefill.prevMonth]||reviewPrefill.prevMonth}. Verify against center records.`,'ok');
     }else{
-      showToast(`Dates populated. No daily data found for ${ML[reviewPrefill.prevMonth]||reviewPrefill.prevMonth} — enter manually from center records.`,'ok');
+      const dbgMsg=dbg.hasDailyTotals?'dailyTotals found but no date match':'no dailyTotals in stored data';
+      showToast(`Dates populated. Data not auto-filled (${dbgMsg}, checked: ${dbg.triedMonths?.join(',')||'?'}, center: ${center}). Enter manually.`,'');
     }
   }catch(e){
     console.error('Five-day import error:',e);
