@@ -336,12 +336,39 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             <div class="card-body">
               <div class="form-grid">
                 <div class="form-group"><label>Center</label><select id="monCenter"><option value="niles">Niles</option><option value="peace">Peace Boulevard</option></select></div>
-                <div class="form-group"><label>Review Date</label><input type="date" id="monDate" value="${new Date().toISOString().split('T')[0]}"></div>
+                <div class="form-group"><label>Review Date</label><input type="date" id="monDate"></div>
                 <div class="form-group"><label>Type</label><select id="monAnnounced"><option value="false">Unannounced</option><option value="true">Announced</option></select></div>
                 <div class="form-group"><label>Meal to Observe</label><select id="monMeal"><option value="">Select...</option><option value="Breakfast">Breakfast</option><option value="AM Snack">AM Snack</option><option value="Lunch">Lunch</option><option value="PM Snack">PM Snack</option><option value="Supper">Supper</option></select></div>
                 <div class="form-group"><label>Monitor Name</label><input type="text" id="monMonitor" value="Mary Wardlaw"></div>
               </div>
               <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-navy" onclick="createReview()">Start Review</button><button class="btn btn-outline" onclick="hideNewReview()">Cancel</button></div>
+            </div>
+          </div>
+
+          <!-- Monitoring Schedule -->
+          <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📆 Monitoring Schedule — FY <span id="schedFYLabel"></span></h3>
+            <button class="btn btn-sm btn-navy" onclick="showAddSchedule()">+ Plan Review</button></div>
+            <div class="card-body">
+              <p style="font-size:.85rem;color:var(--muted);margin-bottom:8px">Minimum 3 reviews per site per year. At least 2 unannounced. At least 1 unannounced includes meal observation.</p>
+              <div id="scheduleView">Loading...</div>
+            </div>
+          </div>
+
+          <!-- Add Schedule Modal -->
+          <div id="addScheduleForm" style="display:none" class="card" style="margin-top:8px">
+            <div class="card-hdr"><h3>Plan a Monitoring Visit</h3></div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="form-group"><label>Center</label><select id="schedCenter"><option value="niles">Niles</option><option value="peace">Peace Boulevard</option></select></div>
+                <div class="form-group"><label>Planned Date</label><input type="date" id="schedDate"></div>
+                <div class="form-group"><label>Type</label><select id="schedAnnounced"><option value="false">Unannounced</option><option value="true">Announced</option></select></div>
+                <div class="form-group"><label>Include Meal Observation?</label><select id="schedMealObs"><option value="false">No</option><option value="true">Yes</option></select></div>
+              </div>
+              <div class="form-group" style="margin-top:8px"><label>Notes</label><input type="text" id="schedNotes" placeholder="e.g., Focus on infant rooms"></div>
+              <div style="display:flex;gap:8px;margin-top:12px">
+                <button class="btn btn-navy" onclick="saveSchedule()">Save to Schedule</button>
+                <button class="btn btn-outline" onclick="hideAddSchedule()">Cancel</button>
+              </div>
             </div>
           </div>
 
@@ -407,6 +434,43 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           </div>
 
           <!-- Audit Cross-Check -->
+          <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📋 Attendance vs Meal Count Cross-Check</h3></div>
+
+          <!-- Corrective Action Tracking -->
+          </div>
+          <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>⚠️ Corrective Action Tracking</h3>
+            <div style="display:flex;gap:6px">
+              <select id="caFYSelect" onchange="loadCorrectiveActions()" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:.8rem"></select>
+              <button class="btn btn-sm btn-navy" onclick="showAddCA()">+ Add Finding</button>
+            </div></div>
+            <div class="card-body">
+              <p style="font-size:.85rem;color:var(--muted);margin-bottom:8px">Track findings from monitoring reviews and their resolution. Select a fiscal year to view or add items retroactively.</p>
+              <div id="caList">Loading...</div>
+            </div>
+          </div>
+
+          <!-- Add Corrective Action -->
+          <div id="addCAForm" style="display:none" class="card" style="margin-top:8px">
+            <div class="card-hdr"><h3>Add Finding / Corrective Action</h3></div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="form-group"><label>Center</label><select id="caCenter"><option value="niles">Niles</option><option value="peace">Peace Boulevard</option></select></div>
+                <div class="form-group"><label>Finding Item #</label><input type="text" id="caItem" placeholder="e.g., 301, 503, 701"></div>
+                <div class="form-group"><label>Assigned To</label><input type="text" id="caAssigned" placeholder="e.g., Kirsten, Gabby"></div>
+                <div class="form-group"><label>Due Date</label><input type="date" id="caDue"></div>
+              </div>
+              <div class="form-group" style="margin-top:8px"><label>Finding Description</label>
+                <textarea id="caDescription" style="width:100%;height:60px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:.85rem" placeholder="Describe the finding..."></textarea></div>
+              <div class="form-group" style="margin-top:8px"><label>Required Corrective Action</label>
+                <textarea id="caAction" style="width:100%;height:60px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:.85rem" placeholder="What needs to be done to correct..."></textarea></div>
+              <div style="display:flex;gap:8px;margin-top:12px">
+                <button class="btn btn-navy" onclick="saveCA()">Save Finding</button>
+                <button class="btn btn-outline" onclick="hideAddCA()">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Audit Cross-Check (moved after CA) -->
           <div class="card" style="margin-top:12px"><div class="card-hdr"><h3>📋 Attendance vs Meal Count Cross-Check</h3></div>
             <div class="card-body">
               <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Compares child attendance records against meal counts to flag discrepancies.</p>
@@ -598,7 +662,7 @@ function navTo(page){
   if(page==='documents')renderProgramDocs();
   if(page==='yer')renderYER();
   if(page==='dashboard')renderDashboard();
-  if(page==='monitoring'){loadMonitoringList();loadTrainingList();loadReviewPrepDashboard();}
+  if(page==='monitoring'){loadMonitoringList();loadScheduleView();loadTrainingList();initCAFYSelect();loadCorrectiveActions();loadReviewPrepDashboard();}
 }
 
 function monthSubTab(tab){
@@ -4035,6 +4099,263 @@ async function completeReview(){
     await api(`/api/monitoring/${activeReview.id}`,{method:'PUT',body:{status:'completed'}});
     showToast('✅ Review completed!','ok');
     closeReview();
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+// ═══════════════════════════════════════════════════
+// CORRECTIVE ACTION TRACKING
+// ═══════════════════════════════════════════════════
+let caSelectedFY=null;
+
+function initCAFYSelect(){
+  const sel=document.getElementById('caFYSelect');
+  if(!sel||!fiscalYears)return;
+  sel.innerHTML='';
+  // Current + 2 previous years
+  const sorted=[...fiscalYears].sort((a,b)=>b.start_year-a.start_year);
+  const show=sorted.slice(0,3);
+  for(const fy of show){
+    const opt=document.createElement('option');
+    opt.value=fy.id;opt.textContent=fy.label;
+    if(fy.id===activeFY.id)opt.selected=true;
+    sel.appendChild(opt);
+  }
+  // If fewer than 3, that's fine
+  caSelectedFY=activeFY.id;
+}
+
+async function loadCorrectiveActions(){
+  const sel=document.getElementById('caFYSelect');
+  const fyId=sel?sel.value:activeFY.id;
+  caSelectedFY=fyId;
+  const el=document.getElementById('caList');
+  if(!el)return;
+
+  try{
+    const actions=await api(`/api/corrective-actions?fiscal_year_id=${fyId}`);
+    if(!actions.length){
+      el.innerHTML='<p style="color:var(--muted);text-align:center;padding:12px;font-size:.85rem">No findings or corrective actions recorded for this fiscal year.</p>';
+      return;
+    }
+
+    const open=actions.filter(a=>a.status==='open');
+    const inProgress=actions.filter(a=>a.status==='in_progress');
+    const resolved=actions.filter(a=>a.status==='resolved');
+
+    let html=`<div style="display:flex;gap:8px;margin-bottom:12px">
+      <div style="padding:8px;background:#fce4ec;border-radius:6px;text-align:center;flex:1"><div style="font-weight:700;font-size:1.1rem;color:var(--error)">${open.length}</div><div style="font-size:.7rem;color:var(--muted)">Open</div></div>
+      <div style="padding:8px;background:#fff8e1;border-radius:6px;text-align:center;flex:1"><div style="font-weight:700;font-size:1.1rem;color:#8D6E00">${inProgress.length}</div><div style="font-size:.7rem;color:var(--muted)">In Progress</div></div>
+      <div style="padding:8px;background:#e8f5e9;border-radius:6px;text-align:center;flex:1"><div style="font-weight:700;font-size:1.1rem;color:var(--success)">${resolved.length}</div><div style="font-size:.7rem;color:var(--muted)">Resolved</div></div>
+    </div>`;
+
+    for(const a of actions){
+      const statusColors={open:'var(--error)',in_progress:'#8D6E00',resolved:'var(--success)'};
+      const statusIcons={open:'🔴',in_progress:'🟡',resolved:'✅'};
+      const statusLabels={open:'Open',in_progress:'In Progress',resolved:'Resolved'};
+      const cLabel=a.center==='niles'?'Niles':'Peace';
+      const isOverdue=a.status!=='resolved'&&a.due_date&&new Date(a.due_date)<new Date();
+
+      html+=`<div style="padding:10px;margin-bottom:8px;border:1px solid ${isOverdue?'var(--error)':'var(--border)'};border-radius:8px;background:${a.status==='resolved'?'#fafaf8':'#fff'}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+          <div>
+            <span style="font-size:.9rem">${statusIcons[a.status]}</span>
+            <span style="font-weight:600;font-size:.9rem">${a.finding_item?'Item '+a.finding_item+': ':''}${cLabel}</span>
+            ${isOverdue?'<span style="font-size:.7rem;color:var(--error);font-weight:600;margin-left:6px">OVERDUE</span>':''}
+          </div>
+          <div style="display:flex;gap:4px">
+            ${a.status==='open'?`<button class="btn btn-sm btn-outline" onclick="updateCAStatus(${a.id},'in_progress')" style="font-size:.7rem;padding:3px 6px">Start</button>`:''}
+            ${a.status==='in_progress'?`<button class="btn btn-sm btn-success" onclick="resolveCA(${a.id})" style="font-size:.7rem;padding:3px 6px">Resolve</button>`:''}
+            ${a.status==='resolved'?`<button class="btn btn-sm btn-outline" onclick="updateCAStatus(${a.id},'open')" style="font-size:.7rem;padding:3px 6px">Reopen</button>`:''}
+            <button class="btn-remove" onclick="deleteCA(${a.id})" title="Delete">✕</button>
+          </div>
+        </div>
+        <div style="font-size:.85rem;margin-bottom:4px">${a.finding_description}</div>
+        ${a.corrective_action?`<div style="font-size:.8rem;color:var(--navy);margin-bottom:4px"><strong>Action:</strong> ${a.corrective_action}</div>`:''}
+        <div style="display:flex;gap:12px;font-size:.75rem;color:var(--muted)">
+          ${a.assigned_to?`<span>Assigned: <strong>${a.assigned_to}</strong></span>`:''}
+          ${a.due_date?`<span>Due: <strong>${new Date(a.due_date).toLocaleDateString()}</strong></span>`:''}
+          ${a.resolved_date?`<span>Resolved: <strong>${new Date(a.resolved_date).toLocaleDateString()}</strong></span>`:''}
+          ${a.resolved_notes?`<span>Notes: ${a.resolved_notes}</span>`:''}
+        </div>
+      </div>`;
+    }
+    el.innerHTML=html;
+  }catch(e){
+    el.innerHTML=`<div class="alert alert-err">Error: ${e.message}</div>`;
+  }
+}
+
+function showAddCA(){document.getElementById('addCAForm').style.display='block';}
+function hideAddCA(){document.getElementById('addCAForm').style.display='none';}
+
+async function saveCA(){
+  const desc=document.getElementById('caDescription').value;
+  if(!desc){showToast('Finding description is required','err');return;}
+  try{
+    await api('/api/corrective-actions',{method:'POST',body:{
+      fiscal_year_id:caSelectedFY||activeFY.id,
+      center:document.getElementById('caCenter').value,
+      finding_item:document.getElementById('caItem').value,
+      finding_description:desc,
+      corrective_action:document.getElementById('caAction').value,
+      assigned_to:document.getElementById('caAssigned').value,
+      due_date:document.getElementById('caDue').value||null
+    }});
+    hideAddCA();loadCorrectiveActions();
+    showToast('✅ Finding recorded!','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function updateCAStatus(id,status){
+  try{
+    await api(`/api/corrective-actions/${id}`,{method:'PUT',body:{status}});
+    loadCorrectiveActions();showToast('Status updated','ok');
+  }catch(e){showToast('Error','err');}
+}
+
+async function resolveCA(id){
+  const notes=prompt('Resolution notes (what was done to correct):');
+  if(notes===null)return;
+  try{
+    await api(`/api/corrective-actions/${id}`,{method:'PUT',body:{
+      status:'resolved',resolved_date:new Date().toISOString().split('T')[0],resolved_notes:notes
+    }});
+    loadCorrectiveActions();showToast('✅ Marked as resolved!','ok');
+  }catch(e){showToast('Error','err');}
+}
+
+async function deleteCA(id){
+  if(!confirm('Delete this finding?'))return;
+  try{await api(`/api/corrective-actions/${id}`,{method:'DELETE'});loadCorrectiveActions();showToast('Deleted','ok');}catch(e){}
+}
+
+// ═══════════════════════════════════════════════════
+// MONITORING SCHEDULE TRACKER
+// ═══════════════════════════════════════════════════
+async function loadScheduleView(){
+  const el=document.getElementById('scheduleView');
+  const fyLabel=document.getElementById('schedFYLabel');
+  if(!el)return;
+  if(fyLabel&&activeFY)fyLabel.textContent=activeFY.label;
+
+  try{
+    const schedule=await api(`/api/monitoring-schedule?fiscal_year_id=${activeFY.id}`);
+    const reviews=await api(`/api/monitoring?fiscal_year_id=${activeFY.id}`);
+
+    // Compliance summary per center
+    const centers=['niles','peace'];
+    let html='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">';
+    for(const c of centers){
+      const cLabel=c==='niles'?'Niles':'Peace Blvd';
+      const cReviews=reviews.filter(r=>r.center===c);
+      const completed=cReviews.filter(r=>r.status==='completed');
+      const unannounced=cReviews.filter(r=>!r.announced);
+      const unannouncedMealObs=cReviews.filter(r=>!r.announced&&r.meal_observed&&r.meal_observed!=='');
+      const planned=schedule.filter(s=>s.center===c&&!s.review_id);
+      const total=completed.length;
+      const meetsMin=total>=3;
+      const meetsUnannounced=unannounced.length>=2;
+      const meetsMealObs=unannouncedMealObs.length>=1;
+      const allMet=meetsMin&&meetsUnannounced&&meetsMealObs;
+
+      html+=`<div style="padding:12px;border:2px solid ${allMet?'var(--success)':'var(--border)'};border-radius:10px;background:${allMet?'#f0faf0':'#fff'}">
+        <div style="font-weight:700;font-size:.95rem;color:var(--navy);margin-bottom:8px">📍 ${cLabel} ${allMet?'✅':''}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.8rem">
+          <div>${total>=3?'✅':'🔴'} Reviews: <strong>${total}/3</strong></div>
+          <div>${unannounced.length>=2?'✅':'🔴'} Unannounced: <strong>${unannounced.length}/2+</strong></div>
+          <div>${meetsMealObs?'✅':'🔴'} Unannounced meal obs: <strong>${unannouncedMealObs.length}/1+</strong></div>
+          <div>🗓️ Planned: <strong>${planned.length}</strong></div>
+        </div>
+      </div>`;
+    }
+    html+='</div>';
+
+    // Timeline view
+    const allItems=[];
+    for(const s of schedule){
+      const linked=s.review_id?reviews.find(r=>r.id===s.review_id):null;
+      allItems.push({type:'scheduled',date:s.planned_date,center:s.center,announced:s.announced,mealObs:s.includes_meal_obs,
+        notes:s.notes,completed:!!linked,reviewStatus:linked?.status,id:s.id,reviewId:s.review_id});
+    }
+    // Add completed reviews not linked to schedule
+    for(const r of reviews){
+      if(!schedule.some(s=>s.review_id===r.id)){
+        allItems.push({type:'unscheduled',date:r.review_date,center:r.center,announced:r.announced,
+          mealObs:r.meal_observed&&r.meal_observed!=='',completed:r.status==='completed',reviewStatus:r.status,reviewId:r.id});
+      }
+    }
+    allItems.sort((a,b)=>new Date(a.date)-new Date(b.date));
+
+    if(allItems.length>0){
+      html+=`<table class="staff-table" style="font-size:.8rem"><thead><tr><th>Date</th><th>Center</th><th>Type</th><th>Meal Obs</th><th>Status</th><th>Notes</th><th></th></tr></thead><tbody>`;
+      for(const item of allItems){
+        const cLabel=item.center==='niles'?'Niles':'Peace';
+        const isPast=new Date(item.date)<new Date();
+        const typeLabel=item.announced?'Announced':'Unannounced';
+        const typeBg=item.announced?'background:#e3f2fd;color:#1565c0':'background:#fff8e1;color:#8D6E00';
+        let statusLabel,statusColor;
+        if(item.completed||item.reviewStatus==='completed'){statusLabel='✅ Completed';statusColor='var(--success)';}
+        else if(item.reviewStatus==='in_progress'){statusLabel='📝 In Progress';statusColor='var(--primary)';}
+        else if(isPast){statusLabel='⚠️ Overdue';statusColor='var(--error)';}
+        else{statusLabel='🗓️ Planned';statusColor='var(--muted)';}
+
+        html+=`<tr>
+          <td style="white-space:nowrap;font-weight:500">${new Date(item.date).toLocaleDateString()}</td>
+          <td>${cLabel}</td>
+          <td><span style="padding:2px 6px;border-radius:4px;font-size:.7rem;font-weight:600;${typeBg}">${typeLabel}</span></td>
+          <td style="text-align:center">${item.mealObs?'🍽️':''}</td>
+          <td style="color:${statusColor};font-weight:500;font-size:.8rem">${statusLabel}</td>
+          <td style="font-size:.75rem;color:var(--muted)">${item.notes||''}</td>
+          <td style="display:flex;gap:2px">
+            ${item.type==='scheduled'&&!item.completed?`<button class="btn btn-sm btn-primary" onclick="startReviewFromSchedule(${item.id},'${item.center}','${item.date}',${item.announced})" title="Start review" style="font-size:.7rem;padding:3px 6px">▶</button>`:''}
+            ${item.type==='scheduled'?`<button class="btn-remove" onclick="deleteScheduleItem(${item.id})" title="Remove">✕</button>`:''}
+          </td>
+        </tr>`;
+      }
+      html+=`</tbody></table>`;
+    }else{
+      html+='<p style="color:var(--muted);text-align:center;padding:12px;font-size:.85rem">No reviews scheduled or completed yet.</p>';
+    }
+
+    el.innerHTML=html;
+  }catch(e){
+    el.innerHTML=`<div class="alert alert-err">Error: ${e.message}</div>`;
+  }
+}
+
+function showAddSchedule(){document.getElementById('addScheduleForm').style.display='block';}
+function hideAddSchedule(){document.getElementById('addScheduleForm').style.display='none';}
+
+async function saveSchedule(){
+  const center=document.getElementById('schedCenter').value;
+  const date=document.getElementById('schedDate').value;
+  if(!date){showToast('Select a date','err');return;}
+  try{
+    await api('/api/monitoring-schedule',{method:'POST',body:{
+      fiscal_year_id:activeFY.id,center,planned_date:date,
+      announced:document.getElementById('schedAnnounced').value==='true',
+      includes_meal_obs:document.getElementById('schedMealObs').value==='true',
+      notes:document.getElementById('schedNotes').value
+    }});
+    hideAddSchedule();loadScheduleView();
+    showToast('✅ Review scheduled!','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function deleteScheduleItem(id){
+  if(!confirm('Remove this scheduled review?'))return;
+  try{await api(`/api/monitoring-schedule/${id}`,{method:'DELETE'});loadScheduleView();showToast('Removed','ok');}catch(e){}
+}
+
+async function startReviewFromSchedule(schedId,center,date,announced){
+  try{
+    const r=await api('/api/monitoring',{method:'POST',body:{
+      fiscal_year_id:activeFY.id,center,review_date:date,
+      announced,monitor_name:'Mary Wardlaw'
+    }});
+    // Link schedule to review
+    await api(`/api/monitoring-schedule/${schedId}`,{method:'PUT',body:{review_id:r.id}});
+    openReview(r.id);
   }catch(e){showToast('Error: '+e.message,'err');}
 }
 
