@@ -3453,7 +3453,8 @@ function renderMonitoringForm(){
     <h2 style="margin:0;font-size:1.2rem">🔍 Monitoring Review — ${cLabel}</h2>
     <div style="display:flex;gap:8px"><button class="btn btn-sm btn-outline" onclick="closeReview()">← Back</button>
       <button class="btn btn-sm btn-success" onclick="saveReview()">💾 Save</button>
-      <button class="btn btn-sm btn-navy" onclick="completeReview()">✅ Complete</button></div>
+      <button class="btn btn-sm btn-navy" onclick="completeReview()">✅ Complete</button>
+      <button class="btn btn-sm btn-primary" onclick="generateMonitoringDocx()">📄 .docx</button></div>
   </div>`;
 
   // Header
@@ -3599,6 +3600,7 @@ function renderMonitoringForm(){
   html+=`<div style="display:flex;gap:8px;margin-top:12px;justify-content:center">
     <button class="btn btn-success" onclick="saveReview()">💾 Save Progress</button>
     <button class="btn btn-navy" onclick="completeReview()">✅ Complete Review</button>
+    <button class="btn btn-primary" onclick="generateMonitoringDocx()">📄 Download .docx</button>
     <button class="btn btn-outline" onclick="closeReview()">← Back to List</button>
   </div>`;
 
@@ -3858,6 +3860,23 @@ async function saveReview(){
     }
     showToast('✅ Review saved!','ok');
   }catch(e){showToast('Save error: '+e.message,'err');}
+}
+
+async function generateMonitoringDocx(){
+  try{
+    await saveReview();
+    showToast('Generating monitoring review document...','');
+    const res=await fetch(`/api/monitoring/${activeReview.id}/generate-docx`,{method:'POST',headers:{'Content-Type':'application/json','X-Access-PIN':PIN}});
+    if(!res.ok){const e=await res.json();throw new Error(e.error||'Generate failed');}
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+    const cd=res.headers.get('content-disposition')||'';
+    const fnMatch=cd.match(/filename="(.+)"/);
+    a.download=fnMatch?fnMatch[1]:'Monitoring_Review.docx';
+    a.click();URL.revokeObjectURL(url);
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    showToast('✅ Monitoring review document generated and saved!','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
 }
 
 async function completeReview(){
