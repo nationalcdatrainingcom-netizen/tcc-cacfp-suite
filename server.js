@@ -1667,6 +1667,20 @@ async function initMonitoringTables() {
       notes TEXT,
       created_at TIMESTAMP DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS training_records (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      training_date DATE NOT NULL,
+      training_type VARCHAR(50) NOT NULL,
+      topic VARCHAR(300) NOT NULL,
+      location VARCHAR(200),
+      center VARCHAR(50),
+      trainer VARCHAR(150),
+      attendees JSONB DEFAULT '[]',
+      notes TEXT,
+      doc_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
   `);
   console.log('✅ Monitoring tables ready');
 }
@@ -2123,6 +2137,119 @@ app.get('/api/adult-meals', authCheck, async (req, res) => {
     );
     res.json({ daily: rows, total: parseInt(totalRes.rows[0].total) || 0 });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── TRAINING RECORDS ─────────────────────────────────────
+app.get('/api/training', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id } = req.query;
+    const q = fiscal_year_id
+      ? 'SELECT * FROM training_records WHERE fiscal_year_id=$1 ORDER BY training_date DESC'
+      : 'SELECT * FROM training_records ORDER BY training_date DESC';
+    const { rows } = await pool.query(q, fiscal_year_id ? [fiscal_year_id] : []);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/training', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, training_date, training_type, topic, location, center, trainer, attendees, notes } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO training_records (fiscal_year_id, training_date, training_type, topic, location, center, trainer, attendees, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [fiscal_year_id, training_date, training_type, topic, location || '', center || 'both', trainer || '', JSON.stringify(attendees || []), notes || '']
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/training/:id', authCheck, async (req, res) => {
+  try {
+    const { training_date, training_type, topic, location, center, trainer, attendees, notes } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE training_records SET training_date=$1, training_type=$2, topic=$3, location=$4, center=$5, trainer=$6, attendees=$7, notes=$8
+       WHERE id=$9 RETURNING *`,
+      [training_date, training_type, topic, location || '', center || 'both', trainer || '', JSON.stringify(attendees || []), notes || '', req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/training/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM training_records WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Generate training documentation report
+app.post('/api/generate-training-report', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id } = req.body;
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
+    const fy = fyRes.rows[0]; if (!fy) return res.status(404).json({ error: 'FY not found' });
+    const { rows } = await pool.query('SELECT * FROM training_records WHERE fiscal_year_id=$1 ORDER BY training_date', [fiscal_year_id]);
+    const navy = '1B2A4A';
+
+    const border = { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' };
+    const borders = { top: border, bottom: border, left: border, right: border };
+    const cm = { top: 80, bottom: 80, left: 120, right: 120 };
+    function cell(text, opts = {}) {
+      return new TableCell({ borders, margins: cm,
+        width: opts.w ? { size: opts.w, type: WidthType.DXA } : undefined,
+        shading: opts.bg ? { type: ShadingType.CLEAR, fill: opts.bg } : undefined,
+        children: [new Paragraph({ alignment: opts.align || AlignmentType.LEFT,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 18, font: 'Arial', color: opts.color || '333333' })] })] });
+    }
+
+    const tableWidth = 13680; // landscape content width
+    const colWidths = [1400, 1600, 3000, 1800, 2000, 3880];
+    const hdr = new TableRow({ children: [
+      cell('Date', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[0] }),
+      cell('Type', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[1] }),
+      cell('Topic', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[2] }),
+      cell('Location', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[3] }),
+      cell('Trainer', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[4] }),
+      cell('Attendees', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[5] }),
+    ] });
+    const dataRows = rows.map((r, i) => new TableRow({ children: [
+      cell(new Date(r.training_date).toLocaleDateString(), { w: colWidths[0], bg: i % 2 ? 'F5F5F5' : undefined }),
+      cell(r.training_type, { w: colWidths[1], bg: i % 2 ? 'F5F5F5' : undefined }),
+      cell(r.topic, { w: colWidths[2], bg: i % 2 ? 'F5F5F5' : undefined }),
+      cell(r.location, { w: colWidths[3], bg: i % 2 ? 'F5F5F5' : undefined }),
+      cell(r.trainer, { w: colWidths[4], bg: i % 2 ? 'F5F5F5' : undefined }),
+      cell((r.attendees || []).join(', '), { w: colWidths[5], sz: 14, bg: i % 2 ? 'F5F5F5' : undefined }),
+    ] }));
+
+    const cacfpCount = rows.filter(r => r.training_type === 'CACFP').length;
+    const crCount = rows.filter(r => r.training_type === 'Civil Rights').length;
+
+    const doc = new Document({
+      sections: [{
+        properties: { page: { size: { width: 12240, height: 15840, orientation: 'landscape' }, margin: { top: 720, bottom: 720, left: 1080, right: 1080 } } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+            new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 28, font: 'Arial', color: navy }) ] }),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [
+            new TextRun({ text: `CACFP Training Documentation — FY ${fy.label}`, size: 22, font: 'Arial', color: '666666' }) ] }),
+          new Paragraph({ spacing: { after: 100 }, children: [
+            new TextRun({ text: `Total sessions: ${rows.length} | CACFP: ${cacfpCount} | Civil Rights: ${crCount} | Generated: ${new Date().toLocaleDateString()}`, size: 16, font: 'Arial', color: '999999' }) ] }),
+          new Table({ width: { size: tableWidth, type: WidthType.DXA }, columnWidths: colWidths, rows: [hdr, ...dataRows] }),
+        ]
+      }]
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+    const filename = `Training_Documentation_${fy.label}.docx`;
+    await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1,'annual','training_report',$2,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$3,$4)`,
+      [fiscal_year_id, filename, buffer, JSON.stringify({ sessions: rows.length })]
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
 // ── CACFP MEAL PATTERN REQUIREMENTS ──────────────────────
