@@ -1681,6 +1681,22 @@ async function initMonitoringTables() {
       doc_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
       created_at TIMESTAMP DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS corrective_actions (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      review_id INTEGER REFERENCES monitoring_reviews(id) ON DELETE SET NULL,
+      center VARCHAR(50) NOT NULL,
+      finding_item VARCHAR(20),
+      finding_description TEXT NOT NULL,
+      corrective_action TEXT,
+      assigned_to VARCHAR(150),
+      due_date DATE,
+      status VARCHAR(30) DEFAULT 'open',
+      resolved_date DATE,
+      resolved_notes TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
   `);
   console.log('✅ Monitoring tables ready');
 }
@@ -2136,6 +2152,117 @@ app.get('/api/adult-meals', authCheck, async (req, res) => {
       [fiscal_year_id, month_key]
     );
     res.json({ daily: rows, total: parseInt(totalRes.rows[0].total) || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── CORRECTIVE ACTIONS ────────────────────────────────────
+app.get('/api/corrective-actions', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, status } = req.query;
+    let q = 'SELECT ca.*, mr.review_date, mr.center as review_center FROM corrective_actions ca LEFT JOIN monitoring_reviews mr ON mr.id = ca.review_id WHERE 1=1';
+    const p = [];
+    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND ca.fiscal_year_id=$${p.length}`; }
+    if (status) { p.push(status); q += ` AND ca.status=$${p.length}`; }
+    q += ' ORDER BY CASE ca.status WHEN \'open\' THEN 0 WHEN \'in_progress\' THEN 1 WHEN \'resolved\' THEN 2 END, ca.due_date NULLS LAST';
+    const { rows } = await pool.query(q, p);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get corrective actions across all fiscal years (for retroactive viewing)
+app.get('/api/corrective-actions/all', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ca.*, mr.review_date, mr.center as review_center, fy.label as fy_label
+       FROM corrective_actions ca
+       LEFT JOIN monitoring_reviews mr ON mr.id = ca.review_id
+       LEFT JOIN fiscal_years fy ON fy.id = ca.fiscal_year_id
+       ORDER BY ca.created_at DESC`
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/corrective-actions', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, review_id, center, finding_item, finding_description, corrective_action, assigned_to, due_date } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO corrective_actions (fiscal_year_id, review_id, center, finding_item, finding_description, corrective_action, assigned_to, due_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [fiscal_year_id, review_id || null, center, finding_item || '', finding_description, corrective_action || '', assigned_to || '', due_date || null]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/corrective-actions/:id', authCheck, async (req, res) => {
+  try {
+    const { status, corrective_action, assigned_to, due_date, resolved_date, resolved_notes, finding_description, finding_item, center } = req.body;
+    const sets = ['updated_at=NOW()']; const vals = []; let n = 0;
+    if (status) { n++; sets.push(`status=$${n}`); vals.push(status); }
+    if (corrective_action !== undefined) { n++; sets.push(`corrective_action=$${n}`); vals.push(corrective_action); }
+    if (assigned_to !== undefined) { n++; sets.push(`assigned_to=$${n}`); vals.push(assigned_to); }
+    if (due_date !== undefined) { n++; sets.push(`due_date=$${n}`); vals.push(due_date || null); }
+    if (resolved_date !== undefined) { n++; sets.push(`resolved_date=$${n}`); vals.push(resolved_date || null); }
+    if (resolved_notes !== undefined) { n++; sets.push(`resolved_notes=$${n}`); vals.push(resolved_notes); }
+    if (finding_description !== undefined) { n++; sets.push(`finding_description=$${n}`); vals.push(finding_description); }
+    if (finding_item !== undefined) { n++; sets.push(`finding_item=$${n}`); vals.push(finding_item); }
+    if (center !== undefined) { n++; sets.push(`center=$${n}`); vals.push(center); }
+    n++; vals.push(req.params.id);
+    const { rows } = await pool.query(`UPDATE corrective_actions SET ${sets.join(',')} WHERE id=$${n} RETURNING *`, vals);
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/corrective-actions/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM corrective_actions WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── MONITORING SCHEDULE ───────────────────────────────────
+app.get('/api/monitoring-schedule', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id } = req.query;
+    const { rows } = await pool.query(
+      `SELECT ms.*, mr.status as review_status, mr.review_date as actual_date
+       FROM monitoring_schedule ms
+       LEFT JOIN monitoring_reviews mr ON mr.id = ms.review_id
+       WHERE ms.fiscal_year_id = $1 ORDER BY ms.planned_date`,
+      [fiscal_year_id]
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/monitoring-schedule', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, center, planned_date, announced, includes_meal_obs, notes } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO monitoring_schedule (fiscal_year_id, center, planned_date, announced, includes_meal_obs, notes)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [fiscal_year_id, center, planned_date, announced || false, includes_meal_obs || false, notes || '']
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/monitoring-schedule/:id', authCheck, async (req, res) => {
+  try {
+    const { review_id } = req.body;
+    const { rows } = await pool.query(
+      'UPDATE monitoring_schedule SET review_id=$1 WHERE id=$2 RETURNING *',
+      [review_id, req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/monitoring-schedule/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM monitoring_schedule WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
