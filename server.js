@@ -930,6 +930,87 @@ app.post('/api/generate-ta-forms-all', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── CHILD ATTENDANCE DETAIL REPORT ────────────────────────
+app.get('/api/child-attendance-report', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, center } = req.query;
+    const mdRes = await pool.query(
+      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
+      [fiscal_year_id, month_key]
+    );
+    if (!mdRes.rows.length) return res.json({ children: [], summary: {} });
+    const data = mdRes.rows[0].data;
+    const centerData = center ? (data[center] || {}) : data;
+
+    // Get the raw children attendance if stored
+    const allChildren = [];
+    for (const c of ['niles', 'peace']) {
+      if (center && c !== center) continue;
+      const cd = data[c];
+      if (!cd || !cd.children) continue;
+      for (const child of cd.children) {
+        allChildren.push({ ...child, center: c });
+      }
+    }
+    res.json({ children: allChildren, data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ATTENDANCE vs MEAL COUNT CROSS-CHECK ─────────────────
+app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key } = req.query;
+    const attRes = await pool.query(
+      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
+      [fiscal_year_id, month_key]
+    );
+    const mealRes = await pool.query(
+      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='meals'`,
+      [fiscal_year_id, month_key]
+    );
+    const attData = attRes.rows[0]?.data || {};
+    const mealData = mealRes.rows[0]?.data || {};
+    const flags = [];
+
+    for (const center of ['niles', 'peace']) {
+      const att = attData[center] || {};
+      const meals = mealData[center] || {};
+      const attChildren = att.children || [];
+      const mealChildren = meals.children || [];
+
+      // Build attendance day map per child
+      const attMap = {};
+      for (const child of attChildren) {
+        const name = child.name || child.childName || '';
+        if (!attMap[name]) attMap[name] = { days: 0, name };
+        attMap[name].days = child.daysPresent || child.days || 0;
+      }
+
+      // Check meal children against attendance
+      for (const child of mealChildren) {
+        const name = child.name || child.childName || '';
+        const mealDays = child.totalMealDays || child.daysWithMeals || 0;
+        const attChild = attMap[name];
+        if (!attChild) {
+          flags.push({ type: 'no_attendance', center, child: name, detail: `${mealDays} meal days claimed but no attendance record found` });
+        } else if (mealDays > attChild.days) {
+          flags.push({ type: 'meal_exceeds_attendance', center, child: name, detail: `${mealDays} meal days but only ${attChild.days} attendance days` });
+        }
+      }
+
+      // Check for attendance without meals
+      for (const name in attMap) {
+        const hasMeals = mealChildren.some(c => (c.name || c.childName) === name);
+        if (!hasMeals && attMap[name].days > 0) {
+          flags.push({ type: 'no_meals', center, child: name, detail: `${attMap[name].days} attendance days but no meals claimed` });
+        }
+      }
+    }
+
+    res.json({ flags, attData, mealData });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── GENERATE MONTHLY STAFF COST REPORT (.docx) ───────────
 app.post('/api/generate-staff-report', authCheck, async (req, res) => {
   try {
