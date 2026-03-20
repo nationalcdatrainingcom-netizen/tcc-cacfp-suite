@@ -725,7 +725,7 @@ app.get('/api/merged-time/:staffId', authCheck, async (req, res) => {
 // ── GET ALL MERGED DATA FOR A MONTH ──────────────────────
 app.get('/api/merged-time-all', authCheck, async (req, res) => {
   try {
-    const { fiscal_year_id, month_key } = req.query;
+    const { fiscal_year_id, month_key, show_all } = req.query;
     const staffRes = await pool.query(
       `SELECT s.id, s.name, s.center, s.hourly_rate FROM staff s
        JOIN staff_pins sp ON sp.staff_id = s.id WHERE s.is_active = true ORDER BY s.center, s.name`
@@ -749,10 +749,14 @@ app.get('/api/merged-time-all', authCheck, async (req, res) => {
       const hasCACFP = ceRes.rows.length > 0;
       for (const c of ceRes.rows) { totalFS += parseFloat(c.food_service_hours) || 0; totalAdm += parseFloat(c.admin_hours) || 0; }
       for (const p of pgRes.rows) { totalWorked += parseFloat(p.total_worked) || 0; totalAbsent += parseFloat(p.total_absent) || 0; daysWorked++; }
-      result.push({
-        ...s, totalFS, totalAdm, totalWorked, totalAbsent, daysWorked, hasPlayground, hasCACFP,
-        signature: sigRes.rows[0] || null
-      });
+
+      // Only include staff who have data for this month (unless show_all is requested)
+      if (show_all === 'true' || hasPlayground || hasCACFP || totalFS > 0 || totalAdm > 0 || totalWorked > 0) {
+        result.push({
+          ...s, totalFS, totalAdm, totalWorked, totalAbsent, daysWorked, hasPlayground, hasCACFP,
+          signature: sigRes.rows[0] || null
+        });
+      }
     }
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
