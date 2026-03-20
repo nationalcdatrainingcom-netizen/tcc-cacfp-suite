@@ -821,7 +821,7 @@ async function deactivateStaff(id){if(!confirm('Remove this staff member?'))retu
 
 async function mergeStaffPick(removeId,removeName){
   // Get all staff to pick who to merge into
-  const allStaff=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${currentMonth}`);
+  const allStaff=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${currentMonth}&show_all=true`);
   const others=allStaff.filter(s=>s.id!==removeId);
   if(!others.length){showToast('No other staff to merge with','err');return;}
   const options=others.map(s=>`${s.name} (${s.center})`).join('\n');
@@ -928,10 +928,12 @@ async function parseAttendanceCSV(mk,center,input,skipUpload){
 
   for(const line of lines){
     const parts=line.split(',');
-    if(!parts[0]||parts[0]==='Classroom'||parts[0]==='AGGREGATE'||parts[0]==='Summary statistics'||parts[0]==='Number students'||parts[0]==='Average daily'||!parts[1])continue;
-    if(parts[0].match(/^(Summary|Number|Average)/))continue;
-    const classroom=parts[0].trim();
-    const name=parts[1].trim()+' '+parts[2].trim();
+    // Skip header/aggregate/summary rows, but allow empty classroom (parts[0])
+    if(parts[0]==='Classroom'||parts[0]==='AGGREGATE'||parts[0]==='Summary statistics'||parts[0]==='Number students'||parts[0]==='Average daily')continue;
+    if(parts[0]&&parts[0].match(/^(Summary|Number|Average)/))continue;
+    if(!parts[1]&&!parts[2])continue; // skip if no name at all
+    const classroom=(parts[0]||'').trim()||'Unassigned';
+    const name=(parts[1]||'').trim()+' '+(parts[2]||'').trim();
     classrooms.add(classroom);
     let present=0,absent=0;
     const dailyStatus=[];
@@ -3168,6 +3170,8 @@ async function renderStaffTA(){
     </div></div>`;
 
     // ── STAFF ROSTER MANAGEMENT ──
+    // Fetch ALL staff for roster management (not just those with hours this month)
+    const rosterData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${m}&show_all=true`);
     html+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><h3>👥 Staff Roster</h3>
       <button class="btn btn-sm btn-outline" onclick="showAddStaffForCenter('niles')">+ Add Staff</button></div>
     <div class="card-body">
@@ -3175,7 +3179,7 @@ async function renderStaffTA(){
         <thead><tr><th>Name</th><th>Center</th><th>Rate/Hr</th><th>FS Hrs</th><th>FS Cost</th><th></th></tr></thead>
         <tbody>`;
 
-    for(const s of allData){
+    for(const s of rosterData){
       const rate=parseFloat(s.hourly_rate)||0;
       const fsCost=s.totalFS*rate;
       html+=`<tr>
