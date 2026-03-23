@@ -449,4 +449,4 @@ initDB().then(() => {
 }).catch(err => {
   console.error('DB init error:', err);
   app.listen(PORT, () => console.log(`📱 TCC Staff Time Entry on port ${PORT} (DB init failed)`));
-})
+});
