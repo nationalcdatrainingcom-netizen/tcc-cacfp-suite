@@ -8,7 +8,7 @@ const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ACCESS_PIN = process.env.ACCESS_PIN || '2024tcc';
+const ACCESS_PIN = process.env.ACCESS_PIN || 'tcc2026';
 
 // ── DATABASE ──────────────────────────────────────────────
 const pool = new Pool({
