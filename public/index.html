@@ -851,22 +851,12 @@ function renderAttendance(){
     html+=`<div class="card"><div class="card-hdr"><h3>📊 ${cl} — Attendance ${ML[m]} ${fyYear(m)}</h3>
       ${hasTimes?'<span class="badge" style="background:#2E7D32">✓ Times Loaded</span>':''}</div><div class="card-body">
       
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-        <div>
-          <div style="font-weight:600;font-size:.85rem;margin-bottom:6px">📋 Attendance Overview (P/A marks)</div>
-          <div class="upload-zone ${hasDetail&&!hasTimes?'done':''}" id="att-uz-${c}">
-            <input type="file" accept=".csv" onchange="parseAttendanceCSV('${m}','${c}',this)">
-            <div class="uz-icon">📊</div><div class="uz-label">Playground Attendance Overview CSV</div>
-            <div class="uz-file" id="att-file-${c}">${d._filename&&!hasTimes?'✅ '+d._filename:''}</div>
-          </div>
-        </div>
-        <div>
-          <div style="font-weight:600;font-size:.85rem;margin-bottom:6px">⏰ Daily Sign-In/Out Times</div>
-          <div class="upload-zone ${hasTimes?'done':''}" id="att-times-uz-${c}">
-            <input type="file" accept=".csv" onchange="importChildAttendanceTimes('${m}','${c}',this)">
-            <div class="uz-icon">⏰</div><div class="uz-label">Playground Daily Attendance CSV (with times)</div>
-            <div class="uz-file" id="att-times-file-${c}">${hasTimes?'✅ '+d._filename:''}</div>
-          </div>
+      <div style="margin-bottom:16px">
+        <div style="font-weight:600;font-size:.85rem;margin-bottom:6px">⏰ Daily Sign-In/Out Times (Playground Daily Attendance CSV)</div>
+        <div class="upload-zone ${hasTimes?'done':''}" id="att-times-uz-${c}">
+          <input type="file" accept=".csv" onchange="importChildAttendanceTimes('${m}','${c}',this)">
+          <div class="uz-icon">⏰</div><div class="uz-label">Upload ${cl} Daily Attendance CSV (with check-in/out times)</div>
+          <div class="uz-file" id="att-times-file-${c}">${hasTimes?'✅ '+d._filename:''}</div>
         </div>
       </div>
 
@@ -910,11 +900,9 @@ function renderAttendance(){
     </div></div>`;
   }
   html+=`<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
-    <button class="btn btn-primary" onclick="generateAttendanceReport('niles')">📄 Niles P/A Report</button>
-    <button class="btn btn-primary" onclick="generateAttendanceReport('peace')">📄 Peace P/A Report</button>
-    <button class="btn btn-navy" onclick="generateAttendanceTimeReport('niles')">⏰ Niles Time Log</button>
-    <button class="btn btn-navy" onclick="generateAttendanceTimeReport('peace')">⏰ Peace Time Log</button>
-    <button class="btn" style="background:#2E7D32;color:#fff" onclick="generateAttendanceTimeReport()">📦 Full Time Log (Both)</button>
+    <button class="btn btn-navy" onclick="generateAttendanceTimeReport('niles')">⏰ Niles Attendance Time Log</button>
+    <button class="btn btn-navy" onclick="generateAttendanceTimeReport('peace')">⏰ Peace Attendance Time Log</button>
+    <button class="btn" style="background:#2E7D32;color:#fff" onclick="generateAttendanceTimeReport()">📦 Full Time Log (Both Centers)</button>
   </div>`;
   document.getElementById('sp-attendance').innerHTML=html;
 }
