@@ -126,13 +126,33 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
 
+    -- Child attendance times (daily sign-in/sign-out from Playground + CDC)
+    CREATE TABLE IF NOT EXISTS child_attendance_times (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      month_key VARCHAR(10) NOT NULL,
+      center VARCHAR(50) NOT NULL,
+      child_last VARCHAR(120) NOT NULL,
+      child_first VARCHAR(120) NOT NULL,
+      attend_date DATE NOT NULL,
+      check_in VARCHAR(20),
+      check_out VARCHAR(20),
+      status VARCHAR(10) DEFAULT 'present',
+      hours_decimal NUMERIC(5,2) DEFAULT 0,
+      source VARCHAR(30) DEFAULT 'playground',
+      signer_in VARCHAR(120),
+      signer_out VARCHAR(120),
+      imported_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(fiscal_year_id, month_key, center, child_last, child_first, attend_date, check_in, source)
+    );
+
     -- Seed first fiscal year if none exists
     INSERT INTO fiscal_years (label, start_year, end_year, is_active)
     VALUES ('2025-2026', 2025, 2026, true)
     ON CONFLICT (label) DO NOTHING;
   `);
-  // Add adult_meal column if not exists
   try { await pool.query('ALTER TABLE daily_cacfp_entries ADD COLUMN IF NOT EXISTS adult_meal BOOLEAN DEFAULT false'); } catch(e) {}
+  try { await pool.query('CREATE INDEX IF NOT EXISTS idx_cat_center_month ON child_attendance_times(fiscal_year_id, month_key, center)'); } catch(e) {}
   console.log('✅ Database tables ready');
 }
 
@@ -1172,6 +1192,381 @@ app.post('/api/generate-staff-package', authCheck, async (req, res) => {
       `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
        VALUES ($1,$2,'staff_package',$3,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$4,$5)`,
       [fiscal_year_id, month_key, filename, buffer, JSON.stringify({ generated: true, staff_count: staffRes.rows.length, grandFS, grandAdm })]
+    );
+
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// ── IMPORT PLAYGROUND DAILY CHILD ATTENDANCE CSV ─────────
+app.post('/api/child-attendance-import', authCheck, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+    const { fiscal_year_id, month_key, center } = req.body;
+    if (!fiscal_year_id || !month_key || !center) return res.status(400).json({ error: 'Missing fiscal_year_id, month_key, or center' });
+
+    const text = fs.readFileSync(req.file.path, 'utf-8').replace(/^\uFEFF/, '');
+    const lines = text.split('\n').filter(l => l.trim());
+    
+    // Header: Last name,First name,Date,Check-in,Signer,Signature,Check-out,Signer,Signature
+    const header = lines[0];
+    if (!header.includes('Last name') || !header.includes('Check-in')) {
+      return res.status(400).json({ error: 'Invalid format — expected Playground Daily Attendance CSV with Last name, First name, Date, Check-in, Check-out columns' });
+    }
+
+    // Delete existing records for this center/month/source=playground
+    await pool.query(
+      'DELETE FROM child_attendance_times WHERE fiscal_year_id=$1 AND month_key=$2 AND center=$3 AND source=$4',
+      [fiscal_year_id, month_key, center, 'playground']
+    );
+
+    // Also store original file
+    const fd = fs.readFileSync(req.file.path);
+    await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1,$2,$3,$4,'text/csv',$5,$6)`,
+      [fiscal_year_id, month_key, 'child_attendance_daily_'+center, req.file.originalname, fd, JSON.stringify({center, source:'playground'})]
+    );
+
+    let imported = 0, skipped = 0, absent = 0;
+    const children = new Set();
+
+    // Parse month boundaries from month_key
+    const mkMap = {oct:10,nov:11,dec:12,jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9};
+    const targetMonth = mkMap[month_key];
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
+    const fy = fyRes.rows[0];
+    const targetYear = targetMonth >= 10 ? fy.start_year : fy.end_year;
+
+    for (let i = 1; i < lines.length; i++) {
+      // Parse CSV carefully (signatures may contain commas in URLs)
+      const line = lines[i];
+      // Structure: last,first,date,checkin,signer_in,sig_url,checkout,signer_out,sig_url
+      // Split by comma but we know positions 0-3 and 6 are key fields
+      // Use a simple approach: split and grab known positions
+      const parts = line.split(',');
+      if (parts.length < 7) continue;
+      
+      const lastName = (parts[0] || '').trim();
+      const firstName = (parts[1] || '').trim();
+      const dateStr = (parts[2] || '').trim();
+      const checkIn = (parts[3] || '').trim();
+      const signerIn = (parts[4] || '').trim();
+      
+      if (!lastName || !dateStr) continue;
+      
+      // Find check-out: it's after the signature URL. Signature URLs contain 'storage.googleapis.com'
+      // The checkout time is the first field after the signature URL that looks like a time or '-'
+      let checkOut = '';
+      let signerOut = '';
+      // Simple: checkout is parts[6] if it's a time-like value, but sig URLs mess this up
+      // Better: find the checkout by scanning for time pattern after position 4
+      for (let p = 5; p < parts.length; p++) {
+        const v = parts[p].trim();
+        if (v.match(/^\d{1,2}:\d{2}\s*(AM|PM)$/i) || v === '-' || v === 'Absent') {
+          checkOut = v;
+          signerOut = (parts[p+1] || '').trim();
+          if (signerOut.includes('storage.googleapis.com')) signerOut = '';
+          break;
+        }
+      }
+
+      // Parse date - format: MM/DD/YYYY
+      const dateParts = dateStr.split('/');
+      if (dateParts.length !== 3) continue;
+      const month = parseInt(dateParts[0]);
+      const day = parseInt(dateParts[1]);
+      const year = parseInt(dateParts[2]);
+      
+      // Only import dates matching the target month
+      if (month !== targetMonth || year !== targetYear) continue;
+      
+      const attendDate = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      children.add(`${lastName}|${firstName}`);
+
+      let status = 'present';
+      let hoursDecimal = 0;
+      
+      if (checkIn === 'Absent' || checkIn === '-' || !checkIn) {
+        status = 'absent';
+        checkOut = '';
+      } else if (checkOut && checkOut !== '-' && checkOut.match(/\d/)) {
+        // Calculate hours
+        const parseTime = (t) => {
+          const m = t.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+          if (!m) return null;
+          let h = parseInt(m[1]);
+          const min = parseInt(m[2]);
+          const ampm = m[3].toUpperCase();
+          if (ampm === 'PM' && h < 12) h += 12;
+          if (ampm === 'AM' && h === 12) h = 0;
+          return h + min / 60;
+        };
+        const inTime = parseTime(checkIn);
+        const outTime = parseTime(checkOut);
+        if (inTime !== null && outTime !== null && outTime > inTime) {
+          hoursDecimal = Math.round((outTime - inTime) * 100) / 100;
+        }
+      }
+
+      if (status === 'absent') { absent++; }
+
+      try {
+        await pool.query(
+          `INSERT INTO child_attendance_times 
+           (fiscal_year_id, month_key, center, child_last, child_first, attend_date, check_in, check_out, status, hours_decimal, source, signer_in, signer_out)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           ON CONFLICT (fiscal_year_id, month_key, center, child_last, child_first, attend_date, check_in, source)
+           DO UPDATE SET check_out=$8, status=$9, hours_decimal=$10, signer_in=$12, signer_out=$13, imported_at=NOW()`,
+          [fiscal_year_id, month_key, center, lastName, firstName, attendDate,
+           status === 'absent' ? 'Absent' : checkIn, checkOut || '', status, hoursDecimal, 'playground', signerIn, signerOut]
+        );
+        imported++;
+      } catch(e) { skipped++; }
+    }
+
+    // Also update the P/A attendance summary in monthly_data for backward compatibility
+    const catRes = await pool.query(
+      'SELECT child_last, child_first, attend_date, status FROM child_attendance_times WHERE fiscal_year_id=$1 AND month_key=$2 AND center=$3 AND source=$4 ORDER BY child_last, child_first, attend_date',
+      [fiscal_year_id, month_key, center, 'playground']
+    );
+    
+    // Build summary data
+    const childMap = {};
+    const allDates = new Set();
+    for (const r of catRes.rows) {
+      const key = `${r.child_last}, ${r.child_first}`;
+      if (!childMap[key]) childMap[key] = { name: `${r.child_last} ${r.child_first}`, present: 0, absent: 0, dailyStatus: {}, classroom: '' };
+      const dayStr = new Date(r.attend_date).toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric', year: 'numeric' });
+      allDates.add(r.attend_date.toISOString().split('T')[0]);
+      childMap[key].dailyStatus[r.attend_date.toISOString().split('T')[0]] = r.status === 'present' ? 'P' : 'A';
+      if (r.status === 'present') childMap[key].present++;
+      else childMap[key].absent++;
+    }
+    
+    // Build day headers sorted
+    const sortedDates = [...allDates].sort();
+    const dayHeaders = sortedDates.map(d => {
+      const dt = new Date(d + 'T12:00:00');
+      const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      return `${days[dt.getDay()]} ${dt.getMonth()+1}/${dt.getDate()}`;
+    });
+    
+    const childData = Object.values(childMap).map(ch => ({
+      ...ch,
+      dailyStatus: sortedDates.map(d => ch.dailyStatus[d] || '')
+    }));
+    childData.sort((a, b) => a.name.localeCompare(b.name));
+    
+    const opDays = sortedDates.filter(d => childData.some(ch => ch.dailyStatus[sortedDates.indexOf(d)] === 'P')).length;
+    const totalPresent = childData.reduce((s, c) => s + c.present, 0);
+    const ada = opDays > 0 ? Math.round((totalPresent / opDays) * 10) / 10 : 0;
+
+    // Save to monthly_data
+    const existingAtt = await pool.query(
+      `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
+      [fiscal_year_id, month_key]
+    );
+    const attData = existingAtt.rows[0]?.data || {};
+    attData[center] = {
+      enrolled: children.size, ada, days: opDays, totalPresent,
+      capacity: center === 'niles' ? 105 : 164,
+      childData, dayHeaders, hasTimesData: true,
+      _filename: req.file.originalname
+    };
+    await pool.query(
+      `INSERT INTO monthly_data (fiscal_year_id, month_key, data_type, data)
+       VALUES ($1,$2,'attendance',$3) ON CONFLICT (fiscal_year_id, month_key, data_type)
+       DO UPDATE SET data=$3, updated_at=NOW()`,
+      [fiscal_year_id, month_key, JSON.stringify(attData)]
+    );
+
+    res.json({ ok: true, imported, skipped, absent, children: children.size, days: sortedDates.length });
+  } catch (e) { console.error('Child attendance import error:', e); res.status(500).json({ error: e.message }); }
+});
+
+// ── GET CHILD ATTENDANCE TIMES (with in/out times) ───────
+app.get('/api/child-attendance-times', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, center } = req.query;
+    let q = 'SELECT * FROM child_attendance_times WHERE fiscal_year_id=$1 AND month_key=$2';
+    const params = [fiscal_year_id, month_key];
+    if (center) { params.push(center); q += ` AND center=$${params.length}`; }
+    q += ' ORDER BY child_last, child_first, attend_date, check_in';
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GENERATE ATTENDANCE TIME LOG REPORT (.docx) ──────────
+app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, center } = req.body;
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
+    const fy = fyRes.rows[0]; if (!fy) return res.status(404).json({ error: 'FY not found' });
+
+    const ML = {oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
+    const fyYear = mk => ['oct','nov','dec'].includes(mk) ? fy.start_year : fy.end_year;
+    const monthLabel = ML[month_key] + ' ' + fyYear(month_key);
+    const navy = '1B2A4A';
+    const thinB = { top:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, bottom:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, left:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, right:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'} };
+    function cell(text, opts = {}) {
+      return new TableCell({
+        width: opts.w ? { size: opts.w, type: WidthType.PERCENTAGE } : undefined,
+        borders: thinB,
+        shading: opts.bg ? { type: ShadingType.SOLID, color: opts.bg } : undefined,
+        children: [new Paragraph({ alignment: opts.align || AlignmentType.CENTER,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 16, font: 'Calibri', color: opts.color || '333333' })] })]
+      });
+    }
+
+    const sections = [];
+    for (const c of center ? [center] : ['niles', 'peace']) {
+      const centerLabel = c === 'niles' ? 'The Children\'s Center — Niles' : 'The Children\'s Center — Peace Boulevard';
+      
+      const timesRes = await pool.query(
+        'SELECT * FROM child_attendance_times WHERE fiscal_year_id=$1 AND month_key=$2 AND center=$3 ORDER BY child_last, child_first, attend_date, check_in',
+        [fiscal_year_id, month_key, c]
+      );
+      if (!timesRes.rows.length) continue;
+
+      // Group by child
+      const byChild = {};
+      const allDates = new Set();
+      for (const r of timesRes.rows) {
+        const key = `${r.child_last}|${r.child_first}`;
+        if (!byChild[key]) byChild[key] = { last: r.child_last, first: r.child_first, days: [] };
+        byChild[key].days.push(r);
+        allDates.add(r.attend_date.toISOString().split('T')[0]);
+      }
+      const childKeys = Object.keys(byChild).sort();
+      const sortedDates = [...allDates].sort();
+
+      // Stats
+      let totalPresent = 0;
+      for (const k of childKeys) {
+        totalPresent += byChild[k].days.filter(d => d.status === 'present').length;
+      }
+      const opDays = sortedDates.filter(d => {
+        return childKeys.some(k => byChild[k].days.some(dd => dd.attend_date.toISOString().split('T')[0] === d && dd.status === 'present'));
+      }).length;
+      const enrolled = childKeys.length;
+      const ada = opDays > 0 ? Math.round((totalPresent / opDays) * 10) / 10 : 0;
+      const adaPct = enrolled > 0 ? ((ada / enrolled) * 100).toFixed(1) : '0';
+
+      // ─── SECTION 1: Summary + P/A Grid ───
+      const dayAbbrs = sortedDates.map(d => {
+        const dt = new Date(d + 'T12:00:00');
+        return `${dt.getMonth()+1}/${dt.getDate()}`;
+      });
+      const gridHdr = [
+        cell('Child Name', { bold: true, bg: navy, color: 'FFFFFF', sz: 12, align: AlignmentType.LEFT, w: 20 }),
+      ];
+      for (const da of dayAbbrs) gridHdr.push(cell(da, { bold: true, bg: navy, color: 'FFFFFF', sz: 7 }));
+      gridHdr.push(cell('Days', { bold: true, bg: navy, color: 'FFFFFF', sz: 10 }));
+      gridHdr.push(cell('Hrs', { bold: true, bg: navy, color: 'FFFFFF', sz: 10 }));
+
+      const gridRows = [];
+      for (const k of childKeys) {
+        const ch = byChild[k];
+        const rowCells = [cell(`${ch.last}, ${ch.first}`, { sz: 10, align: AlignmentType.LEFT })];
+        let daysPresent = 0, totalHrs = 0;
+        for (const d of sortedDates) {
+          const dayRecs = ch.days.filter(dd => dd.attend_date.toISOString().split('T')[0] === d);
+          if (dayRecs.length && dayRecs[0].status === 'present') {
+            daysPresent++;
+            const hrs = dayRecs.reduce((s, r) => s + parseFloat(r.hours_decimal || 0), 0);
+            totalHrs += hrs;
+            rowCells.push(cell('✓', { sz: 8, bg: 'E8F5E9' }));
+          } else if (dayRecs.length && dayRecs[0].status === 'absent') {
+            rowCells.push(cell('A', { sz: 8, bg: 'FFF3E0', color: 'E65100' }));
+          } else {
+            rowCells.push(cell('', { sz: 8 }));
+          }
+        }
+        rowCells.push(cell(String(daysPresent), { bold: true, sz: 10 }));
+        rowCells.push(cell(totalHrs > 0 ? totalHrs.toFixed(1) : '', { sz: 9 }));
+        gridRows.push(new TableRow({ children: rowCells }));
+      }
+
+      // ─── SECTION 2: Detailed Time Log ───
+      const timeHdr = [
+        cell('Child Name', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, align: AlignmentType.LEFT, w: 22 }),
+        cell('Date', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, w: 14 }),
+        cell('Check-In', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, w: 14 }),
+        cell('Check-Out', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, w: 14 }),
+        cell('Hours', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, w: 10 }),
+        cell('Status', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, w: 10 }),
+        cell('Source', { bold: true, bg: navy, color: 'FFFFFF', sz: 12, w: 10 }),
+      ];
+      const timeRows = [];
+      for (const k of childKeys) {
+        const ch = byChild[k];
+        let first = true;
+        for (const d of ch.days) {
+          const dateStr = new Date(d.attend_date).toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
+          const bg = d.status === 'absent' ? 'FFF8E1' : undefined;
+          timeRows.push(new TableRow({ children: [
+            cell(first ? `${ch.last}, ${ch.first}` : '', { sz: 12, align: AlignmentType.LEFT, bg }),
+            cell(dateStr, { sz: 12, bg }),
+            cell(d.status === 'absent' ? '—' : (d.check_in || ''), { sz: 12, bg }),
+            cell(d.status === 'absent' ? '—' : (d.check_out || ''), { sz: 12, bg }),
+            cell(d.status === 'present' && d.hours_decimal > 0 ? parseFloat(d.hours_decimal).toFixed(1) : '', { sz: 12, bg }),
+            cell(d.status === 'present' ? 'Present' : 'Absent', { sz: 11, bg, color: d.status === 'present' ? '2E7D32' : 'E65100' }),
+            cell(d.source || 'playground', { sz: 10, bg, color: '999999' }),
+          ]}));
+          first = false;
+        }
+      }
+
+      sections.push({
+        properties: { page: { margin: { top: 500, bottom: 500, left: 400, right: 400 },
+          size: { orientation: 'landscape', width: 15840, height: 12240 } } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [
+            new TextRun({ text: centerLabel, bold: true, size: 26, font: 'Calibri', color: navy }) ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [
+            new TextRun({ text: `Child Attendance Time Log — ${monthLabel}`, size: 20, font: 'Calibri', color: '666666' }) ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 100 }, children: [
+            new TextRun({ text: `FY ${fy.label} | Sponsor #990004457`, size: 14, font: 'Calibri', color: '999999' }) ]}),
+          new Paragraph({ spacing: { after: 60 }, children: [
+            new TextRun({ text: 'ADA Calculation: ', bold: true, size: 16, font: 'Calibri', color: navy }),
+            new TextRun({ text: `${totalPresent} total child-days present ÷ ${opDays} operating days = ${ada} average daily attendance (${adaPct}% of ${enrolled} enrolled)`, size: 16, font: 'Calibri' }) ]}),
+          new Paragraph({ spacing: { after: 20 }, children: [
+            new TextRun({ text: `Enrolled: ${enrolled}  |  Operating Days: ${opDays}  |  Total Child-Days: ${totalPresent}  |  ADA: ${ada}`, size: 14, font: 'Calibri', color: '555555' }) ]}),
+          new Paragraph({ spacing: { after: 100 }, children: [
+            new TextRun({ text: '— Daily Attendance Summary Grid —', bold: true, size: 16, font: 'Calibri', color: navy }) ]}),
+          new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [new TableRow({ children: gridHdr }), ...gridRows] }),
+        ]
+      });
+
+      // Second section: Detailed Time Log
+      sections.push({
+        properties: { page: { margin: { top: 500, bottom: 500, left: 600, right: 600 } } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [
+            new TextRun({ text: centerLabel, bold: true, size: 24, font: 'Calibri', color: navy }) ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 100 }, children: [
+            new TextRun({ text: `Detailed Sign-In / Sign-Out Time Log — ${monthLabel}`, size: 20, font: 'Calibri', color: '666666' }) ]}),
+          new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [new TableRow({ children: timeHdr }), ...timeRows] }),
+          new Paragraph({ spacing: { before: 100 }, children: [
+            new TextRun({ text: `Generated: ${new Date().toLocaleDateString('en-US')} | Records: ${timesRes.rows.length}`, size: 12, font: 'Calibri', color: '999999' }) ]}),
+        ]
+      });
+    }
+
+    if (!sections.length) return res.status(400).json({ error: 'No child attendance time data found. Upload a Playground Daily Attendance CSV first.' });
+
+    const doc = new Document({ sections });
+    const buffer = await Packer.toBuffer(doc);
+    const filename = `Child_Attendance_TimeLog_${center || 'All'}_${month_key}_${fy.label}.docx`;
+
+    await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1,$2,'attendance_time_report',$3,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$4,$5)`,
+      [fiscal_year_id, month_key, filename, buffer, JSON.stringify({ generated: true, center: center || 'all' })]
     );
 
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
