@@ -1207,7 +1207,7 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
     const { fiscal_year_id, month_key, center } = req.body;
     if (!fiscal_year_id || !month_key || !center) return res.status(400).json({ error: 'Missing fiscal_year_id, month_key, or center' });
 
-    const text = fs.readFileSync(req.file.path, 'utf-8').replace(/^\uFEFF/, '');
+    const text = req.file.buffer.toString('utf8').replace(/^\uFEFF/, '');
     const lines = text.split('\n').filter(l => l.trim());
     
     // Header: Last name,First name,Date,Check-in,Signer,Signature,Check-out,Signer,Signature
@@ -1223,11 +1223,10 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
     );
 
     // Also store original file
-    const fd = fs.readFileSync(req.file.path);
     await pool.query(
       `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
        VALUES ($1,$2,$3,$4,'text/csv',$5,$6)`,
-      [fiscal_year_id, month_key, 'child_attendance_daily_'+center, req.file.originalname, fd, JSON.stringify({center, source:'playground'})]
+      [fiscal_year_id, month_key, 'child_attendance_daily_'+center, req.file.originalname, req.file.buffer, JSON.stringify({center, source:'playground'})]
     );
 
     let imported = 0, skipped = 0, absent = 0;
@@ -1253,25 +1252,17 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
       const firstName = (parts[1] || '').trim();
       const dateStr = (parts[2] || '').trim();
       const checkIn = (parts[3] || '').trim();
-      const signerIn = (parts[4] || '').trim();
+      const signerInRaw = (parts[4] || '').trim();
+      // parts[5] = signature URL (ignore)
+      const checkOut = (parts[6] || '').trim();
+      const signerOutRaw = (parts[7] || '').trim();
+      // parts[8] = signature URL (ignore)
+      
+      // Clean signer names (strip if it's a URL)
+      const signerIn = signerInRaw.includes('http') ? '' : signerInRaw;
+      const signerOut = signerOutRaw.includes('http') ? '' : signerOutRaw;
       
       if (!lastName || !dateStr) continue;
-      
-      // Find check-out: it's after the signature URL. Signature URLs contain 'storage.googleapis.com'
-      // The checkout time is the first field after the signature URL that looks like a time or '-'
-      let checkOut = '';
-      let signerOut = '';
-      // Simple: checkout is parts[6] if it's a time-like value, but sig URLs mess this up
-      // Better: find the checkout by scanning for time pattern after position 4
-      for (let p = 5; p < parts.length; p++) {
-        const v = parts[p].trim();
-        if (v.match(/^\d{1,2}:\d{2}\s*(AM|PM)$/i) || v === '-' || v === 'Absent') {
-          checkOut = v;
-          signerOut = (parts[p+1] || '').trim();
-          if (signerOut.includes('storage.googleapis.com')) signerOut = '';
-          break;
-        }
-      }
 
       // Parse date - format: MM/DD/YYYY
       const dateParts = dateStr.split('/');
