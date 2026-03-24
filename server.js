@@ -1239,71 +1239,91 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
     const fy = fyRes.rows[0];
     const targetYear = targetMonth >= 10 ? fy.start_year : fy.end_year;
 
+    // Detect format from header: 9-col (no split) or 15-col (with Check In 2)
+    const headerLower = header.toLowerCase();
+    const hasSplitCols = headerLower.includes('check in 2') || headerLower.includes('check-in 2');
+
+    const parseTime = (t) => {
+      if (!t) return null;
+      const m = t.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+      if (!m) return null;
+      let h = parseInt(m[1]);
+      const min = parseInt(m[2]);
+      const ampm = m[3].toUpperCase();
+      if (ampm === 'PM' && h < 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      return h + min / 60;
+    };
+
+    const calcHours = (cin, cout) => {
+      const inT = parseTime(cin), outT = parseTime(cout);
+      if (inT !== null && outT !== null && outT > inT) return Math.round((outT - inT) * 100) / 100;
+      return 0;
+    };
+
+    const isTimeVal = (v) => v && v !== '-' && v !== '––' && !v.includes('http') && v.match(/\d{1,2}:\d{2}\s*(AM|PM)/i);
+    const isDash = (v) => !v || v === '-' || v === '––' || v.includes('––');
+
     for (let i = 1; i < lines.length; i++) {
-      // Parse CSV carefully (signatures may contain commas in URLs)
-      const line = lines[i];
-      // Structure: last,first,date,checkin,signer_in,sig_url,checkout,signer_out,sig_url
-      // Split by comma but we know positions 0-3 and 6 are key fields
-      // Use a simple approach: split and grab known positions
-      const parts = line.split(',');
+      const parts = lines[i].split(',');
       if (parts.length < 7) continue;
       
       const lastName = (parts[0] || '').trim();
       const firstName = (parts[1] || '').trim();
       const dateStr = (parts[2] || '').trim();
-      const checkIn = (parts[3] || '').trim();
-      const signerInRaw = (parts[4] || '').trim();
-      // parts[5] = signature URL (ignore)
-      const checkOut = (parts[6] || '').trim();
-      const signerOutRaw = (parts[7] || '').trim();
-      // parts[8] = signature URL (ignore)
-      
-      // Clean signer names (strip if it's a URL)
-      const signerIn = signerInRaw.includes('http') ? '' : signerInRaw;
-      const signerOut = signerOutRaw.includes('http') ? '' : signerOutRaw;
-      
       if (!lastName || !dateStr) continue;
 
-      // Parse date - format: MM/DD/YYYY
+      // Primary check-in/out: always cols 3 and 6
+      let checkIn = (parts[3] || '').trim();
+      let checkOut = (parts[6] || '').trim();
+      let signerIn = (parts[4] || '').trim();
+      let signerOut = (parts[7] || '').trim();
+      if (signerIn.includes('http')) signerIn = '';
+      if (signerOut.includes('http')) signerOut = '';
+
+      // Second check-in/out if 15-col format: cols 9 and 12
+      let checkIn2 = '', checkOut2 = '', signerIn2 = '', signerOut2 = '';
+      if (hasSplitCols && parts.length >= 13) {
+        checkIn2 = (parts[9] || '').trim();
+        checkOut2 = (parts[12] || '').trim();
+        signerIn2 = (parts[10] || '').trim();
+        signerOut2 = (parts[13] || '').trim();
+        if (signerIn2.includes('http')) signerIn2 = '';
+        if (signerOut2.includes('http')) signerOut2 = '';
+        // Clean non-printable chars (em-dashes etc)
+        checkIn2 = checkIn2.replace(/[^\x20-\x7E]/g, '').trim();
+        checkOut2 = checkOut2.replace(/[^\x20-\x7E]/g, '').trim();
+        if (isDash(checkIn2)) checkIn2 = '';
+        if (isDash(checkOut2)) checkOut2 = '';
+      }
+
+      // Parse date - format: M/D/YYYY or MM/DD/YYYY
       const dateParts = dateStr.split('/');
       if (dateParts.length !== 3) continue;
       const month = parseInt(dateParts[0]);
       const day = parseInt(dateParts[1]);
       const year = parseInt(dateParts[2]);
-      
-      // Only import dates matching the target month
       if (month !== targetMonth || year !== targetYear) continue;
       
       const attendDate = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
       children.add(`${lastName}|${firstName}`);
 
+      // Determine status for primary entry
       let status = 'present';
       let hoursDecimal = 0;
+      let actualCheckIn = checkIn, actualCheckOut = checkOut;
       
       if (checkIn === 'Absent' || checkIn === '-' || !checkIn) {
         status = 'absent';
-        checkOut = '';
-      } else if (checkOut && checkOut !== '-' && checkOut.match(/\d/)) {
-        // Calculate hours
-        const parseTime = (t) => {
-          const m = t.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-          if (!m) return null;
-          let h = parseInt(m[1]);
-          const min = parseInt(m[2]);
-          const ampm = m[3].toUpperCase();
-          if (ampm === 'PM' && h < 12) h += 12;
-          if (ampm === 'AM' && h === 12) h = 0;
-          return h + min / 60;
-        };
-        const inTime = parseTime(checkIn);
-        const outTime = parseTime(checkOut);
-        if (inTime !== null && outTime !== null && outTime > inTime) {
-          hoursDecimal = Math.round((outTime - inTime) * 100) / 100;
-        }
+        actualCheckIn = 'Absent';
+        actualCheckOut = '';
+      } else {
+        hoursDecimal = calcHours(checkIn, checkOut);
       }
 
-      if (status === 'absent') { absent++; }
+      if (status === 'absent') absent++;
 
+      // Insert primary attendance record
       try {
         await pool.query(
           `INSERT INTO child_attendance_times 
@@ -1312,10 +1332,27 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
            ON CONFLICT (fiscal_year_id, month_key, center, child_last, child_first, attend_date, check_in, source)
            DO UPDATE SET check_out=$8, status=$9, hours_decimal=$10, signer_in=$12, signer_out=$13, imported_at=NOW()`,
           [fiscal_year_id, month_key, center, lastName, firstName, attendDate,
-           status === 'absent' ? 'Absent' : checkIn, checkOut || '', status, hoursDecimal, 'playground', signerIn, signerOut]
+           actualCheckIn, actualCheckOut || '', status, hoursDecimal, 'playground', signerIn, signerOut]
         );
         imported++;
       } catch(e) { skipped++; }
+
+      // Insert second check-in if present (split-day attendance)
+      if (checkIn2 && isTimeVal(checkIn2)) {
+        const hours2 = calcHours(checkIn2, checkOut2);
+        try {
+          await pool.query(
+            `INSERT INTO child_attendance_times 
+             (fiscal_year_id, month_key, center, child_last, child_first, attend_date, check_in, check_out, status, hours_decimal, source, signer_in, signer_out)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'present',$9,'playground',$10,$11)
+             ON CONFLICT (fiscal_year_id, month_key, center, child_last, child_first, attend_date, check_in, source)
+             DO UPDATE SET check_out=$8, hours_decimal=$9, signer_in=$10, signer_out=$11, imported_at=NOW()`,
+            [fiscal_year_id, month_key, center, lastName, firstName, attendDate,
+             checkIn2, checkOut2 || '', hours2, signerIn2, signerOut2]
+          );
+          imported++;
+        } catch(e) { skipped++; }
+      }
     }
 
     // Also update the P/A attendance summary in monthly_data for backward compatibility
