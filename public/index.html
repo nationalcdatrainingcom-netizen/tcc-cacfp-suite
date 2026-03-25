@@ -1192,11 +1192,14 @@ async function renderMeals(){
     const mealD=data[c]||{};
     if(!att.childData||!att.dayHeaders||!mealD.children||!mealD.dayLabels)continue;
 
+    // Normalize name for cross-referencing: sort parts so "Last First" and "First Last" match
+    const normName=(n)=>n.trim().toLowerCase().split(/\s+/).sort().join(' ');
+    
     // Build CDC category + classroom lookup from meal data
     const mealCatLookup={};
     const mealClassroomLookup={};
     for(const ch of mealD.children){
-      const key=ch.name.trim().toLowerCase();
+      const key=normName(ch.name);
       mealCatLookup[key]=ch.cat||'C';
       if(ch.classroom) mealClassroomLookup[key]=ch.classroom;
     }
@@ -1205,8 +1208,8 @@ async function renderMeals(){
     const mealChildDays={};
     if(mealD.children&&mealD.dayLabels){
       for(const ch of mealD.children){
-        const key=ch.name.trim().toLowerCase();
-        mealChildDays[key]=new Set();
+        const key=normName(ch.name);
+        if(!mealChildDays[key]) mealChildDays[key]=new Set();
         if(ch.dailyDetail){
           ch.dailyDetail.forEach((dd,idx)=>{
             if(dd.bk||dd.am||dd.ln||dd.pm) mealChildDays[key].add(idx);
@@ -1227,11 +1230,11 @@ async function renderMeals(){
     const gaps=[];
     for(const ch of att.childData){
       if(ch.present===0)continue;
-      const attName=ch.name.trim().toLowerCase();
-      const mealDays=mealChildDays[attName];
-      const cat=mealCatLookup[attName]||'C';
+      const attKey=normName(ch.name);
+      const mealDays=mealChildDays[attKey];
+      const cat=mealCatLookup[attKey]||'C';
       // Classroom: use attendance classroom if present, fall back to meal data classroom
-      const classroom=ch.classroom||mealClassroomLookup[attName]||'';
+      const classroom=ch.classroom||mealClassroomLookup[attKey]||'';
       const missingDays=[];
       (ch.dailyStatus||[]).forEach((s,idx)=>{
         if(s!=='P')return;
@@ -1472,14 +1475,15 @@ function printAttMealGapReport(center){
   if(!att.childData||!mealD.children)return showToast('Missing data','err');
 
   // Rebuild the gap analysis
+  const normName=(n)=>n.trim().toLowerCase().split(/\s+/).sort().join(' ');
   const mealCatLookup={};
   const mealClassroomLookup={};
   const mealChildDays={};
   for(const ch of mealD.children){
-    const key=ch.name.trim().toLowerCase();
+    const key=normName(ch.name);
     mealCatLookup[key]=ch.cat||'C';
     if(ch.classroom) mealClassroomLookup[key]=ch.classroom;
-    mealChildDays[key]=new Set();
+    if(!mealChildDays[key]) mealChildDays[key]=new Set();
     if(ch.dailyDetail) ch.dailyDetail.forEach((dd,idx)=>{if(dd.bk||dd.am||dd.ln||dd.pm)mealChildDays[key].add(idx);});
   }
   const attDayNums=(att.dayHeaders||[]).map(dh=>{const m2=dh.match(/(\d+)/);return m2?parseInt(m2[1]):0;});
@@ -1488,10 +1492,10 @@ function printAttMealGapReport(center){
   const gaps=[];
   for(const ch of att.childData){
     if(ch.present===0)continue;
-    const attName=ch.name.trim().toLowerCase();
-    const mealDays=mealChildDays[attName];
-    const cat=mealCatLookup[attName]||'C';
-    const classroom=ch.classroom||mealClassroomLookup[attName]||'';
+    const attKey=normName(ch.name);
+    const mealDays=mealChildDays[attKey];
+    const cat=mealCatLookup[attKey]||'C';
+    const classroom=ch.classroom||mealClassroomLookup[attKey]||'';
     const missingDays=[];
     (ch.dailyStatus||[]).forEach((s,idx)=>{
       if(s!=='P')return;
