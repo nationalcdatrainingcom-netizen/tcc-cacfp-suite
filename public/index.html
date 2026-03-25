@@ -738,6 +738,7 @@ function renderDashboard(){
 // MONTH BAR & SUB PANELS
 // ═══════════════════════════════════════════════════
 function isMonthComplete(m){
+  cleanupAttendanceData(m);
   const att=monthlyDataCache[m+'_attendance']||{};
   const meals=monthlyDataCache[m+'_meals']||{};
   const cdc=monthlyDataCache[m+'_cdc']||{};
@@ -840,39 +841,47 @@ async function mergeStaffPick(removeId,removeName){
 // ═══════════════════════════════════════════════════
 // ATTENDANCE — CSV Parser + ADA Methodology Doc
 // ═══════════════════════════════════════════════════
+// Shared: clean attendance data — filter weekends, remove 0-attendance children, recalc stats
+function cleanupAttendanceData(mk){
+  const data=monthlyDataCache[mk+'_attendance'];
+  if(!data)return;
+  for(const c of ['niles','peace']){
+    const d=data[c];
+    if(!d||!d.childData||!d.dayHeaders)continue;
+    if(d._cleaned)continue; // already cleaned this session
+    // Filter weekend columns
+    const weekdayIdx=[];
+    const filteredHeaders=[];
+    (d.dayHeaders||[]).forEach((dh,i)=>{
+      if(!dh.match(/^(Sat|Sun)\b/)){weekdayIdx.push(i);filteredHeaders.push(dh);}
+    });
+    if(weekdayIdx.length<(d.dayHeaders||[]).length){
+      d.dayHeaders=filteredHeaders;
+      d.childData=d.childData.map(ch=>({
+        ...ch,
+        dailyStatus:weekdayIdx.map(i=>(ch.dailyStatus||[])[i]||''),
+        present:weekdayIdx.reduce((s,i)=>(ch.dailyStatus||[])[i]==='P'?s+1:s,0)
+      }));
+    }
+    // Filter out children with 0 present days
+    d.childData=d.childData.filter(ch=>ch.present>0);
+    // Recalculate stats
+    const totalPresent=d.childData.reduce((s,ch)=>s+ch.present,0);
+    const opDays=filteredHeaders.length;
+    const enrolled=d.childData.length;
+    const ada=opDays>0?Math.round((totalPresent/opDays)*10)/10:0;
+    d.enrolled=enrolled;d.days=opDays;d.totalPresent=totalPresent;d.ada=ada;
+    d._cleaned=true;
+  }
+}
+
 function renderAttendance(){
   const m=currentMonth,data=monthlyDataCache[m+'_attendance']||{};
+  cleanupAttendanceData(m);
   let html='';
   for(const c of ['niles','peace']){
     const cl=c==='niles'?'Niles':'Peace Boulevard';
     let d=data[c]||{};
-    
-    // Runtime cleanup: filter out weekends from dayHeaders and 0-attendance children
-    if(d.childData&&d.dayHeaders){
-      // Filter weekend columns
-      const weekdayIdx=[];
-      const filteredHeaders=[];
-      (d.dayHeaders||[]).forEach((dh,i)=>{
-        if(!dh.match(/^(Sat|Sun)\b/)){weekdayIdx.push(i);filteredHeaders.push(dh);}
-      });
-      if(weekdayIdx.length<(d.dayHeaders||[]).length){
-        // Weekends were present — rebuild childData with filtered columns
-        d.dayHeaders=filteredHeaders;
-        d.childData=d.childData.map(ch=>({
-          ...ch,
-          dailyStatus:weekdayIdx.map(i=>(ch.dailyStatus||[])[i]||''),
-          present:weekdayIdx.reduce((s,i)=>(ch.dailyStatus||[])[i]==='P'?s+1:s,0)
-        }));
-      }
-      // Filter out children with 0 present days
-      d.childData=d.childData.filter(ch=>ch.present>0);
-      // Recalculate stats
-      const totalPresent=d.childData.reduce((s,ch)=>s+ch.present,0);
-      const opDays=filteredHeaders.length;
-      const enrolled=d.childData.length;
-      const ada=opDays>0?Math.round((totalPresent/opDays)*10)/10:0;
-      d.enrolled=enrolled;d.days=opDays;d.totalPresent=totalPresent;d.ada=ada;
-    }
     
     const hasDetail=d.childData&&d.childData.length>0;
     const hasTimes=d.hasTimesData||false;
@@ -1585,6 +1594,7 @@ function printAttMealGapReport(center){
 // ═══════════════════════════════════════════════════
 function renderCDC(){
   const m=currentMonth,data=monthlyDataCache[m+'_cdc']||{};
+  cleanupAttendanceData(m);
   let html='';
   for(const c of ['niles','peace']){
     const cLabel=cl(c);const d=data[c]||{};
@@ -1840,6 +1850,10 @@ async function saveFoodCostField(mk,field,val){
 // ═══════════════════════════════════════════════════
 async function renderClaims(){
   const m=currentMonth;
+  
+  // Apply attendance cleanup (filter weekends + 0-attendance children) before reading
+  cleanupAttendanceData(m);
+  
   const att=monthlyDataCache[m+'_attendance']||{};
   const meals=monthlyDataCache[m+'_meals']||{};
   const cdc=monthlyDataCache[m+'_cdc']||{};
@@ -2195,6 +2209,7 @@ function viewGeneratedReport(type,mk){
 
 async function printMonthlyPackage(mk){
   showToast('Building complete CACFP documentation package...','');
+  cleanupAttendanceData(mk);
 
   // Fetch uploaded document images for embedding
   const mDocs=documents.filter(d=>d.month_key===mk);
