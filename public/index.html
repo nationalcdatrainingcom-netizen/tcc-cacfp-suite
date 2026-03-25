@@ -1192,10 +1192,13 @@ async function renderMeals(){
     const mealD=data[c]||{};
     if(!att.childData||!att.dayHeaders||!mealD.children||!mealD.dayLabels)continue;
 
-    // Build CDC category lookup from meal data (cat per child)
+    // Build CDC category + classroom lookup from meal data
     const mealCatLookup={};
+    const mealClassroomLookup={};
     for(const ch of mealD.children){
-      mealCatLookup[ch.name.trim().toLowerCase()]=ch.cat||'C';
+      const key=ch.name.trim().toLowerCase();
+      mealCatLookup[key]=ch.cat||'C';
+      if(ch.classroom) mealClassroomLookup[key]=ch.classroom;
     }
 
     // Build a lookup: for each child, which days had ANY meal
@@ -1227,6 +1230,8 @@ async function renderMeals(){
       const attName=ch.name.trim().toLowerCase();
       const mealDays=mealChildDays[attName];
       const cat=mealCatLookup[attName]||'C';
+      // Classroom: use attendance classroom if present, fall back to meal data classroom
+      const classroom=ch.classroom||mealClassroomLookup[attName]||'';
       const missingDays=[];
       (ch.dailyStatus||[]).forEach((s,idx)=>{
         if(s!=='P')return;
@@ -1237,7 +1242,7 @@ async function renderMeals(){
         if(!hadMeal) missingDays.push(att.dayHeaders[idx]||`Day ${dayNum}`);
       });
       if(missingDays.length>0){
-        gaps.push({name:ch.name,classroom:ch.classroom||'',daysPresent:ch.present,missingMealDays:missingDays,cat});
+        gaps.push({name:ch.name,classroom,daysPresent:ch.present,missingMealDays:missingDays,cat});
       }
     }
 
@@ -1468,10 +1473,12 @@ function printAttMealGapReport(center){
 
   // Rebuild the gap analysis
   const mealCatLookup={};
+  const mealClassroomLookup={};
   const mealChildDays={};
   for(const ch of mealD.children){
     const key=ch.name.trim().toLowerCase();
     mealCatLookup[key]=ch.cat||'C';
+    if(ch.classroom) mealClassroomLookup[key]=ch.classroom;
     mealChildDays[key]=new Set();
     if(ch.dailyDetail) ch.dailyDetail.forEach((dd,idx)=>{if(dd.bk||dd.am||dd.ln||dd.pm)mealChildDays[key].add(idx);});
   }
@@ -1484,6 +1491,7 @@ function printAttMealGapReport(center){
     const attName=ch.name.trim().toLowerCase();
     const mealDays=mealChildDays[attName];
     const cat=mealCatLookup[attName]||'C';
+    const classroom=ch.classroom||mealClassroomLookup[attName]||'';
     const missingDays=[];
     (ch.dailyStatus||[]).forEach((s,idx)=>{
       if(s!=='P')return;
@@ -1496,7 +1504,7 @@ function printAttMealGapReport(center){
       const R=RATES;
       const catKey=cat==='A'?'A':cat==='B'?'B':'C';
       const perDay=R.breakfast[catKey]+R.lunch[catKey]+R.snack[catKey];
-      gaps.push({name:ch.name,classroom:ch.classroom||'',cat,daysPresent:ch.present,missingMealDays:missingDays,perDayRate:perDay,estLost:perDay*missingDays.length});
+      gaps.push({name:ch.name,classroom,cat,daysPresent:ch.present,missingMealDays:missingDays,perDayRate:perDay,estLost:perDay*missingDays.length});
     }
   }
   if(!gaps.length)return showToast('No gaps found','ok');
