@@ -1181,6 +1181,90 @@ async function renderMeals(){
     monthlyDataCache[m+'_meals']=data;
   }
 
+  // ══════════════════════════════════════════════════
+  // ATTENDANCE vs MEALS CROSS-CHECK
+  // ══════════════════════════════════════════════════
+  const attData=monthlyDataCache[m+'_attendance']||{};
+  for(const c of ['niles','peace']){
+    const cLabel=cl(c);
+    const att=attData[c]||{};
+    const mealD=data[c]||{};
+    if(!att.childData||!att.dayHeaders||!mealD.children||!mealD.dayLabels)continue;
+
+    // Build a lookup: for each child, which days had ANY meal
+    const mealChildDays={};
+    if(mealD.children&&mealD.dayLabels){
+      for(const ch of mealD.children){
+        const key=ch.name.trim().toLowerCase();
+        mealChildDays[key]=new Set();
+        if(ch.dailyDetail){
+          ch.dailyDetail.forEach((dd,idx)=>{
+            if(dd.bk||dd.am||dd.ln||dd.pm) mealChildDays[key].add(idx);
+          });
+        }
+      }
+    }
+
+    // Build attendance day labels (weekdays only) — map to meal day indices
+    // Attendance dayHeaders are like "Mon 3", "Tue 4", meal dayLabels are like "Mon 2/3/2026"
+    // Match by extracting the day-of-month from each
+    const attDayNums=(att.dayHeaders||[]).map(dh=>{
+      const m2=dh.match(/(\d+)/);return m2?parseInt(m2[1]):0;
+    });
+    const mealDayNums=(mealD.dayLabels||[]).map(dl=>{
+      const m2=dl.match(/(\d+)/);return m2?parseInt(m2[1]):0;
+    });
+
+    // For each child present on a day, check if ANY meal exists for that day
+    const gaps=[];
+    for(const ch of att.childData){
+      if(ch.present===0)continue;
+      const attName=ch.name.trim().toLowerCase();
+      // Find matching meal child
+      const mealDays=mealChildDays[attName];
+      const missingDays=[];
+      (ch.dailyStatus||[]).forEach((s,idx)=>{
+        if(s!=='P')return;
+        const dayNum=attDayNums[idx];
+        if(!dayNum)return;
+        // Find this day in the meal dayLabels
+        const mealIdx=mealDayNums.indexOf(dayNum);
+        const hadMeal=mealDays&&mealDays.has(mealIdx);
+        if(!hadMeal) missingDays.push(att.dayHeaders[idx]||`Day ${dayNum}`);
+      });
+      if(missingDays.length>0){
+        gaps.push({name:ch.name,classroom:ch.classroom,daysPresent:ch.present,missingMealDays:missingDays});
+      }
+    }
+
+    if(gaps.length>0){
+      const totalMissing=gaps.reduce((s,g)=>s+g.missingMealDays.length,0);
+      html+=`<div class="card" style="margin-top:12px;border-color:var(--error)">
+        <div class="card-hdr" style="background:#FFF5F5"><h3 style="color:var(--error)">⚠️ ${cLabel} — Present but No Meals Recorded (${gaps.length} children, ${totalMissing} child-days)</h3></div>
+        <div class="card-body">
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">These children were marked <strong>Present</strong> on the attendance report but had <strong>no meals recorded</strong> in the CACFP Detailed report for the highlighted days.</p>
+          <div style="max-height:500px;overflow:auto">
+          <table class="staff-table" style="font-size:.8rem">
+            <thead><tr><th style="text-align:left">Child</th><th>Classroom</th><th>Days Present</th><th>Missing Meal Days</th></tr></thead>
+            <tbody>
+            ${gaps.map(g=>`<tr>
+              <td style="font-weight:600">${g.name}</td>
+              <td style="text-align:center;font-size:.75rem">${(g.classroom||'').substring(0,12)}</td>
+              <td style="text-align:center">${g.daysPresent}</td>
+              <td><div style="display:flex;flex-wrap:wrap;gap:3px">${g.missingMealDays.map(d=>
+                `<span style="background:#FFEBEE;color:#C62828;padding:2px 6px;border-radius:4px;font-size:.7rem;font-weight:600">${d}</span>`
+              ).join('')}</div></td>
+            </tr>`).join('')}
+            </tbody>
+          </table>
+          </div>
+          <div style="margin-top:12px;padding:10px;background:#FFF8E1;border-radius:6px;font-size:.82rem">
+            <strong>What to check:</strong> Were these children present but did not eat? Were meals served but not recorded in the Playground App? Were these children in a different classroom that day?
+          </div>
+        </div></div>`;
+    }
+  }
+
   // Adult Meals section
   html+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><h3>👤 Adult Meals — ${ML[m]} ${fyYear(m)}</h3></div>
     <div class="card-body" id="adultMealsSection"><p style="color:var(--muted);font-size:.85rem">Loading adult meal data...</p></div></div>`;
