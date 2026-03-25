@@ -1185,11 +1185,18 @@ async function renderMeals(){
   // ATTENDANCE vs MEALS CROSS-CHECK
   // ══════════════════════════════════════════════════
   const attData=monthlyDataCache[m+'_attendance']||{};
+  const cdcData=monthlyDataCache[m+'_cdc']||{};
   for(const c of ['niles','peace']){
     const cLabel=cl(c);
     const att=attData[c]||{};
     const mealD=data[c]||{};
     if(!att.childData||!att.dayHeaders||!mealD.children||!mealD.dayLabels)continue;
+
+    // Build CDC category lookup from meal data (cat per child)
+    const mealCatLookup={};
+    for(const ch of mealD.children){
+      mealCatLookup[ch.name.trim().toLowerCase()]=ch.cat||'C';
+    }
 
     // Build a lookup: for each child, which days had ANY meal
     const mealChildDays={};
@@ -1206,8 +1213,6 @@ async function renderMeals(){
     }
 
     // Build attendance day labels (weekdays only) — map to meal day indices
-    // Attendance dayHeaders are like "Mon 3", "Tue 4", meal dayLabels are like "Mon 2/3/2026"
-    // Match by extracting the day-of-month from each
     const attDayNums=(att.dayHeaders||[]).map(dh=>{
       const m2=dh.match(/(\d+)/);return m2?parseInt(m2[1]):0;
     });
@@ -1220,46 +1225,72 @@ async function renderMeals(){
     for(const ch of att.childData){
       if(ch.present===0)continue;
       const attName=ch.name.trim().toLowerCase();
-      // Find matching meal child
       const mealDays=mealChildDays[attName];
+      const cat=mealCatLookup[attName]||'C';
       const missingDays=[];
       (ch.dailyStatus||[]).forEach((s,idx)=>{
         if(s!=='P')return;
         const dayNum=attDayNums[idx];
         if(!dayNum)return;
-        // Find this day in the meal dayLabels
         const mealIdx=mealDayNums.indexOf(dayNum);
         const hadMeal=mealDays&&mealDays.has(mealIdx);
         if(!hadMeal) missingDays.push(att.dayHeaders[idx]||`Day ${dayNum}`);
       });
       if(missingDays.length>0){
-        gaps.push({name:ch.name,classroom:ch.classroom,daysPresent:ch.present,missingMealDays:missingDays});
+        gaps.push({name:ch.name,classroom:ch.classroom||'',daysPresent:ch.present,missingMealDays:missingDays,cat});
       }
     }
 
     if(gaps.length>0){
       const totalMissing=gaps.reduce((s,g)=>s+g.missingMealDays.length,0);
+      // Estimate lost reimbursement: assume each missing day = breakfast + lunch + snack
+      const R=RATES;
+      let estLost=0;
+      for(const g of gaps){
+        const catKey=g.cat==='A'?'A':g.cat==='B'?'B':'C';
+        const perDay=R.breakfast[catKey]+R.lunch[catKey]+R.snack[catKey];
+        g.perDayRate=perDay;
+        g.estLost=perDay*g.missingMealDays.length;
+        estLost+=g.estLost;
+      }
+
+      const reportId=`attMealGap_${c}`;
       html+=`<div class="card" style="margin-top:12px;border-color:var(--error)">
-        <div class="card-hdr" style="background:#FFF5F5"><h3 style="color:var(--error)">⚠️ ${cLabel} — Present but No Meals Recorded (${gaps.length} children, ${totalMissing} child-days)</h3></div>
-        <div class="card-body">
-          <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">These children were marked <strong>Present</strong> on the attendance report but had <strong>no meals recorded</strong> in the CACFP Detailed report for the highlighted days.</p>
+        <div class="card-hdr" style="background:#FFF5F5">
+          <h3 style="color:var(--error)">⚠️ ${cLabel} — Present but No Meals Recorded (${gaps.length} children, ${totalMissing} child-days)</h3>
+          <button class="btn btn-sm" style="font-size:.75rem" onclick="printAttMealGapReport('${c}')">🖨️ Print</button>
+        </div>
+        <div class="card-body" id="${reportId}">
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:8px">Children marked <strong>Present</strong> on the attendance report with <strong>no meals recorded</strong> in the CACFP Detailed report for the highlighted days.</p>
+          <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+            <div style="padding:8px 14px;background:#FFEBEE;border-radius:6px;font-size:.9rem"><strong>${gaps.length}</strong> <span style="font-size:.8rem;color:#C62828">children affected</span></div>
+            <div style="padding:8px 14px;background:#FFEBEE;border-radius:6px;font-size:.9rem"><strong>${totalMissing}</strong> <span style="font-size:.8rem;color:#C62828">child-days missing meals</span></div>
+            <div style="padding:8px 14px;background:#FFF3E0;border-radius:6px;font-size:.9rem"><strong>${fmt(estLost)}</strong> <span style="font-size:.8rem;color:#E65100">est. unreimbursed (Bkfst+Lunch+Snack)</span></div>
+          </div>
           <div style="max-height:500px;overflow:auto">
           <table class="staff-table" style="font-size:.8rem">
-            <thead><tr><th style="text-align:left">Child</th><th>Classroom</th><th>Days Present</th><th>Missing Meal Days</th></tr></thead>
+            <thead><tr><th style="text-align:left">Child</th><th>Classroom</th><th>Cat</th><th>Days Present</th><th>Missing Meal Days</th><th style="text-align:right">Est. Lost</th></tr></thead>
             <tbody>
             ${gaps.map(g=>`<tr>
               <td style="font-weight:600">${g.name}</td>
-              <td style="text-align:center;font-size:.75rem">${(g.classroom||'').substring(0,12)}</td>
+              <td style="text-align:center;font-size:.75rem">${g.classroom}</td>
+              <td style="text-align:center;font-weight:600;color:${g.cat==='A'?'var(--success)':g.cat==='B'?'var(--gold)':'var(--error)'}">Cat ${g.cat}</td>
               <td style="text-align:center">${g.daysPresent}</td>
               <td><div style="display:flex;flex-wrap:wrap;gap:3px">${g.missingMealDays.map(d=>
                 `<span style="background:#FFEBEE;color:#C62828;padding:2px 6px;border-radius:4px;font-size:.7rem;font-weight:600">${d}</span>`
               ).join('')}</div></td>
+              <td style="text-align:right;font-weight:600;color:var(--error)">${fmt(g.estLost)}</td>
             </tr>`).join('')}
+            <tr style="background:#1B2A4A;color:#fff;font-weight:700">
+              <td colspan="4">Total Estimated Unreimbursed</td>
+              <td style="text-align:center">${totalMissing} days</td>
+              <td style="text-align:right">${fmt(estLost)}</td>
+            </tr>
             </tbody>
           </table>
           </div>
           <div style="margin-top:12px;padding:10px;background:#FFF8E1;border-radius:6px;font-size:.82rem">
-            <strong>What to check:</strong> Were these children present but did not eat? Were meals served but not recorded in the Playground App? Were these children in a different classroom that day?
+            <strong>What to check:</strong> Were these children present but did not eat? Were meals served but not recorded in the Playground App? Were these children in a different classroom that day? Estimated reimbursement assumes Breakfast + Lunch + Snack at the child's CDC category rate.
           </div>
         </div></div>`;
     }
@@ -1424,6 +1455,117 @@ async function saveMealFieldC(mk,center,field,val){
   data[center][field]=parseInt(val)||0;
   monthlyDataCache[mk+'_meals']=data;
   try{await api('/api/monthly-data',{method:'POST',body:{fiscal_year_id:activeFY.id,month_key:mk,data_type:'meals',data}});renderMeals();}catch(e){showToast('Save error','err');}
+}
+
+function printAttMealGapReport(center){
+  const m=currentMonth;
+  const cLabel=cl(center);
+  const attData=monthlyDataCache[m+'_attendance']||{};
+  const mealData=monthlyDataCache[m+'_meals']||{};
+  const att=attData[center]||{};
+  const mealD=mealData[center]||{};
+  if(!att.childData||!mealD.children)return showToast('Missing data','err');
+
+  // Rebuild the gap analysis
+  const mealCatLookup={};
+  const mealChildDays={};
+  for(const ch of mealD.children){
+    const key=ch.name.trim().toLowerCase();
+    mealCatLookup[key]=ch.cat||'C';
+    mealChildDays[key]=new Set();
+    if(ch.dailyDetail) ch.dailyDetail.forEach((dd,idx)=>{if(dd.bk||dd.am||dd.ln||dd.pm)mealChildDays[key].add(idx);});
+  }
+  const attDayNums=(att.dayHeaders||[]).map(dh=>{const m2=dh.match(/(\d+)/);return m2?parseInt(m2[1]):0;});
+  const mealDayNums=(mealD.dayLabels||[]).map(dl=>{const m2=dl.match(/(\d+)/);return m2?parseInt(m2[1]):0;});
+
+  const gaps=[];
+  for(const ch of att.childData){
+    if(ch.present===0)continue;
+    const attName=ch.name.trim().toLowerCase();
+    const mealDays=mealChildDays[attName];
+    const cat=mealCatLookup[attName]||'C';
+    const missingDays=[];
+    (ch.dailyStatus||[]).forEach((s,idx)=>{
+      if(s!=='P')return;
+      const dayNum=attDayNums[idx];
+      if(!dayNum)return;
+      const mealIdx=mealDayNums.indexOf(dayNum);
+      if(!(mealDays&&mealDays.has(mealIdx))) missingDays.push(att.dayHeaders[idx]||`Day ${dayNum}`);
+    });
+    if(missingDays.length>0){
+      const R=RATES;
+      const catKey=cat==='A'?'A':cat==='B'?'B':'C';
+      const perDay=R.breakfast[catKey]+R.lunch[catKey]+R.snack[catKey];
+      gaps.push({name:ch.name,classroom:ch.classroom||'',cat,daysPresent:ch.present,missingMealDays:missingDays,perDayRate:perDay,estLost:perDay*missingDays.length});
+    }
+  }
+  if(!gaps.length)return showToast('No gaps found','ok');
+
+  const totalMissing=gaps.reduce((s,g)=>s+g.missingMealDays.length,0);
+  const estLost=gaps.reduce((s,g)=>s+g.estLost,0);
+
+  const w=window.open('','_blank','width=900,height=700');
+  w.document.write(`<!DOCTYPE html><html><head><title>Attendance vs Meal Gap Report — ${cLabel} — ${ML[m]} ${fyYear(m)}</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:Arial,sans-serif;padding:24px;color:#1A202C;font-size:11px}
+      h1{font-size:16px;color:#1B2A4A;border-bottom:3px solid #C5972C;padding-bottom:6px;text-align:center;margin-bottom:4px}
+      .subtitle{text-align:center;color:#718096;font-size:10px;margin-bottom:16px}
+      .stats{display:flex;gap:16px;justify-content:center;margin:16px 0}
+      .stat{padding:8px 16px;border-radius:6px;text-align:center}
+      .stat-red{background:#FFEBEE;color:#C62828}
+      .stat-orange{background:#FFF3E0;color:#E65100}
+      table{width:100%;border-collapse:collapse;margin:12px 0;font-size:10px}
+      th{background:#1B2A4A;color:#fff;padding:5px 6px;text-align:left;font-size:9px}
+      td{padding:4px 6px;border-bottom:1px solid #E2E8F0}
+      .cat-a{color:#2E7D32;font-weight:700} .cat-b{color:#C5972C;font-weight:700} .cat-c{color:#C62828;font-weight:700}
+      .day-pill{display:inline-block;background:#FFEBEE;color:#C62828;padding:2px 5px;border-radius:3px;font-size:8px;font-weight:600;margin:1px}
+      .total-row{background:#1B2A4A;color:#fff;font-weight:700}
+      .note{background:#FFF8E1;border:1px solid #C5972C;padding:10px;border-radius:4px;font-size:10px;margin-top:12px}
+      .footer{margin-top:16px;padding-top:8px;border-top:1px solid #C5972C;color:#718096;font-size:8px;text-align:center}
+      @media print{body{padding:12px;font-size:10px}.stats{gap:8px}}
+    </style></head><body>
+    <h1>The Children's Center, Inc.</h1>
+    <div class="subtitle">Attendance vs Meal Count Gap Report — ${cLabel}<br>${ML[m]} ${fyYear(m)} | Sponsor #990004457 | Generated ${new Date().toLocaleDateString()}</div>
+    <div class="stats">
+      <div class="stat stat-red"><strong style="font-size:18px">${gaps.length}</strong><br>Children Affected</div>
+      <div class="stat stat-red"><strong style="font-size:18px">${totalMissing}</strong><br>Child-Days Missing Meals</div>
+      <div class="stat stat-orange"><strong style="font-size:18px">$${estLost.toFixed(2)}</strong><br>Est. Unreimbursed (Bkfst+Lunch+Snack)</div>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>Child Name</th><th>Classroom</th><th>Cat</th><th style="text-align:center">Days Present</th><th style="text-align:center">Missing Days</th><th>Missing Meal Dates</th><th style="text-align:right">Per Day</th><th style="text-align:right">Est. Lost</th></tr></thead>
+      <tbody>
+      ${gaps.map((g,i)=>`<tr>
+        <td>${i+1}</td>
+        <td style="font-weight:600">${g.name}</td>
+        <td>${g.classroom}</td>
+        <td class="cat-${g.cat.toLowerCase()}">Cat ${g.cat}</td>
+        <td style="text-align:center">${g.daysPresent}</td>
+        <td style="text-align:center;font-weight:600;color:#C62828">${g.missingMealDays.length}</td>
+        <td>${g.missingMealDays.map(d=>`<span class="day-pill">${d}</span>`).join(' ')}</td>
+        <td style="text-align:right">$${g.perDayRate.toFixed(2)}</td>
+        <td style="text-align:right;font-weight:600;color:#C62828">$${g.estLost.toFixed(2)}</td>
+      </tr>`).join('')}
+      <tr class="total-row">
+        <td colspan="4">TOTAL</td>
+        <td style="text-align:center">${gaps.reduce((s,g)=>s+g.daysPresent,0)}</td>
+        <td style="text-align:center">${totalMissing}</td>
+        <td></td>
+        <td></td>
+        <td style="text-align:right">$${estLost.toFixed(2)}</td>
+      </tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <strong>Methodology:</strong> This report compares the Attendance Overview (P/A grid) against the CACFP Detailed meal count report for ${cLabel}, ${ML[m]} ${fyYear(m)}.
+      Each row represents a child marked Present on at least one day where no meals (Breakfast, AM Snack, Lunch, or PM Snack) were recorded.
+      Estimated lost reimbursement assumes Breakfast + Lunch + Snack at the child's CDC eligibility category rate.<br><br>
+      <strong>Next steps:</strong> Verify whether meals were served but not recorded, whether these children were absent despite the attendance marking, or whether they were in a different classroom.
+    </div>
+    <div class="footer">The Children's Center • CACFP Sponsor #990004457 • ${cLabel} • ${ML[m]} ${fyYear(m)}</div>
+  </body></html>`);
+  w.document.close();
+  setTimeout(()=>w.print(),300);
 }
 
 // ═══════════════════════════════════════════════════
