@@ -845,7 +845,35 @@ function renderAttendance(){
   let html='';
   for(const c of ['niles','peace']){
     const cl=c==='niles'?'Niles':'Peace Boulevard';
-    const d=data[c]||{};
+    let d=data[c]||{};
+    
+    // Runtime cleanup: filter out weekends from dayHeaders and 0-attendance children
+    if(d.childData&&d.dayHeaders){
+      // Filter weekend columns
+      const weekdayIdx=[];
+      const filteredHeaders=[];
+      (d.dayHeaders||[]).forEach((dh,i)=>{
+        if(!dh.match(/^(Sat|Sun)\b/)){weekdayIdx.push(i);filteredHeaders.push(dh);}
+      });
+      if(weekdayIdx.length<(d.dayHeaders||[]).length){
+        // Weekends were present — rebuild childData with filtered columns
+        d.dayHeaders=filteredHeaders;
+        d.childData=d.childData.map(ch=>({
+          ...ch,
+          dailyStatus:weekdayIdx.map(i=>(ch.dailyStatus||[])[i]||''),
+          present:weekdayIdx.reduce((s,i)=>(ch.dailyStatus||[])[i]==='P'?s+1:s,0)
+        }));
+      }
+      // Filter out children with 0 present days
+      d.childData=d.childData.filter(ch=>ch.present>0);
+      // Recalculate stats
+      const totalPresent=d.childData.reduce((s,ch)=>s+ch.present,0);
+      const opDays=filteredHeaders.length;
+      const enrolled=d.childData.length;
+      const ada=opDays>0?Math.round((totalPresent/opDays)*10)/10:0;
+      d.enrolled=enrolled;d.days=opDays;d.totalPresent=totalPresent;d.ada=ada;
+    }
+    
     const hasDetail=d.childData&&d.childData.length>0;
     const hasTimes=d.hasTimesData||false;
     html+=`<div class="card"><div class="card-hdr"><h3>📊 ${cl} — Attendance ${ML[m]} ${fyYear(m)}</h3>
@@ -914,17 +942,22 @@ async function parseAttendanceCSV(mk,center,input,skipUpload){
     try{await api('/api/documents/upload',{method:'POST',body:fd2});documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
   }
 
-  // Parse header to find day columns
+  // Parse header to find day columns — weekdays only (skip Sat/Sun)
   const headerLine=lines.find(l=>l.startsWith('Classroom,'));
   if(!headerLine){showToast('Could not find header row','err');return;}
   const cols=headerLine.split(',');
   const dayIndices=[];
   const dayHeaders=[];
   for(let i=3;i<cols.length;i++){
-    if(cols[i].match(/Mon|Tue|Wed|Thu|Fri/)){dayIndices.push(i);dayHeaders.push(cols[i].trim().replace(/\s*\d{1,2}\/\d{1,2}\/\d{2,4}/,'').substring(0,3)+' '+(cols[i].match(/\d{1,2}\/(\d{1,2})/)?.[1]||''));}
+    const colText=cols[i].trim();
+    // Only include weekday columns (Mon-Fri), skip Sat/Sun
+    if(colText.match(/^(Mon|Tue|Wed|Thu|Fri)\b/)){
+      dayIndices.push(i);
+      dayHeaders.push(colText.replace(/\s*\d{1,2}\/\d{1,2}\/\d{2,4}/,'').substring(0,3)+' '+(colText.match(/\d{1,2}\/(\d{1,2})/)?.[1]||''));
+    }
   }
 
-  const children=[];
+  const allChildren=[];
   let totalPresent=0;
   const classrooms=new Set();
   const dailyTotals=new Array(dayIndices.length).fill(0);
@@ -947,8 +980,11 @@ async function parseAttendanceCSV(mk,center,input,skipUpload){
       else if(val==='A')absent++;
     });
     totalPresent+=present;
-    children.push({name,classroom,present,absent,dailyStatus});
+    allChildren.push({name,classroom,present,absent,dailyStatus});
   }
+
+  // Exclude children with 0 days present from enrolled count and display
+  const children=allChildren.filter(ch=>ch.present>0);
 
   const operatingDays=dayIndices.length;
   const ada=operatingDays>0?Math.round((totalPresent/operatingDays)*10)/10:0;
