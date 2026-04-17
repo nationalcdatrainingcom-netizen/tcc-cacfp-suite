@@ -3842,34 +3842,161 @@ async function viewStaffTA(staffId){
 }
 // ═══════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════
-// AUDIT CROSS-CHECK (Attendance vs Meals)
+// AUDIT CROSS-CHECK (Meal-Window Validation)
 // ═══════════════════════════════════════════════════
+let ccFilter='all'; // 'all' | 'pending' | 'resolved' | 'report_as_discrepancy'
+let ccLastData=null;
+
 async function runAuditCrossCheck(){
   const panel=document.getElementById('crossCheckResults');
   const monthSel=document.getElementById('crossCheckMonth');
   const mk=monthSel?.value||currentMonth||MO[Math.max(0,new Date().getMonth()-1)];
   if(!mk){showToast('Select a month first','err');return;}
   const monthLabel=ML[mk]||mk;
-  panel.innerHTML=`<div class="alert alert-warn">⏳ Running cross-check for ${monthLabel}...</div>`;
+  panel.innerHTML=`<div class="alert alert-warn">⏳ Running meal window cross-check for ${monthLabel}...</div>`;
   try{
     const data=await api(`/api/audit-crosscheck?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
-    const flags=data.flags||[];
-    if(flags.length===0){
-      panel.innerHTML=`<div class="alert alert-ok" style="margin:0"><span>✅</span><div><strong>No discrepancies found for ${monthLabel}!</strong> Attendance records and meal counts are consistent.</div></div>`;
-      return;
-    }
-    let html=`<div class="alert alert-err" style="margin-bottom:12px"><span>⚠️</span><div><strong>${flags.length} discrepancies found in ${monthLabel}</strong></div></div>`;
-    html+=`<table class="staff-table" style="font-size:.85rem"><thead><tr><th>Type</th><th>Center</th><th>Child</th><th>Detail</th></tr></thead><tbody>`;
-    for(const f of flags){
-      const typeLabel=f.type==='no_attendance'?'🔴 No attendance':f.type==='meal_exceeds_attendance'?'🟡 Meals > Attendance':'🟠 No meals';
-      const centerLabel=f.center==='niles'?'Niles':'Peace';
-      html+=`<tr><td>${typeLabel}</td><td>${centerLabel}</td><td style="font-weight:500">${f.child}</td><td style="font-size:.8rem">${f.detail}</td></tr>`;
-    }
-    html+=`</tbody></table>`;
-    panel.innerHTML=html;
+    ccLastData=data;ccLastData._mk=mk;
+    renderCrossCheckResults();
   }catch(e){
     panel.innerHTML=`<div class="alert alert-err">Error: ${e.message}</div>`;
   }
+}
+
+function renderCrossCheckResults(){
+  const panel=document.getElementById('crossCheckResults');
+  if(!ccLastData){panel.innerHTML='';return;}
+  const {flags,counts,summary}=ccLastData;
+  const mk=ccLastData._mk;
+  const monthLabel=ML[mk]||mk;
+
+  if(!flags||flags.length===0){
+    panel.innerHTML=`<div class="alert alert-ok" style="margin:0"><span>✅</span>
+      <div><strong>No meal-window discrepancies in ${monthLabel}.</strong><br>
+      <span style="font-size:.8rem">${summary?.childrenChecked||0} children checked, ${summary?.totalMealsClaimed||0} meals validated against check-in times. Infant classrooms (${(summary?.infantClassrooms||[]).join(', ')}) are exempt from window rules.</span>
+      </div></div>`;
+    return;
+  }
+
+  const filtered=ccFilter==='all'?flags:flags.filter(f=>f.status===ccFilter);
+
+  let html=`<div style="margin-bottom:12px;padding:10px;background:#e3f2fd;border:1px solid #90caf9;border-radius:8px;font-size:.82rem">
+    <strong>📋 Meal Service Windows:</strong> Breakfast 6:30–9:30 AM &nbsp;|&nbsp; AM Snack 9:30–11:15 AM &nbsp;|&nbsp; Lunch 11:15 AM–2:00 PM &nbsp;|&nbsp; PM Snack after 2:00 PM<br>
+    <span style="color:var(--muted)">A flag means a meal was claimed but the child's first check-in was after the window closed (or they had already left before PM snack). Infants (Tiny Treasures, Caterpillars, Butterflies) eat on demand and are exempt.</span>
+  </div>`;
+
+  html+=`<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    <button class="cc-chip ${ccFilter==='all'?'active':''}" onclick="ccSetFilter('all')">All ${counts.total}</button>
+    <button class="cc-chip ${ccFilter==='pending'?'active':''}" onclick="ccSetFilter('pending')" style="color:#c62828;border-color:#c62828">🔴 Pending ${counts.pending||0}</button>
+    <button class="cc-chip ${ccFilter==='resolved'?'active':''}" onclick="ccSetFilter('resolved')" style="color:#2e7d32;border-color:#2e7d32">✅ Resolved ${counts.resolved||0}</button>
+    <button class="cc-chip ${ccFilter==='report_as_discrepancy'?'active':''}" onclick="ccSetFilter('report_as_discrepancy')" style="color:#8D6E00;border-color:#8D6E00">📋 For Report ${counts.report_as_discrepancy||0}</button>
+  </div>
+  <style>
+    .cc-chip{padding:6px 12px;border:1.5px solid var(--border);border-radius:20px;background:#fff;font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s}
+    .cc-chip.active{background:var(--navy);color:#fff !important;border-color:var(--navy) !important}
+    .cc-chip:not(.active):hover{background:var(--bg)}
+    .cc-flag{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fff}
+    .cc-flag.pending{border-left:4px solid var(--error)}
+    .cc-flag.resolved{border-left:4px solid var(--success);background:#fafafa}
+    .cc-flag.report_as_discrepancy{border-left:4px solid #8D6E00;background:#fffbf0}
+  </style>`;
+
+  if(filtered.length===0){
+    html+=`<div style="text-align:center;padding:20px;color:var(--muted);font-size:.9rem">No flags in this view.</div>`;
+    panel.innerHTML=html;return;
+  }
+
+  const byCenter={niles:[],peace:[]};
+  for(const f of filtered)byCenter[f.center].push(f);
+
+  for(const center of ['niles','peace']){
+    const list=byCenter[center];
+    if(!list.length)continue;
+    const cLabel=center==='niles'?'Niles':'Peace Boulevard';
+    html+=`<div style="margin-top:12px"><div style="font-weight:700;color:var(--navy);font-size:.95rem;margin-bottom:8px">📍 ${cLabel} — ${list.length} flag(s)</div>`;
+
+    for(const f of list){
+      const statusLabel=f.status==='resolved'?'✅ Resolved':f.status==='report_as_discrepancy'?'📋 In Review Report':'🔴 Pending';
+      const dateObj=new Date(f.date+'T12:00:00');
+      const dateDisplay=dateObj.toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'});
+      const statusBg=f.status==='resolved'?'background:#e8f5e9;color:#2e7d32':f.status==='report_as_discrepancy'?'background:#fff8e1;color:#8D6E00':'background:#fce4ec;color:#c62828';
+      const escChild=(f.child||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+      const escKey=(f.flag_key||'').replace(/'/g,"\\'");
+      html+=`<div class="cc-flag ${f.status}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:.95rem">${f.child} <span style="font-size:.8rem;color:var(--muted);font-weight:400">— ${f.classroom||'Unknown classroom'}</span></div>
+            <div style="font-size:.85rem;color:var(--navy);margin-top:2px">${dateDisplay} &nbsp;|&nbsp; <strong>${f.meal_label}</strong> claimed</div>
+          </div>
+          <span style="font-size:.75rem;font-weight:600;padding:3px 10px;border-radius:12px;white-space:nowrap;${statusBg}">${statusLabel}</span>
+        </div>
+        <div style="font-size:.85rem;color:#555;margin-bottom:6px">${f.reason}</div>
+        <div style="display:flex;gap:12px;font-size:.8rem;color:var(--muted);margin-bottom:8px;flex-wrap:wrap">
+          <span>Check-in: <strong>${f.check_in||'—'}</strong></span>
+          ${f.check_out?`<span>Check-out: <strong>${f.check_out}</strong></span>`:''}
+          <span>Window closed: <strong>${f.window_end}</strong></span>
+          <span>Cat ${f.category}</span>
+        </div>
+        ${f.resolution_notes?`<div style="font-size:.8rem;color:var(--muted);padding:6px 8px;background:var(--bg);border-radius:4px;margin-bottom:8px"><strong>Notes:</strong> ${f.resolution_notes}${f.resolved_by?' — '+f.resolved_by:''}</div>`:''}
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${f.status!=='resolved'?`<button class="btn btn-sm btn-success" onclick="ccResolve('${f.center}','${escKey}','${escChild}','${f.date}','${f.meal_type}','${f.check_in}','${f.window_end}')">✅ Mark Resolved</button>`:''}
+          ${f.status!=='report_as_discrepancy'?`<button class="btn btn-sm" style="border:1px solid #8D6E00;color:#8D6E00;background:#fff" onclick="ccAddToReport('${f.center}','${escKey}','${escChild}','${f.date}','${f.meal_type}','${f.check_in}','${f.window_end}')">📋 Add to Review Report</button>`:''}
+          ${f.status!=='pending'?`<button class="btn btn-sm" style="border:1px solid var(--border);color:var(--muted);background:#fff" onclick="ccReset('${f.center}','${escKey}','${escChild}','${f.date}','${f.meal_type}','${f.check_in}','${f.window_end}')">↩️ Reset to Pending</button>`:''}
+        </div>
+      </div>`;
+    }
+    html+='</div>';
+  }
+
+  panel.innerHTML=html;
+}
+
+function ccSetFilter(f){ccFilter=f;renderCrossCheckResults();}
+
+async function ccResolve(center,flagKey,childName,flagDate,mealType,checkIn,windowEnd){
+  const notes=prompt(`Resolution notes — why is this flag OK or how was it corrected?\n\nChild: ${childName}\nMeal: ${mealType} on ${flagDate}`);
+  if(notes===null)return;
+  try{
+    await api('/api/crosscheck-resolutions',{method:'POST',body:{
+      fiscal_year_id:activeFY.id,month_key:ccLastData._mk,center,flag_key:flagKey,
+      child_name:childName,flag_date:flagDate,meal_type:mealType,check_in:checkIn,window_end:windowEnd,
+      status:'resolved',resolution_notes:notes,resolved_by:'Mary Wardlaw'
+    }});
+    showToast('✅ Marked resolved','ok');
+    await runAuditCrossCheck();
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function ccAddToReport(center,flagKey,childName,flagDate,mealType,checkIn,windowEnd){
+  const cLabel=center==='niles'?'Niles':'Peace Boulevard';
+  const notes=prompt(`Add note for the monitoring review report (optional):\n\nChild: ${childName}\nMeal: ${mealType} on ${flagDate}\n\nThis will attach to the most recent in-progress review for ${cLabel}.`);
+  if(notes===null)return;
+  try{
+    const r=await api('/api/crosscheck-resolutions',{method:'POST',body:{
+      fiscal_year_id:activeFY.id,month_key:ccLastData._mk,center,flag_key:flagKey,
+      child_name:childName,flag_date:flagDate,meal_type:mealType,check_in:checkIn,window_end:windowEnd,
+      status:'report_as_discrepancy',resolution_notes:notes,resolved_by:'Mary Wardlaw'
+    }});
+    if(r.attached_review_id){
+      showToast(`📋 Added to review report (ID ${r.attached_review_id})`,'ok');
+    }else{
+      showToast(`📋 Saved — no in-progress review found. Start a new ${cLabel} review and re-add this.`,'err');
+    }
+    await runAuditCrossCheck();
+  }catch(e){showToast('Error: '+e.message,'err');}
+}
+
+async function ccReset(center,flagKey,childName,flagDate,mealType,checkIn,windowEnd){
+  if(!confirm('Reset this flag to Pending?'))return;
+  try{
+    await api('/api/crosscheck-resolutions',{method:'POST',body:{
+      fiscal_year_id:activeFY.id,month_key:ccLastData._mk,center,flag_key:flagKey,
+      child_name:childName,flag_date:flagDate,meal_type:mealType,check_in:checkIn,window_end:windowEnd,
+      status:'pending',resolution_notes:'',resolved_by:''
+    }});
+    showToast('Reset to pending','ok');
+    await runAuditCrossCheck();
+  }catch(e){showToast('Error: '+e.message,'err');}
 }
 
 // ═══════════════════════════════════════════════════
