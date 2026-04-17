@@ -3882,7 +3882,7 @@ function renderCrossCheckResults(){
 
   let html=`<div style="margin-bottom:12px;padding:10px;background:#e3f2fd;border:1px solid #90caf9;border-radius:8px;font-size:.82rem">
     <strong>📋 Meal Service Windows:</strong> Breakfast 6:30–9:30 AM &nbsp;|&nbsp; AM Snack 9:30–11:15 AM &nbsp;|&nbsp; Lunch 11:15 AM–2:00 PM &nbsp;|&nbsp; PM Snack after 2:00 PM<br>
-    <span style="color:var(--muted)">A flag means a meal was claimed but the child's first check-in was after the window closed (or they had already left before PM snack). Infants (Tiny Treasures, Caterpillars, Butterflies) eat on demand and are exempt.</span>
+    <span style="color:var(--muted)">A flag means a meal was claimed but the child was not on site at any point during that meal's service window. Children with split in/out times (e.g. morning care + afterschool care) are checked across <em>all</em> their time intervals. Infants (Tiny Treasures, Caterpillars, Butterflies) eat on demand and are exempt.</span>
   </div>`;
 
   html+=`<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
@@ -3932,9 +3932,8 @@ function renderCrossCheckResults(){
         </div>
         <div style="font-size:.85rem;color:#555;margin-bottom:6px">${f.reason}</div>
         <div style="display:flex;gap:12px;font-size:.8rem;color:var(--muted);margin-bottom:8px;flex-wrap:wrap">
-          <span>Check-in: <strong>${f.check_in||'—'}</strong></span>
-          ${f.check_out?`<span>Check-out: <strong>${f.check_out}</strong></span>`:''}
-          <span>Window closed: <strong>${f.window_end}</strong></span>
+          <span>Attendance: <strong>${f.intervals_display||(f.check_in||'—')}</strong></span>
+          <span>Meal window: <strong>${f.window_display||f.window_end}</strong></span>
           <span>Cat ${f.category}</span>
         </div>
         ${f.resolution_notes?`<div style="font-size:.8rem;color:var(--muted);padding:6px 8px;background:var(--bg);border-radius:4px;margin-bottom:8px"><strong>Notes:</strong> ${f.resolution_notes}${f.resolved_by?' — '+f.resolved_by:''}</div>`:''}
