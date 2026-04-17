@@ -1740,26 +1740,35 @@ app.get('/api/child-attendance-report', authCheck, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// ATTENDANCE vs MEAL COUNT CROSS-CHECK (meal-window based)
+// ATTENDANCE vs MEAL COUNT CROSS-CHECK (interval-overlap based)
 // ═══════════════════════════════════════════════════════════
 // CACFP meal service windows at TCC:
-//   Breakfast:  6:30 AM – 9:30 AM   → child must be checked in by 9:30 AM
-//   AM Snack:   9:30 AM – 11:15 AM  → child must be checked in by 11:15 AM
-//   Lunch:      11:15 AM – 2:00 PM  → child must be checked in by 2:00 PM
-//   PM Snack:   after 2:00 PM       → child must still be present (or return) at 2:00 PM+
-// Infants (under 1 year old) eat on demand — exempt from window validation.
+//   Breakfast:  6:30 AM – 9:30 AM
+//   AM Snack:   9:30 AM – 11:15 AM
+//   Lunch:      11:15 AM – 2:00 PM
+//   PM Snack:   2:00 PM – end of day (any time after 2:00 PM)
+//
+// A meal claim is flagged ONLY IF the child was not present at any point during
+// that meal's service window. Split-day children (e.g. morning care → school →
+// afterschool care) commonly have two or more in/out pairs per day, so the check
+// walks ALL intervals and tests whether any interval overlaps the window.
+//
+// An interval is [check_in, check_out]. A null check_out means the child was
+// still checked in at end of day, so the interval is treated as [check_in, ∞].
+//
+// Infants (under 1 year) eat on demand — exempt from window validation.
 // Infants are identified by classroom name: Tiny Treasures, Caterpillars, Butterflies.
 const INFANT_CLASSROOMS = new Set([
   'tiny treasures',
   'caterpillars',
   'butterflies'
 ]);
-const MEAL_WINDOW_END_MIN = {
-  breakfast: 9 * 60 + 30,   // 9:30 AM
-  amSnack:   11 * 60 + 15,  // 11:15 AM
-  lunch:     14 * 60        // 2:00 PM
+const MEAL_WINDOWS = {
+  breakfast: { start: 6 * 60 + 30, end: 9 * 60 + 30,  label: 'Breakfast', display: '6:30 AM – 9:30 AM' },
+  amSnack:   { start: 9 * 60 + 30, end: 11 * 60 + 15, label: 'AM Snack',  display: '9:30 AM – 11:15 AM' },
+  lunch:     { start: 11 * 60 + 15, end: 14 * 60,     label: 'Lunch',     display: '11:15 AM – 2:00 PM' },
+  pmSnack:   { start: 14 * 60, end: 24 * 60,          label: 'PM Snack',  display: 'after 2:00 PM' }
 };
-const PM_SNACK_START_MIN = 14 * 60; // 2:00 PM
 
 // Parse "9:15 AM" / "2:30 PM" to minutes since midnight
 function parseTimeToMinutes(t) {
@@ -1782,6 +1791,29 @@ function minutesToTimeStr(min) {
   if (h === 0) h = 12;
   else if (h > 12) h -= 12;
   return `${h}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+
+// Does any interval in `intervals` overlap [winStart, winEnd)?
+// Each interval is {inMin, outMin}; outMin null means open-ended (still on site).
+function intervalsOverlapWindow(intervals, winStart, winEnd) {
+  if (!intervals || !intervals.length) return false;
+  for (const iv of intervals) {
+    if (iv.inMin === null) continue;
+    const effectiveOut = iv.outMin === null ? 24 * 60 : iv.outMin;
+    // Overlap: interval start < window end AND interval end > window start
+    if (iv.inMin < winEnd && effectiveOut > winStart) return true;
+  }
+  return false;
+}
+
+// Format all intervals for display: "6:45 AM–8:25 AM, 3:30 PM–6:00 PM"
+function formatIntervals(intervals) {
+  if (!intervals || !intervals.length) return '';
+  return intervals.map(iv => {
+    const inStr = iv.inMin !== null ? minutesToTimeStr(iv.inMin) : '?';
+    const outStr = iv.outMin !== null ? minutesToTimeStr(iv.outMin) : 'still in';
+    return `${inStr}–${outStr}`;
+  }).join(', ');
 }
 
 app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
@@ -1812,7 +1844,8 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
       resMap[`${r.center}::${r.flag_key}`] = r;
     }
 
-    // Build lookup: earliest check-in and latest check-out per child per date
+    // Build lookup: ALL in/out intervals per child per date
+    // Keyed by `${center}::${normName}::${dateISO}` → [{inMin, outMin}, ...]
     const timeLookup = {};
     const normName = n => (n || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
     for (const r of timesRes.rows) {
@@ -1824,13 +1857,13 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
       const key = `${r.center}::${nameKey}::${dateISO}`;
       const inMin = parseTimeToMinutes(r.check_in);
       const outMin = parseTimeToMinutes(r.check_out);
-      if (!timeLookup[key]) timeLookup[key] = { firstIn: null, lastOut: null };
-      if (inMin !== null && (timeLookup[key].firstIn === null || inMin < timeLookup[key].firstIn)) {
-        timeLookup[key].firstIn = inMin;
-      }
-      if (outMin !== null && (timeLookup[key].lastOut === null || outMin > timeLookup[key].lastOut)) {
-        timeLookup[key].lastOut = outMin;
-      }
+      if (inMin === null) continue; // no usable data
+      if (!timeLookup[key]) timeLookup[key] = [];
+      timeLookup[key].push({ inMin, outMin });
+    }
+    // Sort each child's intervals by check-in time for display consistency
+    for (const k of Object.keys(timeLookup)) {
+      timeLookup[k].sort((a, b) => a.inMin - b.inMin);
     }
 
     const flags = [];
@@ -1882,17 +1915,24 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
 
           const dateISO = `${year}-${String(monthIdx + 1).padStart(2,'0')}-${String(dom).padStart(2,'0')}`;
           const timeKey = `${center}::${childNameKey}::${dateISO}`;
-          const times = timeLookup[timeKey];
+          const intervals = timeLookup[timeKey];
 
           totalMealsClaimed += (claimed.breakfast?1:0) + (claimed.amSnack?1:0) + (claimed.lunch?1:0) + (claimed.pmSnack?1:0);
 
           // If no attendance time record, can't validate — skip silently
-          if (!times || times.firstIn === null) continue;
+          if (!intervals || !intervals.length) continue;
 
-          const firstIn = times.firstIn;
-          const lastOut = times.lastOut;
+          const intervalsDisplay = formatIntervals(intervals);
+          // Derived display fields (kept for UI back-compat)
+          const firstIn = intervals[0].inMin;
+          const lastOutVal = intervals.reduce((lo, iv) => {
+            if (iv.outMin === null) return null; // still-in wins
+            if (lo === null) return lo;          // already still-in
+            return Math.max(lo, iv.outMin);
+          }, intervals[0].outMin);
 
-          const emit = (mealType, mealLabel, windowEnd, reason) => {
+          const emit = (mealType, reason) => {
+            const w = MEAL_WINDOWS[mealType];
             const flagKey = `${childNameKey}::${dateISO}::${mealType}`;
             const resKey = `${center}::${flagKey}`;
             const existing = resMap[resKey] || {};
@@ -1904,10 +1944,12 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
               date: dateISO,
               dayDisplay: String(meals.dayLabels[dayIdx] || dom),
               meal_type: mealType,
-              meal_label: mealLabel,
+              meal_label: w.label,
               check_in: minutesToTimeStr(firstIn),
-              check_out: lastOut !== null ? minutesToTimeStr(lastOut) : null,
-              window_end: windowEnd,
+              check_out: lastOutVal !== null ? minutesToTimeStr(lastOutVal) : null,
+              intervals_display: intervalsDisplay,
+              window_display: w.display,
+              window_end: mealType === 'pmSnack' ? '2:00 PM' : minutesToTimeStr(w.end),
               reason,
               category: child.cat || 'C',
               status: existing.status || 'pending',
@@ -1918,23 +1960,13 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
             });
           };
 
-          if (claimed.breakfast && firstIn > MEAL_WINDOW_END_MIN.breakfast) {
-            emit('breakfast', 'Breakfast', '9:30 AM',
-              `Breakfast claimed, but child first checked in at ${minutesToTimeStr(firstIn)} — after the 9:30 AM window close.`);
-          }
-          if (claimed.amSnack && firstIn > MEAL_WINDOW_END_MIN.amSnack) {
-            emit('amSnack', 'AM Snack', '11:15 AM',
-              `AM Snack claimed, but child first checked in at ${minutesToTimeStr(firstIn)} — after the 11:15 AM window close.`);
-          }
-          if (claimed.lunch && firstIn > MEAL_WINDOW_END_MIN.lunch) {
-            emit('lunch', 'Lunch', '2:00 PM',
-              `Lunch claimed, but child first checked in at ${minutesToTimeStr(firstIn)} — after the 2:00 PM window close.`);
-          }
-          if (claimed.pmSnack) {
-            const presentForPM = lastOut === null || lastOut > PM_SNACK_START_MIN;
-            if (!presentForPM) {
-              emit('pmSnack', 'PM Snack', '2:00 PM',
-                `PM Snack claimed, but child checked out at ${minutesToTimeStr(lastOut)} — before the 2:00 PM PM-snack service time.`);
+          // Check each claimed meal: does ANY interval overlap the window?
+          for (const mk of ['breakfast', 'amSnack', 'lunch', 'pmSnack']) {
+            if (!claimed[mk]) continue;
+            const w = MEAL_WINDOWS[mk];
+            if (!intervalsOverlapWindow(intervals, w.start, w.end)) {
+              emit(mk,
+                `${w.label} claimed, but child was not on site during the ${w.display} window. Attendance: ${intervalsDisplay}.`);
             }
           }
         }
