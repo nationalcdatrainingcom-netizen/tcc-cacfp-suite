@@ -146,6 +146,28 @@ async function initDB() {
       UNIQUE(fiscal_year_id, month_key, center, child_last, child_first, attend_date, check_in, source)
     );
 
+    -- Cross-check resolutions (monitor decisions on flagged meal-window discrepancies)
+    CREATE TABLE IF NOT EXISTS crosscheck_resolutions (
+      id SERIAL PRIMARY KEY,
+      fiscal_year_id INTEGER REFERENCES fiscal_years(id),
+      month_key VARCHAR(10) NOT NULL,
+      center VARCHAR(50) NOT NULL,
+      flag_key VARCHAR(400) NOT NULL,
+      child_name VARCHAR(200),
+      flag_date DATE,
+      meal_type VARCHAR(20),
+      check_in VARCHAR(20),
+      window_end VARCHAR(20),
+      status VARCHAR(30) DEFAULT 'pending',
+      resolution_notes TEXT,
+      attached_review_id INTEGER,
+      resolved_by VARCHAR(150),
+      resolved_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(fiscal_year_id, month_key, center, flag_key)
+    );
+
     -- Seed first fiscal year if none exists
     INSERT INTO fiscal_years (label, start_year, end_year, is_active)
     VALUES ('2025-2026', 2025, 2026, true)
@@ -153,6 +175,7 @@ async function initDB() {
   `);
   try { await pool.query('ALTER TABLE daily_cacfp_entries ADD COLUMN IF NOT EXISTS adult_meal BOOLEAN DEFAULT false'); } catch(e) {}
   try { await pool.query('CREATE INDEX IF NOT EXISTS idx_cat_center_month ON child_attendance_times(fiscal_year_id, month_key, center)'); } catch(e) {}
+  try { await pool.query('CREATE INDEX IF NOT EXISTS idx_ccr_status ON crosscheck_resolutions(fiscal_year_id, month_key, center, status)'); } catch(e) {}
   console.log('✅ Database tables ready');
 }
 
@@ -180,7 +203,6 @@ app.get('/api/fiscal-years', authCheck, async (req, res) => {
 app.post('/api/fiscal-years', authCheck, async (req, res) => {
   try {
     const { label, start_year, end_year } = req.body;
-    // Deactivate all, then insert new as active
     await pool.query('UPDATE fiscal_years SET is_active = false');
     const { rows } = await pool.query(
       `INSERT INTO fiscal_years (label, start_year, end_year, is_active)
@@ -189,7 +211,6 @@ app.post('/api/fiscal-years', authCheck, async (req, res) => {
        RETURNING *`,
       [label, start_year, end_year]
     );
-    // Copy active staff roster to new year (they'll need new time entries)
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -277,7 +298,6 @@ app.post('/api/staff-time', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Bulk upsert time entries for a month
 app.post('/api/staff-time/bulk', authCheck, async (req, res) => {
   try {
     const { entries, fiscal_year_id, month_key } = req.body;
@@ -297,7 +317,6 @@ app.post('/api/staff-time/bulk', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Get monthly salary/admin totals for a fiscal year
 app.get('/api/staff-time/totals', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id } = req.query;
@@ -365,7 +384,7 @@ app.delete('/api/documents/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── MONTHLY DATA (generic key-value per month) ───────────
+// ── MONTHLY DATA ──────────────────────────────────────────
 app.get('/api/monthly-data', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key, data_type } = req.query;
@@ -427,17 +446,13 @@ app.delete('/api/revenue/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Revenue summary for fiscal year
 app.get('/api/revenue/summary', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id } = req.query;
     const { rows } = await pool.query(`
-      SELECT month_key, revenue_type,
-        SUM(amount) as total
-      FROM revenue_entries
-      WHERE fiscal_year_id = $1
-      GROUP BY month_key, revenue_type
-      ORDER BY month_key
+      SELECT month_key, revenue_type, SUM(amount) as total
+      FROM revenue_entries WHERE fiscal_year_id = $1
+      GROUP BY month_key, revenue_type ORDER BY month_key
     `, [fiscal_year_id]);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -524,7 +539,6 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'No file' });
 
-    // Store the CSV as a document for audit
     await pool.query(
       `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
        VALUES ($1,$2,'playground_staff_hours',$3,$4,$5,$6)`,
@@ -536,7 +550,6 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
     const lines = csv.split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length < 2) return res.status(400).json({ error: 'Empty CSV' });
 
-    // Parse header
     const hdr = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
     const idxLast = hdr.indexOf('last name');
     const idxFirst = hdr.indexOf('first name');
@@ -546,7 +559,6 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
     const idxBillable = hdr.indexOf('billable');
     if (idxLast < 0 || idxFirst < 0 || idxDate < 0) return res.status(400).json({ error: 'Missing required columns' });
 
-    // Parse CSV rows (handle quoted fields with newlines)
     function parseCSVRows(text) {
       const rows = []; let row = []; let field = ''; let inQ = false;
       for (let i = 0; i < text.length; i++) {
@@ -561,9 +573,8 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
     }
 
     const dataRows = parseCSVRows(csv);
-    dataRows.shift(); // remove header
+    dataRows.shift();
 
-    // Get staff roster
     const staffRes = await pool.query('SELECT id, name, center FROM staff WHERE is_active = true');
     const staffMap = {};
     for (const s of staffRes.rows) { staffMap[s.name.toLowerCase()] = s; }
@@ -579,20 +590,17 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
       const fullName = `${firstName} ${lastName}`.trim();
       const dateStr = cols[idxDate] || '';
 
-      // Parse date
       const dm = dateStr.match(/(\d+)\/(\d+)\/(\d+)/);
       if (!dm) continue;
       const rowMonth = parseInt(dm[1]) - 1;
       const rowDay = parseInt(dm[2]);
       if (rowMonth !== targetMonth) continue;
 
-      // Match staff
       const key = fullName.toLowerCase();
       let staff = staffMap[key];
       if (!staff) {
         const fnLow = firstName.toLowerCase();
         const lnLow = lastName.toLowerCase();
-        // Common nickname mappings
         const NICKNAMES = {abby:'abigail',abigail:'abby',mike:'michael',michael:'mike',
           liz:'elizabeth',elizabeth:'liz',beth:'elizabeth',bill:'william',william:'bill',
           bob:'robert',robert:'bob',rob:'robert',jim:'james',james:'jim',jimmy:'james',
@@ -607,7 +615,6 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
           meg:'megan',megan:'meg',maddie:'madison',madison:'maddie',mandy:'amanda',amanda:'mandy'};
         const nickVariants = [fnLow];
         if (NICKNAMES[fnLow]) nickVariants.push(NICKNAMES[fnLow]);
-        // Also check if any nickname maps TO this name
         for (const [nick, full] of Object.entries(NICKNAMES)) {
           if (full === fnLow && !nickVariants.includes(nick)) nickVariants.push(nick);
         }
@@ -617,21 +624,18 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
           if (parts.length < 2) continue;
           const sFirst = parts[0];
           const sLast = parts[parts.length - 1];
-          if (sLast !== lnLow) continue; // Last name must match exactly
+          if (sLast !== lnLow) continue;
 
-          // Check all nickname variants
           for (const variant of nickVariants) {
             if (variant === sFirst) { staff = s; break; }
           }
           if (staff) break;
 
-          // Prefix match (3+ chars)
           if (fnLow.length >= 3 && sFirst.startsWith(fnLow.substring(0, 3))) { staff = s; break; }
           if (sFirst.length >= 3 && fnLow.startsWith(sFirst.substring(0, 3))) { staff = s; break; }
         }
       }
       if (!staff) {
-        // Auto-add new staff member from CSV
         const staffCenter = center || 'niles';
         try {
           const newStaff = await pool.query(
@@ -640,7 +644,6 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
           );
           staff = newStaff.rows[0];
           staffMap[key] = staff;
-          // Also create a default PIN so they can log in to the phone app
           const defaultPin = String(1000 + Math.floor(Math.random() * 9000));
           await pool.query(
             'INSERT INTO staff_pins (staff_id, pin, role) VALUES ($1, $2, $3) ON CONFLICT (staff_id) DO NOTHING',
@@ -653,7 +656,6 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
         }
       }
 
-      // Parse times
       const timesRaw = cols[idxTimes] || '';
       const timeSegments = timesRaw.split(/\n/).map(t => t.trim()).filter(Boolean);
       let startTime = '', endTime = '';
@@ -662,12 +664,10 @@ app.post('/api/playground-import', authCheck, upload.single('file'), async (req,
         if (tm) { if (!startTime) startTime = tm[1]; endTime = tm[2]; }
       }
 
-      // Parse breaks
       const breaksRaw = cols[idxBreaks] || '0 hrs 0 min';
       const bm = breaksRaw.match(/(\d+)\s*hrs?\s*(\d+)\s*min/);
       const breakHrs = bm ? parseInt(bm[1]) + parseInt(bm[2]) / 60 : 0;
 
-      // Parse billable
       const billRaw = cols[idxBillable] || '0 hrs 0 min';
       const blm = billRaw.match(/(\d+)\s*hrs?\s*(\d+)\s*min/);
       const billableHrs = blm ? parseInt(blm[1]) + parseInt(blm[2]) / 60 : 0;
@@ -693,28 +693,20 @@ app.get('/api/merged-time/:staffId', authCheck, async (req, res) => {
     const { fiscal_year_id, month_key } = req.query;
     const sid = req.params.staffId;
 
-    // Playground hours (start, end, worked, absent)
     const pgRes = await pool.query(
       'SELECT * FROM playground_staff_hours WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3 ORDER BY day_of_month',
       [sid, fiscal_year_id, month_key]
     );
-
-    // Phone CACFP entries (food service + admin hours)
     const ceRes = await pool.query(
       'SELECT * FROM daily_cacfp_entries WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3 ORDER BY day_of_month',
       [sid, fiscal_year_id, month_key]
     );
-
-    // Signature
     const sigRes = await pool.query(
       'SELECT * FROM monthly_signatures WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3',
       [sid, fiscal_year_id, month_key]
     );
-
-    // Staff info
     const sRes = await pool.query('SELECT * FROM staff WHERE id=$1', [sid]);
 
-    // Merge by day
     const days = {};
     for (const p of pgRes.rows) {
       days[p.day_of_month] = {
@@ -729,7 +721,6 @@ app.get('/api/merged-time/:staffId', authCheck, async (req, res) => {
       days[c.day_of_month].admin_hours = parseFloat(c.admin_hours) || 0;
     }
 
-    // Calculate non-CACFP for each day
     for (const d of Object.values(days)) {
       d.non_cacfp = Math.max(0, d.total_worked - d.food_service_hours - d.admin_hours);
     }
@@ -742,7 +733,6 @@ app.get('/api/merged-time/:staffId', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── GET ALL MERGED DATA FOR A MONTH ──────────────────────
 app.get('/api/merged-time-all', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key, show_all } = req.query;
@@ -770,7 +760,6 @@ app.get('/api/merged-time-all', authCheck, async (req, res) => {
       for (const c of ceRes.rows) { totalFS += parseFloat(c.food_service_hours) || 0; totalAdm += parseFloat(c.admin_hours) || 0; }
       for (const p of pgRes.rows) { totalWorked += parseFloat(p.total_worked) || 0; totalAbsent += parseFloat(p.total_absent) || 0; daysWorked++; }
 
-      // Only include staff who have data for this month (unless show_all is requested)
       if (show_all === 'true' || hasPlayground || hasCACFP || totalFS > 0 || totalAdm > 0 || totalWorked > 0) {
         result.push({
           ...s, totalFS, totalAdm, totalWorked, totalAbsent, daysWorked, hasPlayground, hasCACFP,
@@ -782,7 +771,6 @@ app.get('/api/merged-time-all', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── APPROVE MONTH (supervisor signature) ─────────────────
 app.post('/api/approve-month', authCheck, async (req, res) => {
   try {
     const { staff_id, fiscal_year_id, month_key, supervisor_signature } = req.body;
@@ -827,7 +815,6 @@ app.post('/api/generate-ta-form', authCheck, async (req, res) => {
     const MN = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
     const numDays = new Date(year, MN[month_key] + 1, 0).getDate();
 
-    // Get merged data
     const pgRes = await pool.query('SELECT * FROM playground_staff_hours WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [staff_id, fiscal_year_id, month_key]);
     const ceRes = await pool.query('SELECT * FROM daily_cacfp_entries WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [staff_id, fiscal_year_id, month_key]);
     const sigRes = await pool.query('SELECT * FROM monthly_signatures WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [staff_id, fiscal_year_id, month_key]);
@@ -852,7 +839,6 @@ app.post('/api/generate-ta-form', authCheck, async (req, res) => {
       });
     }
 
-    // Header row
     const hdrRow = new TableRow({ children: [
       cell('Date', { bold: true, bg: navy, color: 'FFFFFF', w: 6 }),
       cell('Starting\nTime', { bold: true, bg: navy, color: 'FFFFFF', w: 12 }),
@@ -887,7 +873,6 @@ app.post('/api/generate-ta-form', authCheck, async (req, res) => {
       ]}));
     }
 
-    // Totals row
     const totRow = new TableRow({ children: [
       cell('', { bg: 'E0E0E0' }),
       cell('', { bg: 'E0E0E0' }), cell('Totals', { bold: true, bg: 'E0E0E0' }),
@@ -945,7 +930,6 @@ app.post('/api/generate-ta-form', authCheck, async (req, res) => {
     const buffer = await Packer.toBuffer(doc);
     const filename = `TA_${staff.name.replace(/\s/g,'_')}_${month_key}_${fy.label}.docx`;
 
-    // Optionally store in documents table
     if (store_in_docs) {
       await pool.query(
         `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, staff_id, metadata)
@@ -960,11 +944,9 @@ app.post('/api/generate-ta-form', authCheck, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-// ── GENERATE ALL T&A FORMS + STORE IN DOCS ───────────────
 app.post('/api/generate-ta-forms-all', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key, supervisor_signature } = req.body;
-    // Get all staff with submitted signatures
     const staffRes = await pool.query(
       `SELECT s.id FROM staff s
        JOIN staff_pins sp ON sp.staff_id = s.id
@@ -973,10 +955,8 @@ app.post('/api/generate-ta-forms-all', authCheck, async (req, res) => {
       [fiscal_year_id, month_key]
     );
 
-    // Approve all and generate forms by calling the single endpoint logic
     let generated = 0;
     for (const s of staffRes.rows) {
-      // Apply supervisor signature
       await pool.query(
         `UPDATE monthly_signatures SET supervisor_signature=$1, supervisor_signed_at=NOW(), status='approved'
          WHERE staff_id=$2 AND fiscal_year_id=$3 AND month_key=$4`,
@@ -1017,7 +997,6 @@ app.post('/api/generate-staff-package', authCheck, async (req, res) => {
       });
     }
 
-    // Get all staff with entries
     const staffRes = await pool.query(
       `SELECT DISTINCT s.id, s.name, s.center, s.hourly_rate FROM staff s
        JOIN staff_pins sp ON sp.staff_id = s.id
@@ -1030,7 +1009,6 @@ app.post('/api/generate-staff-package', authCheck, async (req, res) => {
 
     const sections = [];
 
-    // ── SECTION 1: SUMMARY PAGE ──
     const summaryRows = [new TableRow({ children: [
       cell('Staff Name', { bold: true, bg: navy, color: 'FFFFFF', w: 25 }),
       cell('Center', { bold: true, bg: navy, color: 'FFFFFF', w: 12 }),
@@ -1093,7 +1071,6 @@ app.post('/api/generate-staff-package', authCheck, async (req, res) => {
       ]
     });
 
-    // ── SECTION 2+: INDIVIDUAL T&A FORMS ──
     for (const s of staffRes.rows) {
       const pgRes = await pool.query('SELECT * FROM playground_staff_hours WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [s.id, fiscal_year_id, month_key]);
       const ceRes = await pool.query('SELECT * FROM daily_cacfp_entries WHERE staff_id=$1 AND fiscal_year_id=$2 AND month_key=$3', [s.id, fiscal_year_id, month_key]);
@@ -1187,7 +1164,6 @@ app.post('/api/generate-staff-package', authCheck, async (req, res) => {
     const buffer = await Packer.toBuffer(doc);
     const filename = `CACFP_Staff_Package_${month_key}_${fy.label}.docx`;
 
-    // Store in documents
     await pool.query(
       `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
        VALUES ($1,$2,'staff_package',$3,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$4,$5)`,
@@ -1210,7 +1186,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
     const text = req.file.buffer.toString('utf8').replace(/^\uFEFF/, '');
     const lines = text.split('\n').filter(l => l.trim());
     
-    // Header: Last name,First name,Date,Check-in,Signer,Signature,Check-out,Signer,Signature
     const header = lines[0];
     if (!header.toLowerCase().includes('last name') && !header.toLowerCase().includes('last')) {
       return res.status(400).json({ error: 'Invalid format — expected CSV with Last name, First name, Date, Check-in, Check-out columns' });
@@ -1219,13 +1194,11 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
       return res.status(400).json({ error: 'Invalid format — expected CSV with Check-in and Check-out columns' });
     }
 
-    // Delete existing records for this center/month/source=playground
     await pool.query(
       'DELETE FROM child_attendance_times WHERE fiscal_year_id=$1 AND month_key=$2 AND center=$3 AND source=$4',
       [fiscal_year_id, month_key, center, 'playground']
     );
 
-    // Also store original file — delete previous upload for this center/month first
     await pool.query(
       'DELETE FROM documents WHERE fiscal_year_id=$1 AND month_key=$2 AND doc_type=$3',
       [fiscal_year_id, month_key, 'child_attendance_daily_'+center]
@@ -1239,25 +1212,20 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
     let imported = 0, skipped = 0, absent = 0;
     const children = new Set();
 
-    // Parse month boundaries from month_key
     const mkMap = {oct:10,nov:11,dec:12,jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9};
     const targetMonth = mkMap[month_key];
     const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
     const fy = fyRes.rows[0];
     const targetYear = targetMonth >= 10 ? fy.start_year : fy.end_year;
 
-    // Detect format from header: 9-col (no split) or 15-col (with Check In 2)
     const headerLower = header.toLowerCase();
     const hasSplitCols = headerLower.includes('check in 2') || headerLower.includes('check-in 2');
     
-    // Dynamically find column indices from header
     const hParts = header.split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
     let colCheckIn = hParts.findIndex(h => h === 'check-in' || h === 'check in');
     let colCheckOut = hParts.findIndex(h => h === 'check-out' || h === 'check out');
-    // Find signer columns — they follow check-in and check-out respectively
     let colSignerIn = -1, colSignerOut = -1;
     if (colCheckIn >= 0) {
-      // Signer is the next column after check-in (skip if it's 'signature')
       for (let ci = colCheckIn + 1; ci < hParts.length; ci++) {
         if (hParts[ci] === 'signer' || hParts[ci] === 'by') { colSignerIn = ci; break; }
         if (hParts[ci] === 'signature' || hParts[ci] === 'check-out' || hParts[ci] === 'check out') break;
@@ -1269,7 +1237,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
         if (hParts[ci] === 'signature' || hParts[ci] === 'check in 2' || hParts[ci] === 'check-in 2') break;
       }
     }
-    // Fallback for merged CSV format: Last name,First name,Date,Check-in,Signer,Check-out,Signer
     if (colCheckIn < 0) colCheckIn = 3;
     if (colCheckOut < 0) colCheckOut = hParts.length >= 9 ? 6 : 5;
     if (colSignerIn < 0) colSignerIn = colCheckIn + 1;
@@ -1305,7 +1272,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
       const dateStr = (parts[2] || '').trim();
       if (!lastName || !dateStr) continue;
 
-      // Primary check-in/out: use detected column indices
       let checkIn = (parts[colCheckIn] || '').trim();
       let checkOut = (parts[colCheckOut] || '').trim();
       let signerIn = (parts[colSignerIn] || '').trim();
@@ -1313,7 +1279,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
       if (signerIn.includes('http')) signerIn = '';
       if (signerOut.includes('http')) signerOut = '';
 
-      // Second check-in/out if 15-col format: cols 9 and 12
       let checkIn2 = '', checkOut2 = '', signerIn2 = '', signerOut2 = '';
       if (hasSplitCols && parts.length >= 13) {
         checkIn2 = (parts[9] || '').trim();
@@ -1322,17 +1287,14 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
         signerOut2 = (parts[13] || '').trim();
         if (signerIn2.includes('http')) signerIn2 = '';
         if (signerOut2.includes('http')) signerOut2 = '';
-        // Clean non-printable chars (em-dashes etc)
         checkIn2 = checkIn2.replace(/[^\x20-\x7E]/g, '').trim();
         checkOut2 = checkOut2.replace(/[^\x20-\x7E]/g, '').trim();
         if (isDash(checkIn2)) checkIn2 = '';
         if (isDash(checkOut2)) checkOut2 = '';
       }
 
-      // Parse date - supports M/D/YYYY, MM/DD/YYYY, and YYYY-MM-DD
       let month, day, year;
       if (dateStr.includes('-') && dateStr.match(/^\d{4}-/)) {
-        // YYYY-MM-DD format (merged attendance CSVs)
         const dp = dateStr.split('-');
         if (dp.length !== 3) continue;
         year = parseInt(dp[0]); month = parseInt(dp[1]); day = parseInt(dp[2]);
@@ -1345,14 +1307,12 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
       
       const attendDate = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
       
-      // Skip weekends — TCC never operates on Saturday or Sunday
       const attendDt = new Date(attendDate + 'T12:00:00');
       const dow = attendDt.getDay();
       if (dow === 0 || dow === 6) continue;
       
       children.add(`${lastName}|${firstName}`);
 
-      // Determine status for primary entry
       let status = 'present';
       let hoursDecimal = 0;
       let actualCheckIn = checkIn, actualCheckOut = checkOut;
@@ -1367,7 +1327,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
 
       if (status === 'absent') absent++;
 
-      // Insert primary attendance record
       try {
         await pool.query(
           `INSERT INTO child_attendance_times 
@@ -1381,7 +1340,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
         imported++;
       } catch(e) { skipped++; }
 
-      // Insert second check-in if present (split-day attendance)
       if (checkIn2 && isTimeVal(checkIn2)) {
         const hours2 = calcHours(checkIn2, checkOut2);
         try {
@@ -1399,26 +1357,23 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
       }
     }
 
-    // Also update the P/A attendance summary in monthly_data for backward compatibility
     const catRes = await pool.query(
       'SELECT child_last, child_first, attend_date, status FROM child_attendance_times WHERE fiscal_year_id=$1 AND month_key=$2 AND center=$3 AND source=$4 ORDER BY child_last, child_first, attend_date',
       [fiscal_year_id, month_key, center, 'playground']
     );
     
-    // Build summary data — filter weekends and deduplicate split-session days
     const childMap = {};
     const allDates = new Set();
     for (const r of catRes.rows) {
       const dateStr = r.attend_date.toISOString().split('T')[0];
       const dt = new Date(dateStr + 'T12:00:00');
       const dow = dt.getDay();
-      if (dow === 0 || dow === 6) continue; // Skip Saturday and Sunday
+      if (dow === 0 || dow === 6) continue;
 
       const key = `${r.child_last}, ${r.child_first}`;
       if (!childMap[key]) childMap[key] = { name: `${r.child_last} ${r.child_first}`, present: 0, absent: 0, dailyStatus: {}, classroom: '', presentDates: new Set() };
       
       allDates.add(dateStr);
-      // Only count each date once per child (split sessions = still 1 day present)
       if (r.status === 'present') {
         if (!childMap[key].presentDates.has(dateStr)) {
           childMap[key].presentDates.add(dateStr);
@@ -1426,13 +1381,11 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
         }
         childMap[key].dailyStatus[dateStr] = 'P';
       } else if (!childMap[key].dailyStatus[dateStr]) {
-        // Only mark absent if not already marked present
         childMap[key].dailyStatus[dateStr] = 'A';
         childMap[key].absent++;
       }
     }
     
-    // Build day headers sorted — weekdays only
     const sortedDates = [...allDates].sort();
     const dayHeaders = sortedDates.map(d => {
       const dt = new Date(d + 'T12:00:00');
@@ -1440,7 +1393,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
       return `${days[dt.getDay()]} ${dt.getMonth()+1}/${dt.getDate()}`;
     });
     
-    // Exclude children with 0 days attended from enrolled count and childData
     const activeChildren = Object.values(childMap).filter(ch => ch.present > 0);
     const childData = activeChildren.map(ch => ({
       name: ch.name, classroom: ch.classroom, present: ch.present, absent: ch.absent,
@@ -1450,10 +1402,9 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
     
     const opDays = sortedDates.filter(d => activeChildren.some(ch => ch.dailyStatus[d] === 'P')).length;
     const totalPresent = childData.reduce((s, c) => s + c.present, 0);
-    const enrolled = childData.length; // Only children with attendance
+    const enrolled = childData.length;
     const ada = opDays > 0 ? Math.round((totalPresent / opDays) * 10) / 10 : 0;
 
-    // Save to monthly_data
     const existingAtt = await pool.query(
       `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
       [fiscal_year_id, month_key]
@@ -1476,7 +1427,6 @@ app.post('/api/child-attendance-import', authCheck, upload.single('file'), async
   } catch (e) { console.error('Child attendance import error:', e); res.status(500).json({ error: e.message }); }
 });
 
-// ── GET CHILD ATTENDANCE TIMES (with in/out times) ───────
 app.get('/api/child-attendance-times', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key, center } = req.query;
@@ -1521,13 +1471,12 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
       );
       if (!timesRes.rows.length) continue;
 
-      // Group by child — filter weekends
       const byChild = {};
       const allDates = new Set();
       for (const r of timesRes.rows) {
         const dateStr = r.attend_date.toISOString().split('T')[0];
         const dt = new Date(dateStr + 'T12:00:00');
-        if (dt.getDay() === 0 || dt.getDay() === 6) continue; // Skip weekends
+        if (dt.getDay() === 0 || dt.getDay() === 6) continue;
         
         const key = `${r.child_last}|${r.child_first}`;
         if (!byChild[key]) byChild[key] = { last: r.child_last, first: r.child_first, days: [], presentDates: new Set() };
@@ -1535,7 +1484,6 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
         allDates.add(dateStr);
       }
       
-      // Remove children with 0 present days
       for (const k of Object.keys(byChild)) {
         const presentDays = new Set(byChild[k].days.filter(d => d.status === 'present').map(d => d.attend_date.toISOString().split('T')[0]));
         byChild[k].presentDates = presentDays;
@@ -1545,7 +1493,6 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
       const childKeys = Object.keys(byChild).sort();
       const sortedDates = [...allDates].sort();
 
-      // Stats — count unique present dates per child (not raw records)
       let totalPresent = 0;
       for (const k of childKeys) {
         totalPresent += byChild[k].presentDates.size;
@@ -1557,7 +1504,6 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
       const ada = opDays > 0 ? Math.round((totalPresent / opDays) * 10) / 10 : 0;
       const adaPct = enrolled > 0 ? ((ada / enrolled) * 100).toFixed(1) : '0';
 
-      // ─── SECTION 1: Summary + P/A Grid ───
       const dayAbbrs = sortedDates.map(d => {
         const dt = new Date(d + 'T12:00:00');
         return `${dt.getMonth()+1}/${dt.getDate()}`;
@@ -1592,7 +1538,6 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
         gridRows.push(new TableRow({ children: rowCells }));
       }
 
-      // ─── SECTION 2: Detailed Time Log ───
       const timeHdr = [
         cell('Child Name', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, align: AlignmentType.LEFT, w: 22 }),
         cell('Date', { bold: true, bg: navy, color: 'FFFFFF', sz: 14, w: 14 }),
@@ -1643,7 +1588,6 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
         ]
       });
 
-      // Second section: Detailed Time Log
       sections.push({
         properties: { page: { margin: { top: 500, bottom: 500, left: 600, right: 600 } } },
         children: [
@@ -1664,7 +1608,6 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
     const buffer = await Packer.toBuffer(doc);
     const filename = `Child_Attendance_TimeLog_${center || 'All'}_${month_key}_${fy.label}.docx`;
 
-    // Delete previous attendance time report for this month before saving new
     await pool.query(
       'DELETE FROM documents WHERE fiscal_year_id=$1 AND month_key=$2 AND doc_type=$3',
       [fiscal_year_id, month_key, 'attendance_time_report']
@@ -1681,7 +1624,6 @@ app.post('/api/generate-attendance-time-report', authCheck, async (req, res) => 
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-// ── GENERATE CHILD ATTENDANCE DETAIL REPORT (.docx) ──────
 app.post('/api/generate-attendance-report', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key, center } = req.body;
@@ -1692,7 +1634,6 @@ app.post('/api/generate-attendance-report', authCheck, async (req, res) => {
     const fyYear = mk => ['oct','nov','dec'].includes(mk) ? fy.start_year : fy.end_year;
     const monthLabel = ML[month_key] + ' ' + fyYear(month_key);
     const navy = '1B2A4A';
-    const fmtN = n => n > 0 ? n.toFixed(1) : '';
     const thinB = { top:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, bottom:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, left:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}, right:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'} };
     function cell(text, opts = {}) {
       return new TableCell({
@@ -1717,7 +1658,6 @@ app.post('/api/generate-attendance-report', authCheck, async (req, res) => {
       const centerLabel = c === 'niles' ? 'Niles' : 'Peace Boulevard';
       const dayHeaders = d.dayHeaders || [];
 
-      // Summary header row + day columns
       const hdrCells = [
         cell('Name', { bold: true, bg: navy, color: 'FFFFFF', sz: 12, align: AlignmentType.LEFT }),
         cell('Class', { bold: true, bg: navy, color: 'FFFFFF', sz: 10 }),
@@ -1777,7 +1717,6 @@ app.post('/api/generate-attendance-report', authCheck, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-// ── CHILD ATTENDANCE DETAIL REPORT ────────────────────────
 app.get('/api/child-attendance-report', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key, center } = req.query;
@@ -1787,9 +1726,6 @@ app.get('/api/child-attendance-report', authCheck, async (req, res) => {
     );
     if (!mdRes.rows.length) return res.json({ children: [], summary: {} });
     const data = mdRes.rows[0].data;
-    const centerData = center ? (data[center] || {}) : data;
-
-    // Get the raw children attendance if stored
     const allChildren = [];
     for (const c of ['niles', 'peace']) {
       if (center && c !== center) continue;
@@ -1803,10 +1739,55 @@ app.get('/api/child-attendance-report', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── ATTENDANCE vs MEAL COUNT CROSS-CHECK ─────────────────
+// ═══════════════════════════════════════════════════════════
+// ATTENDANCE vs MEAL COUNT CROSS-CHECK (meal-window based)
+// ═══════════════════════════════════════════════════════════
+// CACFP meal service windows at TCC:
+//   Breakfast:  6:30 AM – 9:30 AM   → child must be checked in by 9:30 AM
+//   AM Snack:   9:30 AM – 11:15 AM  → child must be checked in by 11:15 AM
+//   Lunch:      11:15 AM – 2:00 PM  → child must be checked in by 2:00 PM
+//   PM Snack:   after 2:00 PM       → child must still be present (or return) at 2:00 PM+
+// Infants (under 1 year old) eat on demand — exempt from window validation.
+// Infants are identified by classroom name: Tiny Treasures, Caterpillars, Butterflies.
+const INFANT_CLASSROOMS = new Set([
+  'tiny treasures',
+  'caterpillars',
+  'butterflies'
+]);
+const MEAL_WINDOW_END_MIN = {
+  breakfast: 9 * 60 + 30,   // 9:30 AM
+  amSnack:   11 * 60 + 15,  // 11:15 AM
+  lunch:     14 * 60        // 2:00 PM
+};
+const PM_SNACK_START_MIN = 14 * 60; // 2:00 PM
+
+// Parse "9:15 AM" / "2:30 PM" to minutes since midnight
+function parseTimeToMinutes(t) {
+  if (!t || typeof t !== 'string') return null;
+  const m = t.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return null;
+  let h = parseInt(m[1]);
+  const min = parseInt(m[2]);
+  const ampm = m[3].toUpperCase();
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return h * 60 + min;
+}
+
+function minutesToTimeStr(min) {
+  if (min === null || min === undefined) return '';
+  let h = Math.floor(min / 60);
+  const m = min % 60;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  if (h === 0) h = 12;
+  else if (h > 12) h -= 12;
+  return `${h}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+
 app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key } = req.query;
+
     const attRes = await pool.query(
       `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
       [fiscal_year_id, month_key]
@@ -1815,46 +1796,227 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
       `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='meals'`,
       [fiscal_year_id, month_key]
     );
+    const timesRes = await pool.query(
+      `SELECT * FROM child_attendance_times WHERE fiscal_year_id=$1 AND month_key=$2`,
+      [fiscal_year_id, month_key]
+    );
     const attData = attRes.rows[0]?.data || {};
     const mealData = mealRes.rows[0]?.data || {};
+
+    const resRes = await pool.query(
+      `SELECT * FROM crosscheck_resolutions WHERE fiscal_year_id=$1 AND month_key=$2`,
+      [fiscal_year_id, month_key]
+    );
+    const resMap = {};
+    for (const r of resRes.rows) {
+      resMap[`${r.center}::${r.flag_key}`] = r;
+    }
+
+    // Build lookup: earliest check-in and latest check-out per child per date
+    const timeLookup = {};
+    const normName = n => (n || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+    for (const r of timesRes.rows) {
+      if (r.status !== 'present') continue;
+      const dateISO = r.attend_date instanceof Date
+        ? r.attend_date.toISOString().split('T')[0]
+        : String(r.attend_date).split('T')[0];
+      const nameKey = normName(`${r.child_first} ${r.child_last}`);
+      const key = `${r.center}::${nameKey}::${dateISO}`;
+      const inMin = parseTimeToMinutes(r.check_in);
+      const outMin = parseTimeToMinutes(r.check_out);
+      if (!timeLookup[key]) timeLookup[key] = { firstIn: null, lastOut: null };
+      if (inMin !== null && (timeLookup[key].firstIn === null || inMin < timeLookup[key].firstIn)) {
+        timeLookup[key].firstIn = inMin;
+      }
+      if (outMin !== null && (timeLookup[key].lastOut === null || outMin > timeLookup[key].lastOut)) {
+        timeLookup[key].lastOut = outMin;
+      }
+    }
+
     const flags = [];
+    let totalMealsClaimed = 0;
+    let childrenChecked = 0;
 
     for (const center of ['niles', 'peace']) {
-      const att = attData[center] || {};
       const meals = mealData[center] || {};
-      const attChildren = att.children || [];
-      const mealChildren = meals.children || [];
+      if (!meals.children || !meals.dayLabels) continue;
 
-      // Build attendance day map per child
-      const attMap = {};
-      for (const child of attChildren) {
-        const name = child.name || child.childName || '';
-        if (!attMap[name]) attMap[name] = { days: 0, name };
-        attMap[name].days = child.daysPresent || child.days || 0;
-      }
+      const fyRes2 = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
+      const fy = fyRes2.rows[0];
+      const MN = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      const monthIdx = MN[month_key];
+      const year = ['oct','nov','dec'].includes(month_key) ? fy.start_year : fy.end_year;
 
-      // Check meal children against attendance
-      for (const child of mealChildren) {
-        const name = child.name || child.childName || '';
-        const mealDays = child.totalMealDays || child.daysWithMeals || 0;
-        const attChild = attMap[name];
-        if (!attChild) {
-          flags.push({ type: 'no_attendance', center, child: name, detail: `${mealDays} meal days claimed but no attendance record found` });
-        } else if (mealDays > attChild.days) {
-          flags.push({ type: 'meal_exceeds_attendance', center, child: name, detail: `${mealDays} meal days but only ${attChild.days} attendance days` });
-        }
-      }
+      // Extract day-of-month from each meal dayLabel (e.g. "Mon 3/15/2025" → 15)
+      const dayOfMonth = meals.dayLabels.map(dl => {
+        const m = String(dl).match(/\/(\d{1,2})(?:\/|\s|$)/) || String(dl).match(/(\d{1,2})\s*$/);
+        return m ? parseInt(m[1]) : null;
+      });
 
-      // Check for attendance without meals
-      for (const name in attMap) {
-        const hasMeals = mealChildren.some(c => (c.name || c.childName) === name);
-        if (!hasMeals && attMap[name].days > 0) {
-          flags.push({ type: 'no_meals', center, child: name, detail: `${attMap[name].days} attendance days but no meals claimed` });
+      for (const child of meals.children) {
+        if (!child.dailyDetail) continue;
+        childrenChecked++;
+
+        // Infant check — skip entirely
+        const classroomLower = (child.classroom || '').toLowerCase().trim();
+        const isInfant = INFANT_CLASSROOMS.has(classroomLower);
+        if (isInfant) continue;
+
+        const childNameKey = normName(child.name);
+
+        for (let dayIdx = 0; dayIdx < child.dailyDetail.length; dayIdx++) {
+          const dd = child.dailyDetail[dayIdx];
+          if (!dd) continue;
+          const dom = dayOfMonth[dayIdx];
+          if (!dom) continue;
+
+          // Meals CLAIMED for this day (pmX = excluded by 3-meal rule, so not claimed)
+          const claimed = {
+            breakfast: !!dd.bk,
+            amSnack: !!dd.am,
+            lunch: !!dd.ln,
+            pmSnack: !!dd.pm && !dd.pmX
+          };
+          const anyClaimed = claimed.breakfast || claimed.amSnack || claimed.lunch || claimed.pmSnack;
+          if (!anyClaimed) continue;
+
+          const dateISO = `${year}-${String(monthIdx + 1).padStart(2,'0')}-${String(dom).padStart(2,'0')}`;
+          const timeKey = `${center}::${childNameKey}::${dateISO}`;
+          const times = timeLookup[timeKey];
+
+          totalMealsClaimed += (claimed.breakfast?1:0) + (claimed.amSnack?1:0) + (claimed.lunch?1:0) + (claimed.pmSnack?1:0);
+
+          // If no attendance time record, can't validate — skip silently
+          if (!times || times.firstIn === null) continue;
+
+          const firstIn = times.firstIn;
+          const lastOut = times.lastOut;
+
+          const emit = (mealType, mealLabel, windowEnd, reason) => {
+            const flagKey = `${childNameKey}::${dateISO}::${mealType}`;
+            const resKey = `${center}::${flagKey}`;
+            const existing = resMap[resKey] || {};
+            flags.push({
+              flag_key: flagKey,
+              center,
+              child: child.name,
+              classroom: child.classroom || '',
+              date: dateISO,
+              dayDisplay: String(meals.dayLabels[dayIdx] || dom),
+              meal_type: mealType,
+              meal_label: mealLabel,
+              check_in: minutesToTimeStr(firstIn),
+              check_out: lastOut !== null ? minutesToTimeStr(lastOut) : null,
+              window_end: windowEnd,
+              reason,
+              category: child.cat || 'C',
+              status: existing.status || 'pending',
+              resolution_notes: existing.resolution_notes || '',
+              attached_review_id: existing.attached_review_id || null,
+              resolved_by: existing.resolved_by || null,
+              resolved_at: existing.resolved_at || null
+            });
+          };
+
+          if (claimed.breakfast && firstIn > MEAL_WINDOW_END_MIN.breakfast) {
+            emit('breakfast', 'Breakfast', '9:30 AM',
+              `Breakfast claimed, but child first checked in at ${minutesToTimeStr(firstIn)} — after the 9:30 AM window close.`);
+          }
+          if (claimed.amSnack && firstIn > MEAL_WINDOW_END_MIN.amSnack) {
+            emit('amSnack', 'AM Snack', '11:15 AM',
+              `AM Snack claimed, but child first checked in at ${minutesToTimeStr(firstIn)} — after the 11:15 AM window close.`);
+          }
+          if (claimed.lunch && firstIn > MEAL_WINDOW_END_MIN.lunch) {
+            emit('lunch', 'Lunch', '2:00 PM',
+              `Lunch claimed, but child first checked in at ${minutesToTimeStr(firstIn)} — after the 2:00 PM window close.`);
+          }
+          if (claimed.pmSnack) {
+            const presentForPM = lastOut === null || lastOut > PM_SNACK_START_MIN;
+            if (!presentForPM) {
+              emit('pmSnack', 'PM Snack', '2:00 PM',
+                `PM Snack claimed, but child checked out at ${minutesToTimeStr(lastOut)} — before the 2:00 PM PM-snack service time.`);
+            }
+          }
         }
       }
     }
 
-    res.json({ flags, attData, mealData });
+    const counts = { total: flags.length, pending: 0, resolved: 0, report_as_discrepancy: 0 };
+    for (const f of flags) counts[f.status] = (counts[f.status] || 0) + 1;
+
+    res.json({
+      flags,
+      counts,
+      summary: {
+        totalMealsClaimed,
+        childrenChecked,
+        infantClassrooms: [...INFANT_CLASSROOMS]
+      }
+    });
+  } catch (e) { console.error('crosscheck error:', e); res.status(500).json({ error: e.message }); }
+});
+
+// ── CROSS-CHECK RESOLUTIONS ──────────────────────────────
+app.post('/api/crosscheck-resolutions', authCheck, async (req, res) => {
+  try {
+    const {
+      fiscal_year_id, month_key, center, flag_key,
+      child_name, flag_date, meal_type, check_in, window_end,
+      status, resolution_notes, resolved_by
+    } = req.body;
+
+    let attached_review_id = null;
+    if (status === 'report_as_discrepancy') {
+      const revRes = await pool.query(
+        `SELECT id FROM monitoring_reviews
+         WHERE fiscal_year_id=$1 AND center=$2 AND status='in_progress'
+         ORDER BY review_date DESC, created_at DESC LIMIT 1`,
+        [fiscal_year_id, center]
+      );
+      if (revRes.rows[0]) attached_review_id = revRes.rows[0].id;
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO crosscheck_resolutions
+         (fiscal_year_id, month_key, center, flag_key, child_name, flag_date, meal_type,
+          check_in, window_end, status, resolution_notes, resolved_by, resolved_at, attached_review_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),$13)
+       ON CONFLICT (fiscal_year_id, month_key, center, flag_key)
+       DO UPDATE SET
+         status=$10,
+         resolution_notes=$11,
+         resolved_by=$12,
+         resolved_at=NOW(),
+         attached_review_id=$13,
+         updated_at=NOW()
+       RETURNING *`,
+      [fiscal_year_id, month_key, center, flag_key, child_name, flag_date, meal_type,
+       check_in, window_end, status, resolution_notes || '', resolved_by || '', attached_review_id]
+    );
+    res.json(rows[0]);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/crosscheck-resolutions', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, center, status, attached_review_id } = req.query;
+    let q = 'SELECT * FROM crosscheck_resolutions WHERE 1=1';
+    const p = [];
+    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND fiscal_year_id=$${p.length}`; }
+    if (month_key)      { p.push(month_key);      q += ` AND month_key=$${p.length}`; }
+    if (center)         { p.push(center);         q += ` AND center=$${p.length}`; }
+    if (status)         { p.push(status);         q += ` AND status=$${p.length}`; }
+    if (attached_review_id) { p.push(attached_review_id); q += ` AND attached_review_id=$${p.length}`; }
+    q += ' ORDER BY flag_date, child_name';
+    const { rows } = await pool.query(q, p);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/crosscheck-resolutions/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM crosscheck_resolutions WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1866,7 +2028,6 @@ app.post('/api/generate-staff-report', authCheck, async (req, res) => {
     const fy = fyRes.rows[0];
     if (!fy) return res.status(404).json({ error: 'Fiscal year not found' });
 
-    // Month labels
     const ML = { oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',
       mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
     const fyYear = mk => {
@@ -1875,7 +2036,6 @@ app.post('/api/generate-staff-report', authCheck, async (req, res) => {
     };
     const monthLabel = `${ML[month_key]} ${fyYear(month_key)}`;
 
-    // Get staff time entries for this month with staff details
     const { rows: entries } = await pool.query(`
       SELECT ste.*, s.name, s.center
       FROM staff_time_entries ste
@@ -1886,7 +2046,6 @@ app.post('/api/generate-staff-report', authCheck, async (req, res) => {
 
     const fmt = n => '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const navy = '1B2A4A';
-    const gold = 'C5972C';
     const noBorder = { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE },
       left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } };
     const thinBorder = {
@@ -1914,7 +2073,6 @@ app.post('/api/generate-staff-report', authCheck, async (req, res) => {
       });
     }
 
-    // Header row
     const headerRow = new TableRow({
       children: [
         makeCell('Staff Name', { bold: true, shading: navy, color: 'FFFFFF', width: 28 }),
@@ -1952,7 +2110,6 @@ app.post('/api/generate-staff-report', authCheck, async (req, res) => {
 
     const benefits = grandFS * 0.0765;
 
-    // Totals row
     const totalsRow = new TableRow({
       children: [
         makeCell('TOTALS', { bold: true, shading: 'E8E8E8' }),
@@ -2012,12 +2169,10 @@ app.post('/api/generate-gl', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id } = req.body;
 
-    // Get fiscal year info
     const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id = $1', [fiscal_year_id]);
     const fy = fyRes.rows[0];
     if (!fy) return res.status(404).json({ error: 'Fiscal year not found' });
 
-    // Get salary totals
     const salRes = await pool.query(`
       SELECT month_key,
         SUM(food_service_hours * hourly_rate_used) as fs_cost,
@@ -2026,18 +2181,15 @@ app.post('/api/generate-gl', authCheck, async (req, res) => {
       GROUP BY month_key ORDER BY month_key
     `, [fiscal_year_id]);
 
-    // Get YER data
     const yerRes = await pool.query('SELECT * FROM yer_data WHERE fiscal_year_id = $1', [fiscal_year_id]);
     const yer = yerRes.rows[0] || {};
 
-    // Get revenue
     const revRes = await pool.query(`
       SELECT month_key, revenue_type, SUM(amount) as total
       FROM revenue_entries WHERE fiscal_year_id = $1
       GROUP BY month_key, revenue_type ORDER BY month_key
     `, [fiscal_year_id]);
 
-    // Calculate totals
     let totalFSCost = 0, totalAdminCost = 0;
     for (const r of salRes.rows) {
       totalFSCost += parseFloat(r.fs_cost) || 0;
@@ -2054,11 +2206,9 @@ app.post('/api/generate-gl', authCheck, async (req, res) => {
 
     const fmt = n => '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-    // Build document
     const noBorder = { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE },
       left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } };
     const navy = '1B2A4A';
-    const gold = 'C5972C';
 
     function makeRow(label, amount, bold = false, shading = null) {
       return new TableRow({
@@ -2140,8 +2290,7 @@ app.post('/api/generate-gl', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── START ─────────────────────────────────────────────────
-// First add monitoring tables
+// ── MONITORING TABLE INIT ─────────────────────────────────
 async function initMonitoringTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS monitoring_reviews (
@@ -2207,8 +2356,6 @@ async function initMonitoringTables() {
 }
 
 // ── MONITORING API ───────────────────────────────────────
-
-// Classroom definitions
 const CLASSROOMS = {
   niles: [
     {name:'Tiny Treasures',ages:'Infants'},{name:'Koalas',ages:'Toddlers'},{name:'Jellyfish',ages:'Toddlers'},
@@ -2228,7 +2375,6 @@ app.get('/api/classrooms/:center', authCheck, (req, res) => {
   res.json(CLASSROOMS[req.params.center] || []);
 });
 
-// List all monitoring reviews
 app.get('/api/monitoring', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, center } = req.query;
@@ -2242,7 +2388,6 @@ app.get('/api/monitoring', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Get single review
 app.get('/api/monitoring/:id', authCheck, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id]);
@@ -2250,7 +2395,6 @@ app.get('/api/monitoring/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Create new review
 app.post('/api/monitoring', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, center, review_date, announced, meal_observed, monitor_name } = req.body;
@@ -2263,7 +2407,6 @@ app.post('/api/monitoring', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Save form data (auto-save as monitor fills it out)
 app.put('/api/monitoring/:id', authCheck, async (req, res) => {
   try {
     const { form_data, findings, five_day_data, status, arrival_time, departure_time, announced, meal_observed, monitor_name, review_date } = req.body;
@@ -2285,7 +2428,6 @@ app.put('/api/monitoring/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Delete review
 app.delete('/api/monitoring/:id', authCheck, async (req, res) => {
   try {
     await pool.query('DELETE FROM monitoring_reviews WHERE id=$1', [req.params.id]);
@@ -2293,408 +2435,369 @@ app.delete('/api/monitoring/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── GENERATE MONITORING REVIEW .docx ─────────────────────
+// ── GENERATE MONITORING REVIEW DOCX ──────────────────────
 app.post('/api/monitoring/:id/generate-docx', authCheck, async (req, res) => {
   try {
-    const review = (await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id])).rows[0];
-    if (!review) return res.status(404).json({ error: 'Review not found' });
+    const revRes = await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id]);
+    const rev = revRes.rows[0];
+    if (!rev) return res.status(404).json({ error: 'Review not found' });
 
-    const fd = review.form_data || {};
-    const findings = review.findings || [];
-    const center = review.center;
-    const cLabel = center === 'niles' ? 'Niles' : 'Peace Boulevard';
-    const rooms = CLASSROOMS[center] || [];
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [rev.fiscal_year_id]);
+    const fy = fyRes.rows[0];
+
+    // Pull cross-check flags attached to this review
+    const ccRes = await pool.query(
+      'SELECT * FROM crosscheck_resolutions WHERE attached_review_id=$1 ORDER BY flag_date, child_name',
+      [rev.id]
+    );
+
+    const fd = rev.form_data || {};
+    const findings = rev.findings || [];
+    const fiveDay = rev.five_day_data || {};
+    const centerLabel = rev.center === 'niles' ? 'Niles' : 'Peace Boulevard';
     const navy = '1B2A4A';
-    const revDate = review.review_date ? new Date(review.review_date).toLocaleDateString() : '';
 
-    const thinB = {top:{style:BorderStyle.SINGLE,size:1,color:'999999'},bottom:{style:BorderStyle.SINGLE,size:1,color:'999999'},left:{style:BorderStyle.SINGLE,size:1,color:'999999'},right:{style:BorderStyle.SINGLE,size:1,color:'999999'}};
-    function c(text,opts={}){
+    const thinB = {
+      top:{style:BorderStyle.SINGLE,size:1,color:'999999'},
+      bottom:{style:BorderStyle.SINGLE,size:1,color:'999999'},
+      left:{style:BorderStyle.SINGLE,size:1,color:'999999'},
+      right:{style:BorderStyle.SINGLE,size:1,color:'999999'}
+    };
+    function cell(text, opts = {}) {
       return new TableCell({
-        width:opts.w?{size:opts.w,type:WidthType.PERCENTAGE}:undefined,borders:thinB,
-        shading:opts.bg?{type:ShadingType.SOLID,color:opts.bg}:undefined,
-        children:[new Paragraph({alignment:opts.align||AlignmentType.LEFT,
-          children:[new TextRun({text:text||'',bold:opts.bold||false,size:opts.sz||16,font:'Calibri',color:opts.color||'333333'})]})]
+        width: opts.w ? { size: opts.w, type: WidthType.PERCENTAGE } : undefined,
+        borders: thinB,
+        shading: opts.bg ? { type: ShadingType.SOLID, color: opts.bg } : undefined,
+        children: [new Paragraph({
+          alignment: opts.align || AlignmentType.LEFT,
+          children: [new TextRun({
+            text: text || '', bold: opts.bold || false, size: opts.sz || 18,
+            font: 'Calibri', color: opts.color || '333333'
+          })]
+        })]
       });
     }
-    function ynCell(key){
-      const v=fd[key];
-      // Reverse items: 701,1001,1003 and fiveday discrepancies
-      const REV=new Set(['701','1001','1003']);
-      const isRev=REV.has(key)||key.includes('_disc');
-      const yMark=v==='Y'?'☑':'☐';const nMark=v==='N'?'☑':'☐';const naMark=v==='NA'?'☑':'☐';
-      return [c(yMark,{align:AlignmentType.CENTER,sz:14,w:6,bg:v==='Y'?(isRev?'FCE4EC':'E8F5E9'):undefined}),
-              c(nMark,{align:AlignmentType.CENTER,sz:14,w:6,bg:v==='N'?(isRev?'E8F5E9':'FCE4EC'):undefined}),
-              c(naMark,{align:AlignmentType.CENTER,sz:14,w:6})];
+    function para(text, opts = {}) {
+      return new Paragraph({
+        spacing: { after: opts.after || 60, before: opts.before || 0 },
+        alignment: opts.align || AlignmentType.LEFT,
+        children: [new TextRun({
+          text: text || '', bold: opts.bold || false, size: opts.sz || 20,
+          font: 'Calibri', color: opts.color || '333333'
+        })]
+      });
     }
-    function secRow(num,text,key){
-      return new TableRow({children:[
-        c(num,{bold:true,sz:14,w:6}),c(text,{sz:14,w:52}),
-        ...ynCell(key),c(fd[key+'_cmt']||'',{sz:12,w:24})
-      ]});
-    }
-    function secHdr(title){
-      return new TableRow({children:[
-        c(title,{bold:true,bg:navy,color:'FFFFFF',sz:16,w:58}),
-        c('Yes',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:6,align:AlignmentType.CENTER}),
-        c('No',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:6,align:AlignmentType.CENTER}),
-        c('N/A',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:6,align:AlignmentType.CENTER}),
-        c('Comments',{bold:true,bg:navy,color:'FFFFFF',sz:14,w:24})
-      ]});
+    function heading(text) {
+      return new Paragraph({
+        spacing: { before: 200, after: 100 },
+        children: [new TextRun({ text, bold: true, size: 22, font: 'Calibri', color: navy })]
+      });
     }
 
-    const allRows = [];
+    // Build sections 100-1000 (MDE monitoring form sections)
+    const sectionBlocks = [];
+    const sectionTitles = {
+      '100': '100 - Administrative Review',
+      '200': '200 - Meal Pattern Review',
+      '300': '300 - Menu & Production Records',
+      '400': '400 - Meal Service Observation',
+      '500': '500 - Enrollment & Income Eligibility',
+      '600': '600 - Civil Rights',
+      '700': '700 - Staff Training',
+      '800': '800 - Food Safety & Sanitation',
+      '900': '900 - Record Keeping',
+      '1000': '1000 - Financial Review'
+    };
+    for (const secKey of Object.keys(sectionTitles)) {
+      const secData = fd[secKey] || {};
+      const items = Object.keys(secData).sort();
+      if (!items.length) continue;
 
-    // Page 1: Header + Sections 100-300
-    allRows.push(secHdr('Section 100. General Information'));
-    allRows.push(secRow('101',"The facility's license is current.",'101'));
-    allRows.push(secRow('102','The facility is within its licensed capacity.','102'));
-    allRows.push(secRow('103','The facility offers drinking water to participants throughout the day.','103'));
-    allRows.push(secHdr('Section 200. Training'));
-    allRows.push(secRow('201','NEW FACILITIES/NEW STAFF: Staff have received training prior to CACFP operations.','201'));
-    allRows.push(secRow('202','The facility conducted annual CACFP training for all key staff.','202'));
-    allRows.push(secRow('203','Sponsor training documentation includes: date(s), location(s), topics, names/signatures.','203'));
-    allRows.push(secHdr('Section 300. Civil Rights'));
-    allRows.push(secRow('301','No separation by race, color, sex, age, disability or national origin.','301'));
-    allRows.push(secRow('302','Potentially eligible persons have equal opportunity to participate in CACFP.','302'));
-    allRows.push(secRow('303','Current USDA "And Justice for All" poster is displayed.','303'));
-    allRows.push(secRow('304','USDA nondiscrimination statement is on all materials and websites.','304'));
-    allRows.push(secRow('305','Front-line staff trained on civil rights and complaint procedures.','305'));
-    allRows.push(secHdr('Section 400. Records and Recordkeeping'));
-    allRows.push(secRow('401','A daily count is maintained for all meals served to adults.','401'));
-    allRows.push(secRow('402','No more than 2 meals/1 snack or 1 meal/2 snacks per participant per day.','402'));
-    allRows.push(secRow('405','Meals only claimed for participants within CACFP age requirements.','405'));
-    allRows.push(secRow('406','Facility daily attendance records are maintained.','406'));
-    allRows.push(secRow('407','Meal attendance is taken at the point of service.','407'));
-    allRows.push(secRow('408','Meal attendance records are available and up to date.','408'));
-    allRows.push(secHdr('Section 500. Menus'));
-    allRows.push(secRow('501','Menu(s) meet program requirements (month, date, components).','501'));
-    allRows.push(secRow('502','Menu(s) are available for meals claimed.','502'));
-    allRows.push(secRow('503','Nutritional labels/PFS verified for meal pattern requirements.','503'));
-    allRows.push(secRow('504','Procedure in place for recording menu substitutions.','504'));
-    allRows.push(secRow('505','100% juice limited to one meal/snack per day.','505'));
-    allRows.push(secRow('506','At least one serving of grains per day is whole grain-rich.','506'));
-    allRows.push(secRow('507','Grain based desserts not served as creditable components.','507'));
-    allRows.push(secRow('508','Meat/meat alternate not served more than 3x weekly replacing grain at breakfast.','508'));
-    allRows.push(secRow('509','Yogurt ≤ 23g sugar per 6oz.','509'));
-    allRows.push(secRow('510','Breakfast cereal ≤ 6g sugar per dry ounce.','510'));
-    allRows.push(secRow('511','Lunch/supper: at least 1 vegetable and 1 fruit or 2 vegetables.','511'));
-    allRows.push(secRow('512','Unflavored whole milk for children ages 1-2.','512'));
-    allRows.push(secRow('513','Unflavored low-fat milk for children ages 2-5.','513'));
-    allRows.push(secRow('514','Special Dietary Needs Accommodations forms available.','514'));
-    allRows.push(secRow('516','Facility offers formula and developmentally appropriate foods to infants.','516'));
-    allRows.push(secRow('517','Infant Formula/Food Sign-off form on file when parent provides formula.','517'));
-
-    // Meal observation questions
-    allRows.push(secHdr('Section 600. Meal Observation'));
-    allRows.push(secRow('603','Minimum portion served met requirements for age groups.','603'));
-    allRows.push(secRow('604','Procedures in place to ensure minimum portions are served.','604'));
-    allRows.push(secRow('605','Meal/snack met appropriate meal pattern for components and age.','605'));
-    allRows.push(secRow('606','Meal/snack same as posted menu for the day.','606'));
-    allRows.push(secRow('607','Meal/snack within approved meal service times.','607'));
-    allRows.push(secRow('608','Meal attendance taken at point of service during observation.','608'));
-    allRows.push(secRow('609','Appropriate variety of milk served to each age group.','609'));
-    allRows.push(secHdr('Section 700. Health and Safety'));
-    allRows.push(secRow('701','Were imminent threats to health/safety observed? (Yes=threat found)','701'));
-    allRows.push(secHdr('Section 800. Enrollment'));
-    allRows.push(secRow('801','Current enrollment documentation on file for each participant.','801'));
-    allRows.push(secRow('802','Enrollment forms updated annually.','802'));
-    allRows.push(secRow('803','Forms contain: name, dated signature, normal days/hours, meals received.','803'));
-    allRows.push(secRow('804','Enrolled participants informed of WIC benefits.','804'));
-    allRows.push(secRow('805','Parent Information Sheet distributed to enrolled participants.','805'));
-    allRows.push(secHdr('Section 900. Meal Count Reconciliation'));
-    allRows.push(secRow('901','Enrollment, attendance, and meal attendance reconcile.','901'));
-    allRows.push(secRow('902','Participants present during observation match claimed numbers.','902'));
-    allRows.push(secHdr('Section 1000. Previous Reviews'));
-    allRows.push(secRow('1001','There were findings from previous review. (Yes=findings exist)','1001'));
-    allRows.push(secRow('1002','Findings from previous review were corrected.','1002'));
-    allRows.push(secRow('1003','Change to facility administrative staff. (Yes=change occurred)','1003'));
-
-    // Classroom observation table
-    const classroomRows = [new TableRow({children:[
-      c('Room',{bold:true,bg:'E0E0E0',sz:14}),c('Participants',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('Adults',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),c('POS',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('Milk %',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),c('Comments',{bold:true,bg:'E0E0E0',sz:14})
-    ]})];
-    for(const rm of rooms){
-      const rk='room_'+rm.name.replace(/\s/g,'_');
-      classroomRows.push(new TableRow({children:[
-        c(rm.name+' ('+rm.ages+')',{sz:13}),
-        c(fd[rk+'_parts']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[rk+'_adults']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[rk+'_pos']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[rk+'_milk']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[rk+'_cmt']||'',{sz:12})
-      ]}));
-    }
-
-    // Five-Day Reconciliation table
-    const fdayHdr = new TableRow({children:[
-      c('Day',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('Date',{bold:true,bg:'E0E0E0',sz:14}),
-      c('# Attend',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('Bkfst MC',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('AM Snk',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('Lunch MC',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('PM Snk',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-      c('Discrep?',{bold:true,bg:'E0E0E0',sz:14,align:AlignmentType.CENTER}),
-    ]});
-    const fdayRows=[fdayHdr];
-    for(let d=1;d<=5;d++){
-      const dk='fiveday_'+d;
-      const disc=fd[dk+'_disc'];
-      fdayRows.push(new TableRow({children:[
-        c(String(d),{bold:true,sz:14,align:AlignmentType.CENTER}),
-        c(fd[dk+'_date']||'',{sz:13}),
-        c(fd[dk+'_att']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[dk+'_bkfst']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[dk+'_amsnk']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[dk+'_lunch']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(fd[dk+'_pmsnk']||'',{sz:13,align:AlignmentType.CENTER}),
-        c(disc==='Y'?'Yes':disc==='N'?'No':'',{sz:13,align:AlignmentType.CENTER,bg:disc==='Y'?'FCE4EC':undefined}),
-      ]}));
-    }
-    if(fd.fiveday_verified){
-      fdayRows.push(new TableRow({children:[
-        c(`Verified by: ${fd.fiveday_verified_initials||''}`,{bold:true,bg:'E8F5E9',sz:13}),
-        c('',{}),c('',{}),c('',{}),c('',{}),c('',{}),c('',{}),c('',{})
-      ]}));
-    }
-
-    // Findings summary
-    const findingsParas = [];
-    if(findings.length===0){
-      findingsParas.push(new Paragraph({spacing:{after:60},children:[
-        new TextRun({text:'☑ No Finding(s)',bold:true,size:18,font:'Calibri',color:'2E7D32'})]}));
-    }else{
-      findingsParas.push(new Paragraph({spacing:{after:60},children:[
-        new TextRun({text:'☑ Corrective action by site is required',bold:true,size:18,font:'Calibri',color:'C62828'})]}));
-      for(const f of findings){
-        findingsParas.push(new Paragraph({spacing:{after:40},children:[
-          new TextRun({text:`• Item ${f.item}: `,bold:true,size:16,font:'Calibri'}),
-          new TextRun({text:f.comment||'No comment',size:16,font:'Calibri'})]}));
+      const rows = [new TableRow({ children: [
+        cell('Item', { bold: true, bg: navy, color: 'FFFFFF', w: 10, align: AlignmentType.CENTER }),
+        cell('Response', { bold: true, bg: navy, color: 'FFFFFF', w: 15, align: AlignmentType.CENTER }),
+        cell('Notes / Comments', { bold: true, bg: navy, color: 'FFFFFF', w: 75 })
+      ]})];
+      for (const itemKey of items) {
+        const v = secData[itemKey] || {};
+        const resp = v.response || '';
+        const notes = v.notes || '';
+        let respColor = '333333';
+        if (resp === 'Y') respColor = '2E7D32';
+        else if (resp === 'N') respColor = 'C0392B';
+        else if (resp === 'N/A') respColor = '888888';
+        rows.push(new TableRow({ children: [
+          cell(itemKey, { bold: true, align: AlignmentType.CENTER, sz: 16 }),
+          cell(resp, { bold: true, align: AlignmentType.CENTER, color: respColor, sz: 18 }),
+          cell(notes, { sz: 16 })
+        ]}));
       }
+      sectionBlocks.push(heading(sectionTitles[secKey]));
+      sectionBlocks.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }));
     }
-    if(fd.findings_text){
-      findingsParas.push(new Paragraph({spacing:{before:100,after:60},children:[
-        new TextRun({text:'Additional Findings & Recommendations:',bold:true,size:16,font:'Calibri'})]}));
-      findingsParas.push(new Paragraph({spacing:{after:60},children:[
-        new TextRun({text:fd.findings_text,size:16,font:'Calibri'})]}));
+
+    // Meal observation table (if provided)
+    const mealObsBlocks = [];
+    if (fd.mealObservation && Array.isArray(fd.mealObservation.classrooms) && fd.mealObservation.classrooms.length) {
+      mealObsBlocks.push(heading('Meal Service Observation'));
+      mealObsBlocks.push(para(`Meal observed: ${rev.meal_observed || 'Not specified'}`, { sz: 18, after: 100 }));
+      const mo = fd.mealObservation;
+      const obsRows = [new TableRow({ children: [
+        cell('Classroom', { bold: true, bg: navy, color: 'FFFFFF', w: 20 }),
+        cell('Ages', { bold: true, bg: navy, color: 'FFFFFF', w: 12 }),
+        cell('# Children', { bold: true, bg: navy, color: 'FFFFFF', w: 10, align: AlignmentType.CENTER }),
+        cell('Pattern Met', { bold: true, bg: navy, color: 'FFFFFF', w: 12, align: AlignmentType.CENTER }),
+        cell('Portions OK', { bold: true, bg: navy, color: 'FFFFFF', w: 12, align: AlignmentType.CENTER }),
+        cell('Observations', { bold: true, bg: navy, color: 'FFFFFF', w: 34 })
+      ]})];
+      for (const c of mo.classrooms) {
+        obsRows.push(new TableRow({ children: [
+          cell(c.name || '', { sz: 16 }),
+          cell(c.ages || '', { sz: 14 }),
+          cell(String(c.count || ''), { align: AlignmentType.CENTER, sz: 16 }),
+          cell(c.patternMet || '', { align: AlignmentType.CENTER, sz: 16, color: c.patternMet === 'Y' ? '2E7D32' : c.patternMet === 'N' ? 'C0392B' : '333333' }),
+          cell(c.portionsOK || '', { align: AlignmentType.CENTER, sz: 16, color: c.portionsOK === 'Y' ? '2E7D32' : c.portionsOK === 'N' ? 'C0392B' : '333333' }),
+          cell(c.notes || '', { sz: 14 })
+        ]}));
+      }
+      mealObsBlocks.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: obsRows }));
     }
+
+    // Five-day reconciliation table
+    const fiveDayBlocks = [];
+    if (fiveDay && Array.isArray(fiveDay.days) && fiveDay.days.length) {
+      fiveDayBlocks.push(heading('Five-Day Meal Count Reconciliation'));
+      const fdRows = [new TableRow({ children: [
+        cell('Date', { bold: true, bg: navy, color: 'FFFFFF', w: 15 }),
+        cell('Meal', { bold: true, bg: navy, color: 'FFFFFF', w: 13 }),
+        cell('Count POS', { bold: true, bg: navy, color: 'FFFFFF', w: 12, align: AlignmentType.CENTER }),
+        cell('Count Claimed', { bold: true, bg: navy, color: 'FFFFFF', w: 12, align: AlignmentType.CENTER }),
+        cell('Attendance', { bold: true, bg: navy, color: 'FFFFFF', w: 12, align: AlignmentType.CENTER }),
+        cell('Discrepancy', { bold: true, bg: navy, color: 'FFFFFF', w: 13, align: AlignmentType.CENTER }),
+        cell('Notes', { bold: true, bg: navy, color: 'FFFFFF', w: 23 })
+      ]})];
+      for (const d of fiveDay.days) {
+        const meals = d.meals || {};
+        for (const mk of ['breakfast','amSnack','lunch','pmSnack']) {
+          const m = meals[mk];
+          if (!m) continue;
+          const discrepancy = (m.pos || 0) - (m.claimed || 0);
+          fdRows.push(new TableRow({ children: [
+            cell(d.date || '', { sz: 14 }),
+            cell(mk === 'amSnack' ? 'AM Snack' : mk === 'pmSnack' ? 'PM Snack' : mk.charAt(0).toUpperCase()+mk.slice(1), { sz: 14 }),
+            cell(String(m.pos || 0), { align: AlignmentType.CENTER, sz: 14 }),
+            cell(String(m.claimed || 0), { align: AlignmentType.CENTER, sz: 14 }),
+            cell(String(m.attendance || 0), { align: AlignmentType.CENTER, sz: 14 }),
+            cell(discrepancy === 0 ? '—' : String(discrepancy), { align: AlignmentType.CENTER, sz: 14, bold: discrepancy !== 0, color: discrepancy !== 0 ? 'C0392B' : '333333' }),
+            cell(m.notes || '', { sz: 12 })
+          ]}));
+        }
+      }
+      fiveDayBlocks.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: fdRows }));
+    }
+
+    // Cross-check flag findings (attached to this review)
+    const ccBlocks = [];
+    if (ccRes.rows.length) {
+      ccBlocks.push(heading('Cross-Check Discrepancies (Meal Window Validation)'));
+      ccBlocks.push(para('The following discrepancies were identified during monthly meal-window cross-checks and added to this review:', { sz: 16, after: 100 }));
+      const ccRows = [new TableRow({ children: [
+        cell('Date', { bold: true, bg: navy, color: 'FFFFFF', w: 12 }),
+        cell('Child', { bold: true, bg: navy, color: 'FFFFFF', w: 22 }),
+        cell('Meal', { bold: true, bg: navy, color: 'FFFFFF', w: 12 }),
+        cell('Check-In', { bold: true, bg: navy, color: 'FFFFFF', w: 12, align: AlignmentType.CENTER }),
+        cell('Window', { bold: true, bg: navy, color: 'FFFFFF', w: 12, align: AlignmentType.CENTER }),
+        cell('Monitor Notes', { bold: true, bg: navy, color: 'FFFFFF', w: 30 })
+      ]})];
+      for (const r of ccRes.rows) {
+        const d = r.flag_date instanceof Date ? r.flag_date.toLocaleDateString('en-US') : String(r.flag_date);
+        ccRows.push(new TableRow({ children: [
+          cell(d, { sz: 14 }),
+          cell(r.child_name || '', { sz: 14 }),
+          cell(r.meal_type || '', { sz: 14 }),
+          cell(r.check_in || '', { align: AlignmentType.CENTER, sz: 14 }),
+          cell(`by ${r.window_end || ''}`, { align: AlignmentType.CENTER, sz: 14 }),
+          cell(r.resolution_notes || '', { sz: 12 })
+        ]}));
+      }
+      ccBlocks.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: ccRows }));
+    }
+
+    // Findings table (general)
+    const findingsBlocks = [];
+    if (findings.length) {
+      findingsBlocks.push(heading('Findings Summary'));
+      const fRows = [new TableRow({ children: [
+        cell('Item', { bold: true, bg: navy, color: 'FFFFFF', w: 10 }),
+        cell('Description', { bold: true, bg: navy, color: 'FFFFFF', w: 50 }),
+        cell('Corrective Action', { bold: true, bg: navy, color: 'FFFFFF', w: 25 }),
+        cell('Due Date', { bold: true, bg: navy, color: 'FFFFFF', w: 15, align: AlignmentType.CENTER })
+      ]})];
+      for (const f of findings) {
+        fRows.push(new TableRow({ children: [
+          cell(f.item || '', { sz: 14 }),
+          cell(f.description || '', { sz: 14 }),
+          cell(f.correctiveAction || '', { sz: 14 }),
+          cell(f.dueDate || '', { align: AlignmentType.CENTER, sz: 14 })
+        ]}));
+      }
+      findingsBlocks.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: fRows }));
+    }
+
+    // Assemble document
+    const dateStr = rev.review_date
+      ? new Date(rev.review_date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+      : '[Not set]';
 
     const doc = new Document({
       sections: [{
-        properties:{page:{margin:{top:500,bottom:500,left:600,right:600}}},
-        children:[
-          // Header
-          new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:40},children:[
-            new TextRun({text:'Child and Adult Care Food Program',bold:true,size:22,font:'Calibri',color:navy})]}),
-          new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:80},children:[
-            new TextRun({text:'Monitoring Review for Sponsored Facilities',size:18,font:'Calibri',color:'666666'})]}),
-          new Paragraph({spacing:{after:40},children:[
-            new TextRun({text:`${review.announced?'☑':'☐'} Announced   ${!review.announced?'☑':'☐'} Unannounced`,size:16,font:'Calibri'}),
-            new TextRun({text:`          Meal Observed: ${review.meal_observed||''}`,size:16,font:'Calibri'})]}),
-          new Paragraph({spacing:{after:40},children:[
-            new TextRun({text:`Sponsor: The Children's Center, Inc.  #990004457`,size:16,font:'Calibri'}),
-            new TextRun({text:`     Date: ${revDate}`,size:16,font:'Calibri'}),
-            new TextRun({text:`     Arrival: ${fd.arrival_time||''}`,size:16,font:'Calibri'})]}),
-          new Paragraph({spacing:{after:80},children:[
-            new TextRun({text:`Facility: ${cLabel}`,size:16,font:'Calibri'})]}),
+        properties: { page: { margin: { top: 720, bottom: 720, left: 720, right: 720 } } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+            new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 28, font: 'Calibri', color: navy })
+          ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+            new TextRun({ text: `CACFP Sponsor Self-Monitoring Review`, size: 24, font: 'Calibri', color: '666666' })
+          ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [
+            new TextRun({ text: `${centerLabel} | ${dateStr}`, size: 20, font: 'Calibri', color: '999999' })
+          ]}),
+          para(`Sponsor: The Children's Center, Inc. (#990004457)`, { sz: 18 }),
+          para(`Center: ${centerLabel}`, { sz: 18 }),
+          para(`Review Type: ${rev.announced ? 'Announced' : 'Unannounced'}`, { sz: 18 }),
+          para(`Monitor: ${rev.monitor_name || '[Not specified]'}`, { sz: 18 }),
+          para(`Meal Observed: ${rev.meal_observed || '[Not specified]'}`, { sz: 18 }),
+          para(`Arrival: ${rev.arrival_time || '[N/A]'} | Departure: ${rev.departure_time || '[N/A]'}`, { sz: 18 }),
+          para(`Fiscal Year: ${fy?.label || ''}`, { sz: 18, after: 200 }),
 
-          // Main review table
-          new Paragraph({spacing:{after:40},children:[
-            new TextRun({text:'REVIEW AREAS',bold:true,size:20,font:'Calibri',color:navy})]}),
-          new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:allRows}),
+          ...mealObsBlocks,
+          ...sectionBlocks,
+          ...fiveDayBlocks,
+          ...ccBlocks,
+          ...findingsBlocks,
 
-          // Classroom observation
-          new Paragraph({spacing:{before:200,after:60},children:[
-            new TextRun({text:'Meal Observation — Classroom Detail',bold:true,size:18,font:'Calibri',color:navy})]}),
-          new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:classroomRows}),
+          new Paragraph({ spacing: { before: 400, after: 100 }, children: [
+            new TextRun({ text: 'Signatures', bold: true, size: 22, font: 'Calibri', color: navy })
+          ]}),
+          para('Monitor Signature: _________________________________    Date: ____________', { sz: 18, after: 200 }),
+          para('Center Director Signature: _________________________________    Date: ____________', { sz: 18, after: 200 }),
+          para('Sponsor Executive Director Signature: _________________________________    Date: ____________', { sz: 18, after: 200 }),
 
-          // Five-Day Reconciliation
-          new Paragraph({spacing:{before:200,after:60},children:[
-            new TextRun({text:'Five-Day Aggregate Meal Count Reconciliation',bold:true,size:18,font:'Calibri',color:navy})]}),
-          new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:fdayRows}),
-
-          // Findings
-          new Paragraph({spacing:{before:200,after:60},children:[
-            new TextRun({text:'Findings and Recommendations for Corrective Action',bold:true,size:18,font:'Calibri',color:navy})]}),
-          ...findingsParas,
-
-          // Signatures
-          new Paragraph({spacing:{before:200,after:40},children:[
-            new TextRun({text:'Monitor Signature: ',bold:true,size:16,font:'Calibri'}),
-            new TextRun({text:fd.monitor_sig||'________________',italics:!!fd.monitor_sig,size:16,font:'Calibri',underline:{}}),
-            new TextRun({text:`     Date: ${fd.sig_date||revDate}`,size:16,font:'Calibri'}),
-            new TextRun({text:`     Departure: ${fd.departure_time||''}`,size:16,font:'Calibri'})]}),
-          new Paragraph({spacing:{after:40},children:[
-            new TextRun({text:'Site Representative: ',bold:true,size:16,font:'Calibri'}),
-            new TextRun({text:fd.site_rep_sig||'________________',italics:!!fd.site_rep_sig,size:16,font:'Calibri',underline:{}}),
-            new TextRun({text:`     Date: ${fd.sig_date||revDate}`,size:16,font:'Calibri'})]}),
-          new Paragraph({spacing:{before:60},alignment:AlignmentType.RIGHT,children:[
-            new TextRun({text:'Rev. 3/2023',size:12,font:'Calibri',color:'999999'})]}),
+          new Paragraph({ spacing: { before: 300 }, alignment: AlignmentType.RIGHT, children: [
+            new TextRun({ text: `Generated ${new Date().toLocaleDateString('en-US')} | Review ID: ${rev.id}`, size: 14, font: 'Calibri', color: '999999' })
+          ]})
         ]
       }]
     });
 
     const buffer = await Packer.toBuffer(doc);
-    const filename = `Monitoring_Review_${center}_${revDate.replace(/\//g,'-')}.docx`;
+    const filename = `Monitoring_${rev.center}_${(rev.review_date || 'draft').toString().slice(0,10)}.docx`;
 
-    // Store in documents
-    const fyId = review.fiscal_year_id;
-    const mk = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][new Date(review.review_date).getMonth()];
     await pool.query(
-      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
-       VALUES ($1,$2,'monitoring_review',$3,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$4,$5)`,
-      [fyId, mk, filename, buffer, JSON.stringify({review_id:review.id,center,date:revDate})]
+      `INSERT INTO documents (fiscal_year_id, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1,'monitoring_review',$2,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$3,$4)`,
+      [rev.fiscal_year_id, filename, buffer, JSON.stringify({ review_id: rev.id, center: rev.center })]
     );
 
-    res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);
-    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buffer);
-  } catch(e){ console.error(e); res.status(500).json({error:e.message}); }
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-// Get pre-populated data for a monitoring review (pulls from CACFP suite data)
+// ── MONITORING PREFILL (pull data from DB to pre-populate form) ──
 app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
   try {
-    const review = (await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id])).rows[0];
-    if (!review) return res.status(404).json({ error: 'Not found' });
+    const revRes = await pool.query('SELECT * FROM monitoring_reviews WHERE id=$1', [req.params.id]);
+    const rev = revRes.rows[0];
+    if (!rev) return res.status(404).json({ error: 'Review not found' });
 
-    const center = review.center;
-    const fyId = review.fiscal_year_id;
+    // Pull classroom roster for this center
+    const classrooms = CLASSROOMS[rev.center] || [];
 
-    // Get previous month's data for five-day reconciliation
-    const reviewDate = new Date(review.review_date);
-    const prevMonth = reviewDate.getMonth() === 0 ? 11 : reviewDate.getMonth() - 1;
-    const prevMonthKeys = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-    const prevMK = prevMonthKeys[prevMonth];
+    // Pull most recent attendance for center (last available month)
+    const attRes = await pool.query(
+      `SELECT month_key, data FROM monthly_data
+       WHERE fiscal_year_id=$1 AND data_type='attendance'
+       ORDER BY updated_at DESC LIMIT 1`,
+      [rev.fiscal_year_id]
+    );
+    const latestAtt = attRes.rows[0] || null;
+    const centerAtt = latestAtt?.data?.[rev.center] || null;
 
-    // Also try the SAME month as the review (monitor might be reviewing current month data)
-    const sameMK = prevMonthKeys[reviewDate.getMonth()];
-
-    // Try previous month first, fall back to same month
-    let attData = {};
-    let mealData = {};
-    let usedMonth = prevMK;
-
-    for (const mk of [prevMK, sameMK]) {
-      const attRes = await pool.query(
-        `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'`,
-        [fyId, mk]
-      );
-      if (attRes.rows.length > 0 && attRes.rows[0].data?.[center]) {
-        attData = attRes.rows[0].data[center];
-        usedMonth = mk;
-        break;
-      }
-    }
-
-    for (const mk of [prevMK, sameMK]) {
-      const mealRes = await pool.query(
-        `SELECT * FROM monthly_data WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='meals'`,
-        [fyId, mk]
-      );
-      if (mealRes.rows.length > 0 && mealRes.rows[0].data?.[center]) {
-        mealData = mealRes.rows[0].data[center];
-        break;
-      }
-    }
-
-    // Check what monthly_data exists for debugging
-    const allMD = await pool.query(
-      `SELECT month_key, data_type, 
-       CASE WHEN data->$2 IS NOT NULL THEN true ELSE false END as has_center_data
-       FROM monthly_data WHERE fiscal_year_id=$1 ORDER BY month_key`,
-      [fyId, center]
+    // Pull any open corrective actions
+    const caRes = await pool.query(
+      `SELECT * FROM corrective_actions
+       WHERE fiscal_year_id=$1 AND center=$2 AND status='open'
+       ORDER BY due_date ASC NULLS LAST`,
+      [rev.fiscal_year_id, rev.center]
     );
 
-    const enrolled = attData.enrolled || 0;
-    const hasDailyTotals = !!(attData.dailyTotals && attData.dailyTotals.length > 0);
-    const hasDayHeaders = !!(attData.dayHeaders && attData.dayHeaders.length > 0);
+    // Pull training records from this fiscal year
+    const trRes = await pool.query(
+      `SELECT * FROM training_records WHERE fiscal_year_id=$1 ORDER BY training_date DESC`,
+      [rev.fiscal_year_id]
+    );
+
+    // Pull cross-check flags already attached to this review
+    const ccRes = await pool.query(
+      'SELECT * FROM crosscheck_resolutions WHERE attached_review_id=$1 ORDER BY flag_date',
+      [rev.id]
+    );
 
     res.json({
-      center,
-      classrooms: CLASSROOMS[center] || [],
-      enrollment: enrolled,
-      attendance: attData,
-      meals: mealData,
-      prevMonth: usedMonth,
-      sponsorName: "The Children's Center, Inc.",
-      agreementNum: '990004457',
-      _debug: {
-        reviewDate: review.review_date,
-        triedMonths: [prevMK, sameMK],
-        usedMonth,
-        hasDailyTotals,
-        hasDayHeaders,
-        dayHeadersSample: (attData.dayHeaders || []).slice(0, 5),
-        dailyTotalsSample: (attData.dailyTotals || []).slice(0, 5),
-        mealDataKeys: Object.keys(mealData),
-        availableData: allMD.rows
-      }
+      review: rev,
+      classrooms,
+      latestAttendance: centerAtt ? { month: latestAtt.month_key, enrolled: centerAtt.enrolled, ada: centerAtt.ada } : null,
+      openCorrectiveActions: caRes.rows,
+      trainings: trRes.rows,
+      crossCheckFlags: ccRes.rows
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── ADULT MEAL TOTALS ────────────────────────────────────
+// ── ADULT MEAL ENTRIES ────────────────────────────────────
 app.get('/api/adult-meals', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key } = req.query;
-    // Get daily adult meal counts aggregated by day
-    const { rows } = await pool.query(
-      `SELECT d.day_of_month, COUNT(*) as adult_count, 
-       ARRAY_AGG(s.name) as staff_names
-       FROM daily_cacfp_entries d
-       JOIN staff s ON s.id = d.staff_id
-       WHERE d.fiscal_year_id = $1 AND d.month_key = $2 AND d.adult_meal = true
-       GROUP BY d.day_of_month ORDER BY d.day_of_month`,
-      [fiscal_year_id, month_key]
-    );
-    // Also get total for the month
-    const totalRes = await pool.query(
-      `SELECT COUNT(*) as total FROM daily_cacfp_entries
-       WHERE fiscal_year_id = $1 AND month_key = $2 AND adult_meal = true`,
-      [fiscal_year_id, month_key]
-    );
-    res.json({ daily: rows, total: parseInt(totalRes.rows[0].total) || 0 });
+    let q = `SELECT d.*, s.name FROM daily_cacfp_entries d
+             LEFT JOIN staff s ON s.id = d.staff_id
+             WHERE d.adult_meal = true`;
+    const p = [];
+    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND d.fiscal_year_id=$${p.length}`; }
+    if (month_key) { p.push(month_key); q += ` AND d.month_key=$${p.length}`; }
+    q += ' ORDER BY d.day_of_month, s.name';
+    const { rows } = await pool.query(q, p);
+    res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── CORRECTIVE ACTIONS ────────────────────────────────────
 app.get('/api/corrective-actions', authCheck, async (req, res) => {
   try {
-    const { fiscal_year_id, status } = req.query;
-    let q = 'SELECT ca.*, mr.review_date, mr.center as review_center FROM corrective_actions ca LEFT JOIN monitoring_reviews mr ON mr.id = ca.review_id WHERE 1=1';
+    const { fiscal_year_id, center, status, review_id } = req.query;
+    let q = 'SELECT * FROM corrective_actions WHERE 1=1';
     const p = [];
-    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND ca.fiscal_year_id=$${p.length}`; }
-    if (status) { p.push(status); q += ` AND ca.status=$${p.length}`; }
-    q += ' ORDER BY CASE ca.status WHEN \'open\' THEN 0 WHEN \'in_progress\' THEN 1 WHEN \'resolved\' THEN 2 END, ca.due_date NULLS LAST';
+    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND fiscal_year_id=$${p.length}`; }
+    if (center) { p.push(center); q += ` AND center=$${p.length}`; }
+    if (status) { p.push(status); q += ` AND status=$${p.length}`; }
+    if (review_id) { p.push(review_id); q += ` AND review_id=$${p.length}`; }
+    q += ' ORDER BY due_date ASC NULLS LAST, created_at DESC';
     const { rows } = await pool.query(q, p);
-    res.json(rows);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Get corrective actions across all fiscal years (for retroactive viewing)
-app.get('/api/corrective-actions/all', authCheck, async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT ca.*, mr.review_date, mr.center as review_center, fy.label as fy_label
-       FROM corrective_actions ca
-       LEFT JOIN monitoring_reviews mr ON mr.id = ca.review_id
-       LEFT JOIN fiscal_years fy ON fy.id = ca.fiscal_year_id
-       ORDER BY ca.created_at DESC`
-    );
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/corrective-actions', authCheck, async (req, res) => {
   try {
-    const { fiscal_year_id, review_id, center, finding_item, finding_description, corrective_action, assigned_to, due_date } = req.body;
+    const { fiscal_year_id, review_id, center, finding_item, finding_description,
+            corrective_action, assigned_to, due_date } = req.body;
     const { rows } = await pool.query(
-      `INSERT INTO corrective_actions (fiscal_year_id, review_id, center, finding_item, finding_description, corrective_action, assigned_to, due_date)
+      `INSERT INTO corrective_actions (fiscal_year_id, review_id, center, finding_item,
+          finding_description, corrective_action, assigned_to, due_date)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [fiscal_year_id, review_id || null, center, finding_item || '', finding_description, corrective_action || '', assigned_to || '', due_date || null]
+      [fiscal_year_id, review_id || null, center, finding_item || '',
+       finding_description, corrective_action || '', assigned_to || '', due_date || null]
     );
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2702,19 +2805,18 @@ app.post('/api/corrective-actions', authCheck, async (req, res) => {
 
 app.put('/api/corrective-actions/:id', authCheck, async (req, res) => {
   try {
-    const { status, corrective_action, assigned_to, due_date, resolved_date, resolved_notes, finding_description, finding_item, center } = req.body;
-    const sets = ['updated_at=NOW()']; const vals = []; let n = 0;
-    if (status) { n++; sets.push(`status=$${n}`); vals.push(status); }
+    const { corrective_action, assigned_to, due_date, status, resolved_date, resolved_notes } = req.body;
+    const sets = []; const vals = []; let n = 0;
     if (corrective_action !== undefined) { n++; sets.push(`corrective_action=$${n}`); vals.push(corrective_action); }
     if (assigned_to !== undefined) { n++; sets.push(`assigned_to=$${n}`); vals.push(assigned_to); }
-    if (due_date !== undefined) { n++; sets.push(`due_date=$${n}`); vals.push(due_date || null); }
-    if (resolved_date !== undefined) { n++; sets.push(`resolved_date=$${n}`); vals.push(resolved_date || null); }
+    if (due_date !== undefined) { n++; sets.push(`due_date=$${n}`); vals.push(due_date); }
+    if (status !== undefined) { n++; sets.push(`status=$${n}`); vals.push(status); }
+    if (resolved_date !== undefined) { n++; sets.push(`resolved_date=$${n}`); vals.push(resolved_date); }
     if (resolved_notes !== undefined) { n++; sets.push(`resolved_notes=$${n}`); vals.push(resolved_notes); }
-    if (finding_description !== undefined) { n++; sets.push(`finding_description=$${n}`); vals.push(finding_description); }
-    if (finding_item !== undefined) { n++; sets.push(`finding_item=$${n}`); vals.push(finding_item); }
-    if (center !== undefined) { n++; sets.push(`center=$${n}`); vals.push(center); }
+    sets.push('updated_at=NOW()');
     n++; vals.push(req.params.id);
-    const { rows } = await pool.query(`UPDATE corrective_actions SET ${sets.join(',')} WHERE id=$${n} RETURNING *`, vals);
+    const { rows } = await pool.query(
+      `UPDATE corrective_actions SET ${sets.join(',')} WHERE id=$${n} RETURNING *`, vals);
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2729,14 +2831,13 @@ app.delete('/api/corrective-actions/:id', authCheck, async (req, res) => {
 // ── MONITORING SCHEDULE ───────────────────────────────────
 app.get('/api/monitoring-schedule', authCheck, async (req, res) => {
   try {
-    const { fiscal_year_id } = req.query;
-    const { rows } = await pool.query(
-      `SELECT ms.*, mr.status as review_status, mr.review_date as actual_date
-       FROM monitoring_schedule ms
-       LEFT JOIN monitoring_reviews mr ON mr.id = ms.review_id
-       WHERE ms.fiscal_year_id = $1 ORDER BY ms.planned_date`,
-      [fiscal_year_id]
-    );
+    const { fiscal_year_id, center } = req.query;
+    let q = 'SELECT * FROM monitoring_schedule WHERE 1=1';
+    const p = [];
+    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND fiscal_year_id=$${p.length}`; }
+    if (center) { p.push(center); q += ` AND center=$${p.length}`; }
+    q += ' ORDER BY planned_date';
+    const { rows } = await pool.query(q, p);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2747,7 +2848,7 @@ app.post('/api/monitoring-schedule', authCheck, async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO monitoring_schedule (fiscal_year_id, center, planned_date, announced, includes_meal_obs, notes)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [fiscal_year_id, center, planned_date, announced || false, includes_meal_obs || false, notes || '']
+      [fiscal_year_id, center, planned_date, !!announced, !!includes_meal_obs, notes || '']
     );
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2755,11 +2856,16 @@ app.post('/api/monitoring-schedule', authCheck, async (req, res) => {
 
 app.put('/api/monitoring-schedule/:id', authCheck, async (req, res) => {
   try {
-    const { review_id } = req.body;
+    const { planned_date, announced, includes_meal_obs, notes, review_id } = req.body;
+    const sets = []; const vals = []; let n = 0;
+    if (planned_date !== undefined) { n++; sets.push(`planned_date=$${n}`); vals.push(planned_date); }
+    if (announced !== undefined) { n++; sets.push(`announced=$${n}`); vals.push(announced); }
+    if (includes_meal_obs !== undefined) { n++; sets.push(`includes_meal_obs=$${n}`); vals.push(includes_meal_obs); }
+    if (notes !== undefined) { n++; sets.push(`notes=$${n}`); vals.push(notes); }
+    if (review_id !== undefined) { n++; sets.push(`review_id=$${n}`); vals.push(review_id); }
+    n++; vals.push(req.params.id);
     const { rows } = await pool.query(
-      'UPDATE monitoring_schedule SET review_id=$1 WHERE id=$2 RETURNING *',
-      [review_id, req.params.id]
-    );
+      `UPDATE monitoring_schedule SET ${sets.join(',')} WHERE id=$${n} RETURNING *`, vals);
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2771,25 +2877,30 @@ app.delete('/api/monitoring-schedule/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── TRAINING RECORDS ─────────────────────────────────────
+// ── TRAINING RECORDS ──────────────────────────────────────
 app.get('/api/training', authCheck, async (req, res) => {
   try {
-    const { fiscal_year_id } = req.query;
-    const q = fiscal_year_id
-      ? 'SELECT * FROM training_records WHERE fiscal_year_id=$1 ORDER BY training_date DESC'
-      : 'SELECT * FROM training_records ORDER BY training_date DESC';
-    const { rows } = await pool.query(q, fiscal_year_id ? [fiscal_year_id] : []);
+    const { fiscal_year_id, training_type } = req.query;
+    let q = 'SELECT * FROM training_records WHERE 1=1';
+    const p = [];
+    if (fiscal_year_id) { p.push(fiscal_year_id); q += ` AND fiscal_year_id=$${p.length}`; }
+    if (training_type) { p.push(training_type); q += ` AND training_type=$${p.length}`; }
+    q += ' ORDER BY training_date DESC';
+    const { rows } = await pool.query(q, p);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/training', authCheck, async (req, res) => {
   try {
-    const { fiscal_year_id, training_date, training_type, topic, location, center, trainer, attendees, notes } = req.body;
+    const { fiscal_year_id, training_date, training_type, topic, location,
+            center, trainer, attendees, notes, doc_id } = req.body;
     const { rows } = await pool.query(
-      `INSERT INTO training_records (fiscal_year_id, training_date, training_type, topic, location, center, trainer, attendees, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [fiscal_year_id, training_date, training_type, topic, location || '', center || 'both', trainer || '', JSON.stringify(attendees || []), notes || '']
+      `INSERT INTO training_records (fiscal_year_id, training_date, training_type, topic,
+          location, center, trainer, attendees, notes, doc_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [fiscal_year_id, training_date, training_type, topic, location || '',
+       center || '', trainer || '', JSON.stringify(attendees || []), notes || '', doc_id || null]
     );
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2798,11 +2909,18 @@ app.post('/api/training', authCheck, async (req, res) => {
 app.put('/api/training/:id', authCheck, async (req, res) => {
   try {
     const { training_date, training_type, topic, location, center, trainer, attendees, notes } = req.body;
+    const sets = []; const vals = []; let n = 0;
+    if (training_date !== undefined) { n++; sets.push(`training_date=$${n}`); vals.push(training_date); }
+    if (training_type !== undefined) { n++; sets.push(`training_type=$${n}`); vals.push(training_type); }
+    if (topic !== undefined) { n++; sets.push(`topic=$${n}`); vals.push(topic); }
+    if (location !== undefined) { n++; sets.push(`location=$${n}`); vals.push(location); }
+    if (center !== undefined) { n++; sets.push(`center=$${n}`); vals.push(center); }
+    if (trainer !== undefined) { n++; sets.push(`trainer=$${n}`); vals.push(trainer); }
+    if (attendees !== undefined) { n++; sets.push(`attendees=$${n}`); vals.push(JSON.stringify(attendees)); }
+    if (notes !== undefined) { n++; sets.push(`notes=$${n}`); vals.push(notes); }
+    n++; vals.push(req.params.id);
     const { rows } = await pool.query(
-      `UPDATE training_records SET training_date=$1, training_type=$2, topic=$3, location=$4, center=$5, trainer=$6, attendees=$7, notes=$8
-       WHERE id=$9 RETURNING *`,
-      [training_date, training_type, topic, location || '', center || 'both', trainer || '', JSON.stringify(attendees || []), notes || '', req.params.id]
-    );
+      `UPDATE training_records SET ${sets.join(',')} WHERE id=$${n} RETURNING *`, vals);
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2814,249 +2932,274 @@ app.delete('/api/training/:id', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Generate training documentation report
+// ── GENERATE TRAINING SUMMARY REPORT (.docx) ─────────────
 app.post('/api/generate-training-report', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id } = req.body;
     const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [fiscal_year_id]);
-    const fy = fyRes.rows[0]; if (!fy) return res.status(404).json({ error: 'FY not found' });
-    const { rows } = await pool.query('SELECT * FROM training_records WHERE fiscal_year_id=$1 ORDER BY training_date', [fiscal_year_id]);
-    const navy = '1B2A4A';
+    const fy = fyRes.rows[0];
+    if (!fy) return res.status(404).json({ error: 'FY not found' });
 
-    const border = { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' };
-    const borders = { top: border, bottom: border, left: border, right: border };
-    const cm = { top: 80, bottom: 80, left: 120, right: 120 };
+    const { rows } = await pool.query(
+      `SELECT * FROM training_records WHERE fiscal_year_id=$1 ORDER BY training_date DESC`,
+      [fiscal_year_id]
+    );
+
+    const navy = '1B2A4A';
+    const thinB = {
+      top:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'},
+      bottom:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'},
+      left:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'},
+      right:{style:BorderStyle.SINGLE,size:1,color:'AAAAAA'}
+    };
     function cell(text, opts = {}) {
-      return new TableCell({ borders, margins: cm,
-        width: opts.w ? { size: opts.w, type: WidthType.DXA } : undefined,
-        shading: opts.bg ? { type: ShadingType.CLEAR, fill: opts.bg } : undefined,
-        children: [new Paragraph({ alignment: opts.align || AlignmentType.LEFT,
-          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 18, font: 'Arial', color: opts.color || '333333' })] })] });
+      return new TableCell({
+        width: opts.w ? { size: opts.w, type: WidthType.PERCENTAGE } : undefined,
+        borders: thinB,
+        shading: opts.bg ? { type: ShadingType.SOLID, color: opts.bg } : undefined,
+        children: [new Paragraph({
+          alignment: opts.align || AlignmentType.LEFT,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 16, font: 'Calibri', color: opts.color || '333333' })]
+        })]
+      });
     }
 
-    const tableWidth = 13680; // landscape content width
-    const colWidths = [1400, 1600, 3000, 1800, 2000, 3880];
     const hdr = new TableRow({ children: [
-      cell('Date', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[0] }),
-      cell('Type', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[1] }),
-      cell('Topic', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[2] }),
-      cell('Location', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[3] }),
-      cell('Trainer', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[4] }),
-      cell('Attendees', { bold: true, bg: navy, color: 'FFFFFF', w: colWidths[5] }),
-    ] });
-    const dataRows = rows.map((r, i) => new TableRow({ children: [
-      cell(new Date(r.training_date).toLocaleDateString(), { w: colWidths[0], bg: i % 2 ? 'F5F5F5' : undefined }),
-      cell(r.training_type, { w: colWidths[1], bg: i % 2 ? 'F5F5F5' : undefined }),
-      cell(r.topic, { w: colWidths[2], bg: i % 2 ? 'F5F5F5' : undefined }),
-      cell(r.location, { w: colWidths[3], bg: i % 2 ? 'F5F5F5' : undefined }),
-      cell(r.trainer, { w: colWidths[4], bg: i % 2 ? 'F5F5F5' : undefined }),
-      cell((r.attendees || []).join(', '), { w: colWidths[5], sz: 14, bg: i % 2 ? 'F5F5F5' : undefined }),
-    ] }));
-
-    const cacfpCount = rows.filter(r => r.training_type === 'CACFP').length;
-    const crCount = rows.filter(r => r.training_type === 'Civil Rights').length;
+      cell('Date', { bold: true, bg: navy, color: 'FFFFFF', w: 12 }),
+      cell('Type', { bold: true, bg: navy, color: 'FFFFFF', w: 13 }),
+      cell('Topic', { bold: true, bg: navy, color: 'FFFFFF', w: 30 }),
+      cell('Trainer', { bold: true, bg: navy, color: 'FFFFFF', w: 15 }),
+      cell('Attendees', { bold: true, bg: navy, color: 'FFFFFF', w: 20, align: AlignmentType.CENTER }),
+      cell('Location', { bold: true, bg: navy, color: 'FFFFFF', w: 10 })
+    ]});
+    const dataRows = rows.map(r => {
+      const att = Array.isArray(r.attendees) ? r.attendees : [];
+      const attStr = att.length ? `${att.length} staff` : '—';
+      const d = r.training_date ? new Date(r.training_date).toLocaleDateString('en-US') : '';
+      return new TableRow({ children: [
+        cell(d, { sz: 14 }),
+        cell(r.training_type || '', { sz: 14 }),
+        cell(r.topic || '', { sz: 14 }),
+        cell(r.trainer || '', { sz: 14 }),
+        cell(attStr, { align: AlignmentType.CENTER, sz: 14 }),
+        cell(r.location || '', { sz: 12 })
+      ]});
+    });
 
     const doc = new Document({
       sections: [{
-        properties: { page: { size: { width: 12240, height: 15840, orientation: 'landscape' }, margin: { top: 720, bottom: 720, left: 1080, right: 1080 } } },
+        properties: { page: { margin: { top: 720, bottom: 720, left: 720, right: 720 } } },
         children: [
           new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
-            new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 28, font: 'Arial', color: navy }) ] }),
-          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [
-            new TextRun({ text: `CACFP Training Documentation — FY ${fy.label}`, size: 22, font: 'Arial', color: '666666' }) ] }),
-          new Paragraph({ spacing: { after: 100 }, children: [
-            new TextRun({ text: `Total sessions: ${rows.length} | CACFP: ${cacfpCount} | Civil Rights: ${crCount} | Generated: ${new Date().toLocaleDateString()}`, size: 16, font: 'Arial', color: '999999' }) ] }),
-          new Table({ width: { size: tableWidth, type: WidthType.DXA }, columnWidths: colWidths, rows: [hdr, ...dataRows] }),
+            new TextRun({ text: "The Children's Center, Inc.", bold: true, size: 28, font: 'Calibri', color: navy })
+          ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+            new TextRun({ text: `CACFP Training Records — FY ${fy.label}`, size: 22, font: 'Calibri', color: '666666' })
+          ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [
+            new TextRun({ text: `Sponsor #990004457 | Total Training Events: ${rows.length}`, size: 16, font: 'Calibri', color: '999999' })
+          ]}),
+          new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [hdr, ...dataRows] }),
+          new Paragraph({ spacing: { before: 200 }, alignment: AlignmentType.RIGHT, children: [
+            new TextRun({ text: `Generated ${new Date().toLocaleDateString('en-US')}`, size: 12, font: 'Calibri', color: '999999' })
+          ]})
         ]
       }]
     });
 
     const buffer = await Packer.toBuffer(doc);
-    const filename = `Training_Documentation_${fy.label}.docx`;
-    await pool.query(
-      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
-       VALUES ($1,'annual','training_report',$2,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',$3,$4)`,
-      [fiscal_year_id, filename, buffer, JSON.stringify({ sessions: rows.length })]
-    );
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Training_Report_${fy.label}.docx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buffer);
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-// ── CACFP MEAL PATTERN REQUIREMENTS ──────────────────────
+// ── CACFP MEAL PATTERNS ──────────────────────────────────
 const MEAL_PATTERNS = {
-  'Infants 0-5mo': {
-    breakfast: { components: ['Iron-fortified formula or breast milk: 4-6 fl oz'] },
-    lunch: { components: ['Iron-fortified formula or breast milk: 4-6 fl oz'] },
-    snack: { components: ['Iron-fortified formula or breast milk: 4-6 fl oz'] }
+  '1-2': {
+    breakfast: { milk: '4 fl oz', grain: '½ oz eq', fruit: '¼ cup', vegetable: '¼ cup' },
+    amSnack:   { milk: '4 fl oz', grain: '½ oz eq', fruit: '½ cup', vegetable: '½ cup', meat: '½ oz eq' },
+    lunch:     { milk: '4 fl oz', grain: '½ oz eq', fruit: '⅛ cup', vegetable: '⅛ cup', meat: '1 oz eq' },
+    pmSnack:   { milk: '4 fl oz', grain: '½ oz eq', fruit: '½ cup', vegetable: '½ cup', meat: '½ oz eq' }
   },
-  'Infants 6-11mo': {
-    breakfast: { components: ['Iron-fortified formula or breast milk: 6-8 fl oz', 'Iron-fortified infant cereal: 0-4 tbsp (as developmentally ready)'] },
-    lunch: { components: ['Iron-fortified formula or breast milk: 6-8 fl oz', 'Iron-fortified infant cereal and/or meat/meat alt: 0-4 tbsp', 'Vegetable, fruit, or both: 0-4 tbsp'] },
-    snack: { components: ['Iron-fortified formula or breast milk: 2-4 fl oz', 'Crackers/bread or infant cereal: 0-½ slice or 0-4 tbsp'] }
+  '3-5': {
+    breakfast: { milk: '6 fl oz', grain: '½ oz eq', fruit: '½ cup', vegetable: '½ cup' },
+    amSnack:   { milk: '4 fl oz', grain: '½ oz eq', fruit: '½ cup', vegetable: '½ cup', meat: '½ oz eq' },
+    lunch:     { milk: '6 fl oz', grain: '½ oz eq', fruit: '¼ cup', vegetable: '¼ cup', meat: '1½ oz eq' },
+    pmSnack:   { milk: '4 fl oz', grain: '½ oz eq', fruit: '½ cup', vegetable: '½ cup', meat: '½ oz eq' }
   },
-  'Children 1-2yr': {
-    breakfast: { components: ['Milk (unflavored whole): ½ cup', 'Grains: ½ slice bread or ¼ cup cereal', 'Fruit, vegetable, or both: ¼ cup'] },
-    lunch: { components: ['Milk (unflavored whole): ½ cup', 'Meat/meat alternate: 1 oz', 'Vegetable: ⅛ cup', 'Fruit: ⅛ cup', 'Grains: ½ slice bread'] },
-    snack: { components: ['Select 2 of 5 components:', 'Milk: ½ cup', 'Meat/meat alternate: ½ oz', 'Vegetable, fruit, or both: ½ cup', 'Grains: ½ slice bread'] }
+  '6-12': {
+    breakfast: { milk: '8 fl oz', grain: '1 oz eq', fruit: '½ cup', vegetable: '½ cup' },
+    amSnack:   { milk: '8 fl oz', grain: '1 oz eq', fruit: '¾ cup', vegetable: '¾ cup', meat: '1 oz eq' },
+    lunch:     { milk: '8 fl oz', grain: '1 oz eq', fruit: '¼ cup', vegetable: '½ cup', meat: '2 oz eq' },
+    pmSnack:   { milk: '8 fl oz', grain: '1 oz eq', fruit: '¾ cup', vegetable: '¾ cup', meat: '1 oz eq' }
   },
-  'Children 3-5yr': {
-    breakfast: { components: ['Milk (unflavored low-fat or fat-free): ¾ cup', 'Grains: ½ slice bread or ⅓ cup cereal', 'Fruit, vegetable, or both: ½ cup'] },
-    lunch: { components: ['Milk (unflavored low-fat or fat-free): ¾ cup', 'Meat/meat alternate: 1½ oz', 'Vegetable: ¼ cup', 'Fruit: ¼ cup', 'Grains: ½ slice bread'] },
-    snack: { components: ['Select 2 of 5 components:', 'Milk: ½ cup', 'Meat/meat alternate: ½ oz', 'Vegetable, fruit, or both: ½ cup', 'Grains: ½ slice bread'] }
-  },
-  'Children 6-12yr': {
-    breakfast: { components: ['Milk (unflavored or flavored low-fat/fat-free): 1 cup', 'Grains: 1 slice bread or ¾ cup cereal', 'Fruit, vegetable, or both: ½ cup'] },
-    lunch: { components: ['Milk (unflavored or flavored low-fat/fat-free): 1 cup', 'Meat/meat alternate: 2 oz', 'Vegetable: ½ cup', 'Fruit: ¼ cup', 'Grains: 1 slice bread'] },
-    snack: { components: ['Select 2 of 5 components:', 'Milk: 1 cup', 'Meat/meat alternate: 1 oz', 'Vegetable, fruit, or both: ¾ cup', 'Grains: 1 slice bread'] }
+  'Infants-6-11mo': {
+    breakfast: { formula: '6-8 fl oz', grain: '0-½ oz eq', fruit: '0-¼ cup', vegetable: '0-¼ cup' },
+    amSnack:   { formula: '2-4 fl oz', grain: '0-½ oz eq serving' },
+    lunch:     { formula: '6-8 fl oz', grain: '0-½ oz eq', fruit: '0-¼ cup', vegetable: '0-¼ cup', meat: '0-4 oz' },
+    pmSnack:   { formula: '2-4 fl oz', grain: '0-½ oz eq serving' }
   }
 };
-
-// Map classroom age groups to meal pattern categories
 const CLASSROOM_AGE_MAP = {
-  'Infants': ['Infants 0-5mo', 'Infants 6-11mo'],
-  'Infants/Toddlers': ['Infants 6-11mo', 'Children 1-2yr'],
-  'Toddlers': ['Children 1-2yr'],
-  '2s': ['Children 1-2yr'],
-  '2½': ['Children 1-2yr', 'Children 3-5yr'],
-  '2s and 3s': ['Children 1-2yr', 'Children 3-5yr'],
-  '3s': ['Children 3-5yr'],
-  'Multi-age 2½-4': ['Children 1-2yr', 'Children 3-5yr'],
-  'Multi-age/School-age': ['Children 3-5yr', 'Children 6-12yr'],
-  '4s and 5s': ['Children 3-5yr'],
-  'School-age': ['Children 6-12yr']
+  'Tiny Treasures': 'Infants-6-11mo', 'Caterpillars': 'Infants-6-11mo',
+  'Butterflies': 'Infants-6-11mo', 'Koalas': '1-2', 'Jellyfish': '1-2',
+  'Dolphins': '1-2', 'Kangas': '1-2', 'Lions': '1-2', 'Montessori': '1-2',
+  'Tigers': '1-2', 'Bears': '3-5', 'Fireflies': '3-5', 'Flamingos': '3-5',
+  'Honey Bees': '3-5', 'Otters': '3-5', 'Penguins': '3-5', 'Dinos': '3-5'
 };
 
-// Generate classroom portion poster .docx
+app.get('/api/meal-patterns/:ages', authCheck, (req, res) => {
+  const p = MEAL_PATTERNS[req.params.ages];
+  if (!p) return res.status(404).json({ error: 'Unknown age group' });
+  res.json(p);
+});
+
+app.get('/api/meal-patterns', authCheck, (req, res) => {
+  res.json({ patterns: MEAL_PATTERNS, classroomAgeMap: CLASSROOM_AGE_MAP });
+});
+
+// ── GENERATE PORTION POSTER FOR A CLASSROOM (.docx) ──────
 app.post('/api/generate-portion-poster', authCheck, async (req, res) => {
   try {
-    const { center, classroom_name, classroom_ages } = req.body;
-    const ageGroups = CLASSROOM_AGE_MAP[classroom_ages] || ['Children 3-5yr'];
-    const navy = '1B2A4A'; const gold = 'C5972C';
+    const { classroom, ages } = req.body;
+    const ageKey = ages || CLASSROOM_AGE_MAP[classroom] || '3-5';
+    const pat = MEAL_PATTERNS[ageKey];
+    if (!pat) return res.status(400).json({ error: 'Unknown age group' });
 
-    const border = { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' };
-    const borders = { top: border, bottom: border, left: border, right: border };
-    const cm = { top: 80, bottom: 80, left: 120, right: 120 };
-
+    const navy = '1B2A4A';
+    const thinB = {
+      top:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'},
+      bottom:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'},
+      left:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'},
+      right:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'}
+    };
     function cell(text, opts = {}) {
       return new TableCell({
-        borders, margins: cm,
-        width: opts.w ? { size: opts.w, type: WidthType.DXA } : undefined,
-        shading: opts.bg ? { type: ShadingType.CLEAR, fill: opts.bg } : undefined,
-        children: [new Paragraph({ alignment: opts.align || AlignmentType.LEFT,
-          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 22, font: 'Arial', color: opts.color || '333333' })] })]
+        borders: thinB,
+        shading: opts.bg ? { type: ShadingType.SOLID, color: opts.bg } : undefined,
+        children: [new Paragraph({
+          alignment: opts.align || AlignmentType.CENTER,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 28, font: 'Calibri', color: opts.color || '333333' })]
+        })]
       });
     }
 
-    const sections = [];
-    for (const ageGroup of ageGroups) {
-      const pattern = MEAL_PATTERNS[ageGroup];
-      if (!pattern) continue;
+    const mealLabels = { breakfast: 'Breakfast', amSnack: 'AM Snack', lunch: 'Lunch', pmSnack: 'PM Snack' };
+    const components = ['milk','formula','grain','fruit','vegetable','meat'];
 
-      const tableWidth = 9360;
-      const rows = [];
+    const headerRow = new TableRow({ children: [
+      cell('Component', { bold: true, bg: navy, color: 'FFFFFF', sz: 24 }),
+      ...Object.keys(mealLabels).map(mk =>
+        cell(mealLabels[mk], { bold: true, bg: navy, color: 'FFFFFF', sz: 24 })
+      )
+    ]});
 
-      // Header
+    const rows = [headerRow];
+    for (const comp of components) {
+      const hasAny = Object.keys(mealLabels).some(mk => pat[mk]?.[comp]);
+      if (!hasAny) continue;
       rows.push(new TableRow({ children: [
-        cell('Meal', { bold: true, bg: navy, color: 'FFFFFF', w: 1800, sz: 24 }),
-        cell('Required Components & Minimum Portions', { bold: true, bg: navy, color: 'FFFFFF', w: 7560, sz: 24 }),
-      ] }));
-
-      for (const [meal, data] of Object.entries(pattern)) {
-        const mealLabel = meal.charAt(0).toUpperCase() + meal.slice(1);
-        const bg = meal === 'breakfast' ? 'FFF8E1' : meal === 'lunch' ? 'E8F5E9' : 'E3F2FD';
-        for (let i = 0; i < data.components.length; i++) {
-          rows.push(new TableRow({ children: [
-            cell(i === 0 ? mealLabel : '', { bold: i === 0, bg: i === 0 ? bg : undefined, w: 1800, sz: 22 }),
-            cell(data.components[i], { w: 7560, sz: 22, bg: i === 0 ? bg : undefined }),
-          ] }));
-        }
-      }
-
-      sections.push({
-        properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 720, bottom: 720, left: 1440, right: 1440 } } },
-        children: [
-          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [
-            new TextRun({ text: "The Children's Center", bold: true, size: 32, font: 'Arial', color: navy }) ] }),
-          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
-            new TextRun({ text: 'CACFP Meal Pattern Requirements', size: 28, font: 'Arial', color: gold }) ] }),
-          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [
-            new TextRun({ text: `${classroom_name} — ${ageGroup}`, bold: true, size: 36, font: 'Arial', color: navy }) ] }),
-          new Table({ width: { size: tableWidth, type: WidthType.DXA }, columnWidths: [1800, 7560], rows }),
-          new Paragraph({ spacing: { before: 200 }, alignment: AlignmentType.CENTER, children: [
-            new TextRun({ text: 'Ensure all components are served in the minimum portions listed above.', size: 20, font: 'Arial', color: '666666', italics: true }) ] }),
-          new Paragraph({ spacing: { before: 60 }, alignment: AlignmentType.CENTER, children: [
-            new TextRun({ text: 'Questions? Contact your CACFP coordinator.', size: 18, font: 'Arial', color: '999999' }) ] }),
-        ]
-      });
+        cell(comp.charAt(0).toUpperCase() + comp.slice(1), { bold: true, bg: 'F0F4F8', sz: 22 }),
+        ...Object.keys(mealLabels).map(mk => cell(pat[mk]?.[comp] || '—', { sz: 24 }))
+      ]}));
     }
 
-    if (sections.length === 0) return res.status(400).json({ error: 'No meal patterns found for this age group' });
+    const doc = new Document({
+      sections: [{
+        properties: { page: {
+          margin: { top: 720, bottom: 720, left: 720, right: 720 },
+          size: { orientation: 'landscape', width: 15840, height: 12240 }
+        } },
+        children: [
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+            new TextRun({ text: "The Children's Center — CACFP Portion Guide", bold: true, size: 36, font: 'Calibri', color: navy })
+          ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
+            new TextRun({ text: classroom || '', bold: true, size: 44, font: 'Calibri', color: '333333' })
+          ]}),
+          new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 300 }, children: [
+            new TextRun({ text: `Age Group: ${ageKey}`, size: 28, font: 'Calibri', color: '666666' })
+          ]}),
+          new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }),
+          new Paragraph({ spacing: { before: 400 }, alignment: AlignmentType.CENTER, children: [
+            new TextRun({ text: 'Per USDA CACFP Meal Pattern Requirements', size: 18, font: 'Calibri', color: '999999', italics: true })
+          ]})
+        ]
+      }]
+    });
 
-    const doc = new Document({ sections });
     const buffer = await Packer.toBuffer(doc);
-    const filename = `Portion_Poster_${classroom_name.replace(/\s/g, '_')}.docx`;
-
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Portion_Poster_${(classroom || 'Classroom').replace(/\s/g,'_')}.docx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buffer);
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-// Generate all classroom posters for a center
+// ── GENERATE ALL PORTION POSTERS (for both centers) ──────
 app.post('/api/generate-all-posters', authCheck, async (req, res) => {
   try {
-    const { center } = req.body;
-    const rooms = CLASSROOMS[center] || [];
-    const navy = '1B2A4A'; const gold = 'C5972C';
-
-    const border = { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' };
-    const borders = { top: border, bottom: border, left: border, right: border };
-    const cm = { top: 80, bottom: 80, left: 120, right: 120 };
+    const navy = '1B2A4A';
+    const thinB = {
+      top:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'},
+      bottom:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'},
+      left:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'},
+      right:{style:BorderStyle.SINGLE,size:2,color:'1B2A4A'}
+    };
     function cell(text, opts = {}) {
       return new TableCell({
-        borders, margins: cm,
-        width: opts.w ? { size: opts.w, type: WidthType.DXA } : undefined,
-        shading: opts.bg ? { type: ShadingType.CLEAR, fill: opts.bg } : undefined,
-        children: [new Paragraph({ alignment: opts.align || AlignmentType.LEFT,
-          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 22, font: 'Arial', color: opts.color || '333333' })] })]
+        borders: thinB,
+        shading: opts.bg ? { type: ShadingType.SOLID, color: opts.bg } : undefined,
+        children: [new Paragraph({
+          alignment: opts.align || AlignmentType.CENTER,
+          children: [new TextRun({ text: text || '', bold: opts.bold || false, size: opts.sz || 22, font: 'Calibri', color: opts.color || '333333' })]
+        })]
       });
     }
 
+    const mealLabels = { breakfast: 'Breakfast', amSnack: 'AM Snack', lunch: 'Lunch', pmSnack: 'PM Snack' };
+    const components = ['milk','formula','grain','fruit','vegetable','meat'];
     const sections = [];
-    for (const room of rooms) {
-      const ageGroups = CLASSROOM_AGE_MAP[room.ages] || ['Children 3-5yr'];
-      for (const ageGroup of ageGroups) {
-        const pattern = MEAL_PATTERNS[ageGroup];
-        if (!pattern) continue;
-        const tableWidth = 9360;
-        const rows = [new TableRow({ children: [
-          cell('Meal', { bold: true, bg: navy, color: 'FFFFFF', w: 1800, sz: 24 }),
-          cell('Required Components & Minimum Portions', { bold: true, bg: navy, color: 'FFFFFF', w: 7560, sz: 24 }),
-        ] })];
-        for (const [meal, data] of Object.entries(pattern)) {
-          const mealLabel = meal.charAt(0).toUpperCase() + meal.slice(1);
-          const bg = meal === 'breakfast' ? 'FFF8E1' : meal === 'lunch' ? 'E8F5E9' : 'E3F2FD';
-          for (let i = 0; i < data.components.length; i++) {
-            rows.push(new TableRow({ children: [
-              cell(i === 0 ? mealLabel : '', { bold: i === 0, bg: i === 0 ? bg : undefined, w: 1800, sz: 22 }),
-              cell(data.components[i], { w: 7560, sz: 22, bg: i === 0 ? bg : undefined }),
-            ] }));
-          }
+
+    for (const center of ['niles','peace']) {
+      for (const cls of CLASSROOMS[center]) {
+        const ageKey = CLASSROOM_AGE_MAP[cls.name] || '3-5';
+        const pat = MEAL_PATTERNS[ageKey];
+        if (!pat) continue;
+
+        const headerRow = new TableRow({ children: [
+          cell('Component', { bold: true, bg: navy, color: 'FFFFFF', sz: 22 }),
+          ...Object.keys(mealLabels).map(mk => cell(mealLabels[mk], { bold: true, bg: navy, color: 'FFFFFF', sz: 22 }))
+        ]});
+        const rows = [headerRow];
+        for (const comp of components) {
+          const hasAny = Object.keys(mealLabels).some(mk => pat[mk]?.[comp]);
+          if (!hasAny) continue;
+          rows.push(new TableRow({ children: [
+            cell(comp.charAt(0).toUpperCase() + comp.slice(1), { bold: true, bg: 'F0F4F8', sz: 20 }),
+            ...Object.keys(mealLabels).map(mk => cell(pat[mk]?.[comp] || '—', { sz: 22 }))
+          ]}));
         }
+
         sections.push({
-          properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 720, bottom: 720, left: 1440, right: 1440 } } },
+          properties: { page: {
+            margin: { top: 720, bottom: 720, left: 720, right: 720 },
+            size: { orientation: 'landscape', width: 15840, height: 12240 }
+          } },
           children: [
-            new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [
-              new TextRun({ text: "The Children's Center", bold: true, size: 32, font: 'Arial', color: navy }) ] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [
+              new TextRun({ text: `${center === 'niles' ? 'Niles' : 'Peace Blvd'}`, size: 22, font: 'Calibri', color: '999999' })
+            ]}),
             new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [
-              new TextRun({ text: 'CACFP Meal Pattern Requirements', size: 28, font: 'Arial', color: gold }) ] }),
+              new TextRun({ text: cls.name, bold: true, size: 40, font: 'Calibri', color: navy })
+            ]}),
             new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [
-              new TextRun({ text: `${room.name} — ${ageGroup}`, bold: true, size: 36, font: 'Arial', color: navy }) ] }),
-            new Table({ width: { size: tableWidth, type: WidthType.DXA }, columnWidths: [1800, 7560], rows }),
+              new TextRun({ text: `${cls.ages} | Age Group ${ageKey}`, size: 24, font: 'Calibri', color: '666666' })
+            ]}),
+            new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }),
             new Paragraph({ spacing: { before: 200 }, alignment: AlignmentType.CENTER, children: [
-              new TextRun({ text: 'Ensure all components are served in the minimum portions listed above.', size: 20, font: 'Arial', color: '666666', italics: true }) ] }),
+              new TextRun({ text: 'Per USDA CACFP Meal Pattern Requirements', size: 16, font: 'Calibri', color: '999999', italics: true })
+            ]})
           ]
         });
       }
@@ -3064,55 +3207,41 @@ app.post('/api/generate-all-posters', authCheck, async (req, res) => {
 
     const doc = new Document({ sections });
     const buffer = await Packer.toBuffer(doc);
-    const cLabel = center === 'niles' ? 'Niles' : 'Peace';
-    const filename = `All_Portion_Posters_${cLabel}.docx`;
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="All_Portion_Posters.docx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buffer);
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-// Get meal pattern requirements for a classroom (for monitoring worksheet)
-app.get('/api/meal-patterns/:ages', authCheck, (req, res) => {
-  const ageGroups = CLASSROOM_AGE_MAP[req.params.ages] || ['Children 3-5yr'];
-  const patterns = {};
-  for (const ag of ageGroups) {
-    if (MEAL_PATTERNS[ag]) patterns[ag] = MEAL_PATTERNS[ag];
-  }
-  res.json(patterns);
-});
-
-// ── MERGE DUPLICATE STAFF ─────────────────────────────────
+// ── STAFF MERGE (merge duplicate staff entries) ───────────
 app.post('/api/staff/merge', authCheck, async (req, res) => {
   try {
-    const { keep_id, remove_id } = req.body;
-    if (!keep_id || !remove_id) return res.status(400).json({ error: 'Need keep_id and remove_id' });
-    if (keep_id === remove_id) return res.status(400).json({ error: 'Cannot merge with self' });
-
-    // Move all data from remove_id to keep_id
-    await pool.query('UPDATE daily_cacfp_entries SET staff_id=$1 WHERE staff_id=$2', [keep_id, remove_id]);
-    await pool.query('UPDATE playground_staff_hours SET staff_id=$1 WHERE staff_id=$2 AND NOT EXISTS (SELECT 1 FROM playground_staff_hours p2 WHERE p2.staff_id=$1 AND p2.fiscal_year_id=playground_staff_hours.fiscal_year_id AND p2.month_key=playground_staff_hours.month_key AND p2.day_of_month=playground_staff_hours.day_of_month)', [keep_id, remove_id]);
-    await pool.query('UPDATE monthly_signatures SET staff_id=$1 WHERE staff_id=$2 AND NOT EXISTS (SELECT 1 FROM monthly_signatures m2 WHERE m2.staff_id=$1 AND m2.fiscal_year_id=monthly_signatures.fiscal_year_id AND m2.month_key=monthly_signatures.month_key)', [keep_id, remove_id]);
-    await pool.query('UPDATE staff_time_entries SET staff_id=$1 WHERE staff_id=$2 AND NOT EXISTS (SELECT 1 FROM staff_time_entries s2 WHERE s2.staff_id=$1 AND s2.fiscal_year_id=staff_time_entries.fiscal_year_id AND s2.month_key=staff_time_entries.month_key)', [keep_id, remove_id]);
-
-    // Delete remaining duplicates that couldn't be moved
-    await pool.query('DELETE FROM playground_staff_hours WHERE staff_id=$1', [remove_id]);
-    await pool.query('DELETE FROM monthly_signatures WHERE staff_id=$1', [remove_id]);
-    await pool.query('DELETE FROM staff_time_entries WHERE staff_id=$1', [remove_id]);
-    await pool.query('DELETE FROM daily_cacfp_entries WHERE staff_id=$1', [remove_id]);
-    await pool.query('DELETE FROM staff_pins WHERE staff_id=$1', [remove_id]);
-    await pool.query('DELETE FROM staff WHERE id=$1', [remove_id]);
-
-    const kept = (await pool.query('SELECT * FROM staff WHERE id=$1', [keep_id])).rows[0];
-    res.json({ ok: true, kept });
+    const { keep_id, merge_ids } = req.body;
+    if (!keep_id || !Array.isArray(merge_ids) || !merge_ids.length) {
+      return res.status(400).json({ error: 'Must provide keep_id and merge_ids array' });
+    }
+    for (const mid of merge_ids) {
+      if (mid === keep_id) continue;
+      await pool.query('UPDATE staff_time_entries SET staff_id=$1 WHERE staff_id=$2', [keep_id, mid]);
+      await pool.query('UPDATE documents SET staff_id=$1 WHERE staff_id=$2', [keep_id, mid]);
+      try { await pool.query('UPDATE daily_cacfp_entries SET staff_id=$1 WHERE staff_id=$2', [keep_id, mid]); } catch(e) {}
+      try { await pool.query('UPDATE playground_staff_hours SET staff_id=$1 WHERE staff_id=$2', [keep_id, mid]); } catch(e) {}
+      try { await pool.query('UPDATE monthly_signatures SET staff_id=$1 WHERE staff_id=$2', [keep_id, mid]); } catch(e) {}
+      await pool.query('UPDATE staff SET is_active=false WHERE id=$1', [mid]);
+    }
+    res.json({ ok: true, merged: merge_ids.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-initDB().then(() => {
-  return initMonitoringTables();
-}).then(() => {
-  app.listen(PORT, () => console.log(`🍽️ TCC CACFP Suite v4 running on port ${PORT}`));
-}).catch(err => {
-  console.error('DB init error:', err);
-  app.listen(PORT, () => console.log(`🍽️ TCC CACFP Suite v4 running on port ${PORT} (DB init failed)`));
-});
+// ── STARTUP ───────────────────────────────────────────────
+initDB()
+  .then(initMonitoringTables)
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`✅ CACFP Suite server listening on port ${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('❌ Startup failed:', err);
+    process.exit(1);
+  });
