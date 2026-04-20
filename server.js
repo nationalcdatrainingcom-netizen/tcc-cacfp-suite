@@ -377,11 +377,149 @@ app.get('/api/documents/:id/download', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── PDF RASTERIZATION ─────────────────────────────────────
+// Rasterize an uploaded PDF to PNG page images for inline embedding in print packages.
+// Returns { pages: [base64PNG, ...], pageCount, filename }.
+// Non-PDF images pass through as a single-page array.
+// Cached in memory per document ID (up to 40 docs) so repeated prints are instant.
+const rasterizeCache = new Map(); // id → { pages, pageCount, filename, cachedAt }
+const RASTERIZE_CACHE_MAX = 40;
+
+app.get('/api/documents/:id/rasterize', authCheck, async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    // Cache hit?
+    if (rasterizeCache.has(id)) {
+      const hit = rasterizeCache.get(id);
+      // Bump to end (most-recently-used)
+      rasterizeCache.delete(id);
+      rasterizeCache.set(id, hit);
+      return res.json({ pages: hit.pages, pageCount: hit.pageCount, filename: hit.filename, cached: true });
+    }
+
+    const { rows } = await pool.query(
+      'SELECT filename, mime_type, file_data FROM documents WHERE id = $1', [id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    const { filename, mime_type, file_data } = rows[0];
+    const mt = (mime_type || '').toLowerCase();
+
+    let pages = [];
+
+    if (mt === 'application/pdf' || filename.toLowerCase().endsWith('.pdf')) {
+      // Dynamic import — pdf-to-img is ESM-only
+      const { pdf } = await import('pdf-to-img');
+      try {
+        const doc = await pdf(file_data, { scale: 2 }); // 2x = ~144 DPI, good print quality
+        for await (const pageBuf of doc) {
+          pages.push('data:image/png;base64,' + pageBuf.toString('base64'));
+        }
+      } catch (pdfErr) {
+        console.error(`PDF rasterize failed for doc ${id} (${filename}):`, pdfErr.message);
+        return res.status(422).json({
+          error: 'Could not rasterize PDF',
+          detail: pdfErr.message,
+          filename
+        });
+      }
+    } else if (mt.startsWith('image/')) {
+      // Images pass through as a single-page data URL
+      pages.push(`data:${mt};base64,` + Buffer.from(file_data).toString('base64'));
+    } else {
+      return res.status(415).json({
+        error: 'Unsupported file type for inline embedding',
+        mime_type: mt,
+        filename
+      });
+    }
+
+    const result = { pages, pageCount: pages.length, filename, cachedAt: Date.now() };
+
+    // LRU evict if over capacity
+    if (rasterizeCache.size >= RASTERIZE_CACHE_MAX) {
+      const oldestKey = rasterizeCache.keys().next().value;
+      if (oldestKey) rasterizeCache.delete(oldestKey);
+    }
+    rasterizeCache.set(id, result);
+
+    res.json({ pages: result.pages, pageCount: result.pageCount, filename: result.filename, cached: false });
+  } catch (e) {
+    console.error('rasterize error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Clear the rasterize cache (call when a document is re-uploaded/replaced)
+function invalidateRasterizeCache(docId) {
+  if (docId && rasterizeCache.has(String(docId))) rasterizeCache.delete(String(docId));
+}
+
 app.delete('/api/documents/:id', authCheck, async (req, res) => {
   try {
     await pool.query('DELETE FROM documents WHERE id = $1', [req.params.id]);
+    invalidateRasterizeCache(req.params.id);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── MONTHLY PACKAGE ARCHIVE ───────────────────────────────
+// Save a rendered HTML version of the Complete CACFP Documentation for a month.
+// Stored as a regular `documents` row with doc_type = 'archived_monthly_package'
+// so it appears in the Documents tab and can be re-downloaded on demand.
+app.post('/api/archive-package', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, html, filename, metadata } = req.body;
+    if (!fiscal_year_id || !month_key || !html) {
+      return res.status(400).json({ error: 'Missing fiscal_year_id, month_key, or html' });
+    }
+    const htmlBuffer = Buffer.from(html, 'utf8');
+    const safeName = filename || `CACFP_Package_${month_key}_${Date.now()}.html`;
+    const meta = metadata || {};
+    meta.generated_at = meta.generated_at || new Date().toISOString();
+    meta.byte_size = htmlBuffer.length;
+
+    const { rows } = await pool.query(
+      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+       VALUES ($1, $2, 'archived_monthly_package', $3, 'text/html', $4, $5)
+       RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
+      [fiscal_year_id, month_key, safeName, htmlBuffer, JSON.stringify(meta)]
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('archive-package error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List archived packages (convenience wrapper — same as /api/documents?doc_type=archived_monthly_package)
+app.get('/api/archived-packages', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key } = req.query;
+    let q = `SELECT id, fiscal_year_id, month_key, filename, metadata, uploaded_at
+             FROM documents WHERE doc_type = 'archived_monthly_package'`;
+    const params = [];
+    if (fiscal_year_id) { params.push(fiscal_year_id); q += ` AND fiscal_year_id = $${params.length}`; }
+    if (month_key) { params.push(month_key); q += ` AND month_key = $${params.length}`; }
+    q += ' ORDER BY uploaded_at DESC';
+    const { rows } = await pool.query(q, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// View an archived package in-browser (serves the HTML inline, not as attachment)
+app.get('/api/archived-packages/:id/view', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT filename, mime_type, file_data FROM documents
+       WHERE id = $1 AND doc_type = 'archived_monthly_package'`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).send('Archive not found');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    // Inline (not attachment) so it opens in the browser ready to print
+    res.setHeader('Content-Disposition', `inline; filename="${rows[0].filename}"`);
+    res.send(rows[0].file_data);
+  } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
 // ── MONTHLY DATA ──────────────────────────────────────────
