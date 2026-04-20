@@ -2650,19 +2650,45 @@ async function printMonthlyPackage(mk){
   const fc=monthlyDataCache[mk+'_foodcosts']||{};
 
   // Pull fresh salary data from merged T&A (same as claim prep)
+  // RETRY logic: under memory pressure the API can intermittently fail.
+  // If it does, we retry 2 more times with backoff before falling back to stale data.
   let fsCost=0,admCost=0;
   let taStaffData=[];
-  try{
-    taStaffData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
+  let taFetchFailed=false;
+  let taFetchError=null;
+  for(let attempt=1;attempt<=3;attempt++){
+    try{
+      taStaffData=await api(`/api/merged-time-all?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
+      taFetchFailed=false;
+      break;
+    }catch(e){
+      taFetchError=e;
+      if(attempt<3){
+        setProgress(`Retrying staff data fetch (attempt ${attempt+1} of 3)...`);
+        // Exponential backoff: 1s, then 2s
+        await new Promise(r=>setTimeout(r,attempt*1000));
+      }else{
+        taFetchFailed=true;
+      }
+    }
+  }
+  if(taFetchFailed){
+    // All retries exhausted — fall back but warn the user CLEARLY
+    console.error('merged-time-all failed after 3 retries:',taFetchError);
+    const stData=salaryTotals.find(r=>r.month_key===mk);
+    fsCost=parseFloat(stData?.food_service_cost)||0;
+    admCost=parseFloat(stData?.admin_cost)||0;
+    rasterFailures.push({
+      id:'_system_',
+      filename:'⚠️ Staff T&A data',
+      reason:`Could not fetch live staff time data after 3 attempts (${taFetchError?.message||'unknown error'}). The Staff Costs section shows FALLBACK numbers from a cached total that may differ from what's actually in the Time Entry app. Please regenerate the report once the server is responsive.`
+    });
+  }else{
     for(const s of taStaffData){
       const rate=parseFloat(s.hourly_rate)||0;
       fsCost+=s.totalFS*rate;
       admCost+=s.totalAdm*rate;
     }
-  }catch(e){
-    const stData=salaryTotals.find(r=>r.month_key===mk);
-    fsCost=parseFloat(stData?.food_service_cost)||0;
-    admCost=parseFloat(stData?.admin_cost)||0;
   }
 
   // Fetch per-staff DAILY T&A detail — only for staff with CACFP activity (FS or Admin > 0).
@@ -2670,17 +2696,35 @@ async function printMonthlyPackage(mk){
   const staffDailyData={}; // staffId → { staff, days: [...] }
   const cacfpStaff=taStaffData.filter(s=>(s.totalFS>0)||(s.totalAdm>0));
   let staffDone=0;
+  let staffDetailFailures=0;
   for(const s of cacfpStaff){
     if(w.closed){showToast('Preview window closed — report cancelled','err');return;}
     staffDone++;
     setProgress(`Loading T&A detail: ${s.name} (${staffDone} of ${cacfpStaff.length})...`);
-    try{
-      const detail=await api(`/api/merged-time/${s.id}?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
-      staffDailyData[s.id]={staff:detail.staff||s,days:detail.days||[],signature:detail.signature};
-    }catch(e){
-      console.warn(`Could not fetch T&A detail for ${s.name}:`,e);
-      staffDailyData[s.id]=null;
+    let ok=false;
+    for(let attempt=1;attempt<=3;attempt++){
+      try{
+        const detail=await api(`/api/merged-time/${s.id}?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
+        staffDailyData[s.id]={staff:detail.staff||s,days:detail.days||[],signature:detail.signature};
+        ok=true;
+        break;
+      }catch(e){
+        if(attempt<3){
+          await new Promise(r=>setTimeout(r,attempt*500));
+        }else{
+          console.warn(`T&A detail fetch failed for ${s.name} after 3 attempts:`,e.message);
+          staffDailyData[s.id]=null;
+          staffDetailFailures++;
+        }
+      }
     }
+  }
+  if(staffDetailFailures>0){
+    rasterFailures.push({
+      id:'_system_staff_',
+      filename:'⚠️ Per-staff T&A detail',
+      reason:`Could not fetch detailed T&A data for ${staffDetailFailures} of ${cacfpStaff.length} staff members. Their inline MDE forms will be incomplete or missing. Server may be under load — try regenerating.`
+    });
   }
   const benefits=fsCost*BEN_RATE;
   const foodCost=parseFloat(fc.total)||0;
