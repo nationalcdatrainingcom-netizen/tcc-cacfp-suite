@@ -2504,7 +2504,14 @@ async function printMonthlyPackage(mk){
     try{
       const resp=await fetch(`/api/documents/${doc.id}/rasterize?pin=${PIN}`);
       if(!resp.ok){
-        rasterFailures.push({id:doc.id,filename:doc.filename,reason:`HTTP ${resp.status}`});
+        // Pull the detailed error message from the response body if available
+        let errDetail=`HTTP ${resp.status}`;
+        try{
+          const errBody=await resp.json();
+          if(errBody.detail)errDetail=`HTTP ${resp.status} — ${errBody.detail}`;
+          else if(errBody.error)errDetail=`HTTP ${resp.status} — ${errBody.error}`;
+        }catch(_){}
+        rasterFailures.push({id:doc.id,filename:doc.filename,reason:errDetail});
         continue;
       }
       const data=await resp.json();
