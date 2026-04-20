@@ -678,6 +678,30 @@ async function monthSubTab(tab){
   renderSubPanel();
 }
 
+// Manual refresh of documents (for the refresh button on Documents tab)
+async function refreshDocuments(){
+  if(!activeFY)return;
+  try{
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    renderSubPanel();
+    showToast('🔄 Documents refreshed','ok');
+  }catch(e){showToast('Refresh failed: '+e.message,'err');}
+}
+
+// Auto-refresh documents whenever the main window regains focus
+// (catches archives saved from the popup preview window)
+window.addEventListener('focus',async()=>{
+  if(currentSubTab==='monthdocs'&&activeFY){
+    try{
+      const fresh=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+      if(fresh.length!==documents.length){
+        documents=fresh;
+        renderSubPanel();
+      }
+    }catch(e){}
+  }
+});
+
 function renderAll(){renderDashboard();renderMonthBar();renderMonthlyPage();renderRevenuePage();renderProgramDocs();renderYER();}
 
 // ═══════════════════════════════════════════════════
@@ -2024,6 +2048,82 @@ async function unmarkClaimed(mk){
 // ═══════════════════════════════════════════════════
 // MONTH DOCS — Two sections + Print Package
 // ═══════════════════════════════════════════════════
+// Render the grid of menu + substitution log upload slots for a given month
+function renderMenuGrid(mk,mDocs){
+  const meals=[
+    {key:'breakfast',label:'Breakfast',icon:'🥞'},
+    {key:'am_snack',label:'AM Snack',icon:'🍎'},
+    {key:'lunch',label:'Lunch',icon:'🥗'},
+    {key:'pm_snack',label:'PM Snack',icon:'🍪'}
+  ];
+
+  // Helper to render one doc slot (existing doc with delete, or upload box)
+  const slot=(docType,label,icon)=>{
+    const d=mDocs.find(dd=>dd.doc_type===docType);
+    if(d){
+      return `<div style="border:1px solid var(--success);background:#F0FFF4;border-radius:6px;padding:8px 10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.85rem;font-weight:600">${icon} ${label}</div>
+            <div style="font-size:.7rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.filename}">✅ ${d.filename}</div>
+          </div>
+          <div style="display:flex;gap:3px">
+            <a href="/api/documents/${d.id}/download?pin=${PIN}" target="_blank" class="btn btn-sm btn-outline" style="padding:2px 6px;font-size:.7rem" title="Download">⬇️</a>
+            <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:2px 6px;font-size:.7rem" title="Delete">🗑️</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    return `<div style="border:1px dashed var(--border);border-radius:6px;padding:8px 10px;background:#FAFAFA">
+      <div style="font-size:.85rem;font-weight:600;margin-bottom:4px">${icon} ${label}</div>
+      <label class="btn btn-sm btn-outline" style="cursor:pointer;font-size:.7rem;padding:3px 8px;margin:0">
+        📎 Upload
+        <input type="file" accept=".pdf,.png,.jpg,.jpeg,.doc,.docx" style="display:none" onchange="uploadMonthDoc('${mk}','${docType}',this)">
+      </label>
+    </div>`;
+  };
+
+  let html='';
+  // Menu grid: one column per center, one row per meal
+  html+=`<div style="margin-bottom:16px">
+    <div style="font-weight:600;color:var(--navy);font-size:.9rem;margin-bottom:6px">📋 Menus</div>
+    <p style="font-size:.75rem;color:var(--muted);margin-bottom:8px">If the same menu applies to both centers, upload once as "Shared" below instead of filling both Niles and Peace.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;align-items:start">
+      <div style="font-size:.75rem;font-weight:700;color:var(--navy);text-align:center;padding-bottom:4px;border-bottom:1px solid var(--border)">Meal</div>
+      <div style="font-size:.75rem;font-weight:700;color:var(--navy);text-align:center;padding-bottom:4px;border-bottom:1px solid var(--border)">Niles</div>
+      <div style="font-size:.75rem;font-weight:700;color:var(--navy);text-align:center;padding-bottom:4px;border-bottom:1px solid var(--border)">Peace Boulevard</div>`;
+  for(const meal of meals){
+    html+=`<div style="font-size:.85rem;font-weight:600;padding-top:8px">${meal.icon} ${meal.label}</div>
+      ${slot(`menu_${meal.key}_niles`,'Niles '+meal.label,meal.icon)}
+      ${slot(`menu_${meal.key}_peace`,'Peace '+meal.label,meal.icon)}`;
+  }
+  html+=`</div></div>`;
+
+  // Shared menus row — for legacy uploads / menus that apply to both centers
+  html+=`<div style="margin-bottom:16px">
+    <div style="font-weight:600;color:var(--navy);font-size:.9rem;margin-bottom:6px">🔗 Shared Menus (both centers)</div>
+    <p style="font-size:.75rem;color:var(--muted);margin-bottom:8px">Use these if the same menu applies at both centers. Overridden by per-center menus above when those exist.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+      ${slot('menu_breakfast','Breakfast (shared)','🥞')}
+      ${slot('menu_am_snack','AM Snack (shared)','🍎')}
+      ${slot('menu_lunch','Lunch (shared)','🥗')}
+      ${slot('menu_pm_snack','PM Snack (shared)','🍪')}
+    </div>
+  </div>`;
+
+  // Substitution logs
+  html+=`<div>
+    <div style="font-weight:600;color:var(--navy);font-size:.9rem;margin-bottom:6px">📝 Substitution Logs</div>
+    <p style="font-size:.75rem;color:var(--muted);margin-bottom:8px">One log per center per month. Required for CACFP review when any meal substitutions occurred.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      ${slot('substitution_log_niles','Niles','📝')}
+      ${slot('substitution_log_peace','Peace Boulevard','📝')}
+    </div>
+  </div>`;
+
+  return html;
+}
+
 function renderMonthDocs(){
   const m=currentMonth;
   const mDocs=documents.filter(d=>d.month_key===m);
@@ -2051,10 +2151,13 @@ function renderMonthDocs(){
     {label:'Playground staff hours imported',done:mDocs.some(d=>d.doc_type==='playground_staff_hours')},
     {label:'T&A forms generated',done:mDocs.some(d=>d.doc_type==='ta_form')},
     {label:'Attendance time log generated',done:hasAttTimeReport},
-    {label:'Breakfast menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_breakfast')},
-    {label:'AM Snack menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_am_snack')},
-    {label:'Lunch menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_lunch')},
-    {label:'PM Snack menu uploaded',done:mDocs.some(d=>d.doc_type==='menu_pm_snack')},
+    // Menus count as complete if we have EITHER the shared doc OR both per-center docs.
+    {label:'Breakfast menu (both centers)',done:mDocs.some(d=>d.doc_type==='menu_breakfast')||(mDocs.some(d=>d.doc_type==='menu_breakfast_niles')&&mDocs.some(d=>d.doc_type==='menu_breakfast_peace'))},
+    {label:'AM Snack menu (both centers)',done:mDocs.some(d=>d.doc_type==='menu_am_snack')||(mDocs.some(d=>d.doc_type==='menu_am_snack_niles')&&mDocs.some(d=>d.doc_type==='menu_am_snack_peace'))},
+    {label:'Lunch menu (both centers)',done:mDocs.some(d=>d.doc_type==='menu_lunch')||(mDocs.some(d=>d.doc_type==='menu_lunch_niles')&&mDocs.some(d=>d.doc_type==='menu_lunch_peace'))},
+    {label:'PM Snack menu (both centers)',done:mDocs.some(d=>d.doc_type==='menu_pm_snack')||(mDocs.some(d=>d.doc_type==='menu_pm_snack_niles')&&mDocs.some(d=>d.doc_type==='menu_pm_snack_peace'))},
+    {label:'Substitution log — Niles',done:mDocs.some(d=>d.doc_type==='substitution_log_niles')},
+    {label:'Substitution log — Peace Blvd',done:mDocs.some(d=>d.doc_type==='substitution_log_peace')},
   ];
 
   // Categorize docs for display
@@ -2080,7 +2183,7 @@ function renderMonthDocs(){
       </div>
     </div>
 
-    <div class="card"><div class="card-hdr"><h3>📁 Uploaded Documents</h3></div><div class="card-body">
+    <div class="card"><div class="card-hdr"><h3>📁 Uploaded Documents</h3><button class="btn btn-sm btn-outline" onclick="refreshDocuments()">🔄 Refresh</button></div><div class="card-body">
       ${otherDocs.length>0?`<ul class="doc-list">${otherDocs.map(d=>`<li><span style="font-size:1.2rem">📄</span><span class="doc-name">${d.filename}</span>
         <span style="font-size:.75rem;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:10px">${d.doc_type}</span>
         <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
@@ -2109,6 +2212,11 @@ function renderMonthDocs(){
           <button class="btn btn-sm btn-danger" onclick="deleteArchive(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`;
       }).join('')}</ul>
     </div></div>`:''}
+
+    <div class="card"><div class="card-hdr"><h3>🍽️ Menus & Substitution Logs</h3></div><div class="card-body">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Upload per-center menus for each meal and the monthly substitution log. All will be embedded in the Complete CACFP Documentation PDF. Menus uploaded as "shared" will be used for both centers if no center-specific version exists.</p>
+      ${renderMenuGrid(m,mDocs)}
+    </div></div>
       <div style="margin-top:12px"><div class="upload-zone"><input type="file" onchange="uploadMonthDoc('${m}','other',this)"><div class="uz-icon">📎</div><div class="uz-label">Upload additional document</div></div></div>
     </div></div>
 
@@ -2401,6 +2509,10 @@ async function printMonthlyPackage(mk){
     <div class="toc-item"><span>9. CDC Eligibility — Niles</span></div>
     <div class="toc-item"><span>10. CDC Eligibility — Peace Boulevard</span></div>
     <div class="toc-item"><span>11. Food Costs & Receipts</span></div>
+    <div class="toc-item"><span>12. Monthly Menus — Niles</span></div>
+    <div class="toc-item"><span>13. Monthly Menus — Peace Boulevard</span></div>
+    <div class="toc-item"><span>14. Substitution Log — Niles</span></div>
+    <div class="toc-item"><span>15. Substitution Log — Peace Boulevard</span></div>
   </div>`;
 
   // ══════════════════════════════════════════════════
@@ -2883,6 +2995,64 @@ async function printMonthlyPackage(mk){
     for(const rd of receiptDocs){
       html+=embedDoc(rd);
     }
+  }
+
+  // ══════════════════════════════════════════════════
+  // 12-13. MONTHLY MENUS (per center)
+  // ══════════════════════════════════════════════════
+  // Per-center menu doc_type lookup, with fallback to shared menu_{meal} docs
+  // (historical uploads used shared types; treat as applying to both centers)
+  const menuMeals=[
+    {key:'breakfast',label:'Breakfast'},
+    {key:'am_snack',label:'AM Snack'},
+    {key:'lunch',label:'Lunch'},
+    {key:'pm_snack',label:'PM Snack'}
+  ];
+  const getMenuDocs=(center,mealKey)=>{
+    // Prefer per-center versions; fall back to shared if none exist for this center
+    const perCenter=mDocs.filter(d=>d.doc_type===`menu_${mealKey}_${center}`);
+    if(perCenter.length>0)return perCenter;
+    const shared=mDocs.filter(d=>d.doc_type===`menu_${mealKey}`);
+    return shared;
+  };
+
+  for(const center of ['niles','peace']){
+    html+=`<h2 class="page-break">${sectionNum}. Monthly Menus — ${cl(center)}</h2>`;
+    let anyMenus=false;
+    for(const meal of menuMeals){
+      const docs=getMenuDocs(center,meal.key);
+      if(docs.length>0){
+        anyMenus=true;
+        html+=`<h4>${meal.label} Menu</h4>`;
+        for(const d of docs){
+          const isShared=d.doc_type===`menu_${meal.key}`;
+          const note=isShared?' <span style="font-size:9px;color:#666">(shared menu for both centers)</span>':'';
+          html+=embedDoc(d,note);
+        }
+      }else{
+        html+=`<div class="doc-note">⚠️ No ${meal.label} menu uploaded for ${cl(center)}.</div>`;
+      }
+    }
+    if(!anyMenus){
+      html+=`<div class="doc-note" style="margin-top:12px">💡 Upload monthly menus from the Documents tab — use doc types <code>menu_breakfast_${center}</code>, <code>menu_am_snack_${center}</code>, <code>menu_lunch_${center}</code>, <code>menu_pm_snack_${center}</code> (or the shared <code>menu_*</code> types for menus used at both centers).</div>`;
+    }
+    sectionNum++;
+  }
+
+  // ══════════════════════════════════════════════════
+  // 14-15. SUBSTITUTION LOGS (per center)
+  // ══════════════════════════════════════════════════
+  for(const center of ['niles','peace']){
+    html+=`<h2 class="page-break">${sectionNum}. Substitution Log — ${cl(center)}</h2>`;
+    const subDocs=mDocs.filter(d=>d.doc_type===`substitution_log_${center}`);
+    if(subDocs.length>0){
+      for(const d of subDocs){
+        html+=embedDoc(d);
+      }
+    }else{
+      html+=`<div class="doc-note">⚠️ No Substitution Log uploaded for ${cl(center)} this month.</div>`;
+    }
+    sectionNum++;
   }
 
   // Rasterization failures summary (so user can see if something didn't embed inline)
