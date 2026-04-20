@@ -2211,19 +2211,74 @@ async function printMonthlyPackage(mk){
   showToast('Building complete CACFP documentation package...','');
   cleanupAttendanceData(mk);
 
-  // Fetch uploaded document images for embedding
+  // Fetch uploaded documents (PDFs + images) via the rasterize endpoint.
+  // Each entry becomes an array of page data URLs so PDFs embed page-by-page
+  // and single images embed as a 1-element array. Unsupported types are skipped.
   const mDocs=documents.filter(d=>d.month_key===mk);
-  const docImages={};
+  const docPages={}; // id → [dataURL, dataURL, ...]
+  const rasterFailures=[]; // [{id, filename, reason}]
+  let doneCount=0;
+  const totalToRasterize=mDocs.filter(d=>{
+    const mt=(d.mime_type||'').toLowerCase();
+    const fn=(d.filename||'').toLowerCase();
+    return mt==='application/pdf'||fn.endsWith('.pdf')||mt.startsWith('image/');
+  }).length;
+
   for(const doc of mDocs){
-    if(doc.mime_type?.startsWith('image/')){
-      try{
-        const resp=await fetch(`/api/documents/${doc.id}/download?pin=${PIN}`);
-        const blob=await resp.blob();
-        const b64=await new Promise(r=>{const rd=new FileReader();rd.onload=()=>r(rd.result);rd.readAsDataURL(blob);});
-        docImages[doc.id]=b64;
-      }catch(e){}
+    const mt=(doc.mime_type||'').toLowerCase();
+    const fn=(doc.filename||'').toLowerCase();
+    const isEmbeddable=mt==='application/pdf'||fn.endsWith('.pdf')||mt.startsWith('image/');
+    if(!isEmbeddable)continue;
+    doneCount++;
+    if(totalToRasterize>1)showToast(`Rasterizing document ${doneCount} of ${totalToRasterize}...`,'');
+    try{
+      const resp=await fetch(`/api/documents/${doc.id}/rasterize?pin=${PIN}`);
+      if(!resp.ok){
+        rasterFailures.push({id:doc.id,filename:doc.filename,reason:`HTTP ${resp.status}`});
+        continue;
+      }
+      const data=await resp.json();
+      if(data.pages&&data.pages.length>0)docPages[doc.id]=data.pages;
+      else rasterFailures.push({id:doc.id,filename:doc.filename,reason:'no pages returned'});
+    }catch(e){
+      rasterFailures.push({id:doc.id,filename:doc.filename,reason:e.message});
     }
   }
+
+  // Helper: render all pages of a document inline as <img> tags.
+  // Returns HTML string. If pages weren't loaded, returns a "missing" note.
+  const embedDoc=(doc,extraLabel='')=>{
+    if(!doc)return '';
+    const label=doc.filename+(extraLabel||'');
+    const pages=docPages[doc.id];
+    if(pages&&pages.length>0){
+      let h=`<p style="font-size:9px;color:#666;margin:4px 0">${label}${pages.length>1?` — ${pages.length} pages`:''}</p>`;
+      for(let i=0;i<pages.length;i++){
+        const pageTag=pages.length>1?`<div style="font-size:8px;color:#999;text-align:right;margin-top:4px">Page ${i+1} of ${pages.length}</div>`:'';
+        h+=`<div class="doc-embed">${pageTag}<img src="${pages[i]}" alt="${label} p${i+1}"></div>`;
+      }
+      return h;
+    }
+    // Fell through rasterization — still show what was uploaded
+    const upDate=new Date(doc.uploaded_at).toLocaleDateString();
+    return `<div class="doc-note">📄 <strong>${label}</strong> — uploaded ${upDate}. (Could not embed inline — available for download from the Documents tab.)</div>`;
+  };
+
+  // Helper: for a list of docs, render each inline (single function covers all 6 embed sites)
+  const embedDocs=(docList,options={})=>{
+    if(!docList||!docList.length){
+      return options.missingNote
+        ? `<div class="doc-note">⚠️ ${options.missingNote}</div>`
+        : '';
+    }
+    let h='';
+    if(options.heading)h+=`<h4>${options.heading}</h4>`;
+    for(const d of docList){
+      const extra=options.centerFromMeta&&d.metadata?.center?` (${cl(d.metadata.center)})`:'';
+      h+=embedDoc(d,extra);
+    }
+    return h;
+  };
 
   const w=window.open('','_blank','width=1000,height=800');
   let html=`<!DOCTYPE html><html><head><title>Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</title>
@@ -2252,8 +2307,27 @@ async function printMonthlyPackage(mk){
       .x-counted{color:#2D7D46;font-weight:700}
       .x-excluded{color:#C0392B;font-weight:900;text-decoration:line-through;background:#FFEBEE}
       .empty-cell{color:#ddd}
-      @media print{body{padding:10px;font-size:10px}h1{font-size:14px}h2{font-size:12px;padding:4px 8px}.page-break{page-break-before:always}}
-    </style></head><body>`;
+      @media print{body{padding:10px;font-size:10px}h1{font-size:14px}h2{font-size:12px;padding:4px 8px}.page-break{page-break-before:always}.cacfp-toolbar{display:none !important}}
+      .cacfp-toolbar{position:sticky;top:0;z-index:1000;background:#1B2A4A;color:#fff;padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #C5972C;margin:-20px -20px 16px -20px;box-shadow:0 2px 8px rgba(0,0,0,0.15);font-family:Arial,sans-serif}
+      .cacfp-toolbar .tb-title{font-size:12px;font-weight:600}
+      .cacfp-toolbar .tb-actions{display:flex;gap:8px}
+      .cacfp-toolbar button{padding:6px 14px;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit}
+      .cacfp-toolbar .btn-print{background:#C5972C;color:#1B2A4A}
+      .cacfp-toolbar .btn-print:hover{background:#D9AA3E}
+      .cacfp-toolbar .btn-archive{background:#fff;color:#1B2A4A}
+      .cacfp-toolbar .btn-archive:hover{background:#F0F4F8}
+      .cacfp-toolbar .btn-archive:disabled{background:#2D7D46;color:#fff;cursor:default;opacity:1}
+      .cacfp-toolbar .btn-close{background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.4)}
+      .cacfp-toolbar .btn-close:hover{background:rgba(255,255,255,0.1)}
+    </style></head><body>
+    <div class="cacfp-toolbar" id="cacfpToolbar" data-fy="${activeFY.id}" data-mk="${mk}" data-pin="${PIN}">
+      <div class="tb-title">📦 Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</div>
+      <div class="tb-actions">
+        <button class="btn-print" onclick="window.print()">🖨️ Print</button>
+        <button class="btn-archive" id="cacfpArchiveBtn" onclick="cacfpArchive()">📦 Save to Archive</button>
+        <button class="btn-close" onclick="window.close()">✕ Close</button>
+      </div>
+    </div>`;
 
   // ── COVER PAGE ──
   html+=`<h1>The Children's Center, Inc.</h1>
@@ -2279,10 +2353,8 @@ async function printMonthlyPackage(mk){
   // ══════════════════════════════════════════════════
   html+=`<h2 class="page-break">1. CACFP Claim Submission</h2>`;
   const claimDoc=mDocs.find(d=>d.doc_type==='claims_listing');
-  if(claimDoc&&docImages[claimDoc.id]){
-    html+=`<div class="doc-embed"><img src="${docImages[claimDoc.id]}" alt="Claims Listing"></div>`;
-  }else if(claimDoc){
-    html+=`<div class="doc-note">📄 Claims Listing uploaded: <strong>${claimDoc.filename}</strong> (${new Date(claimDoc.uploaded_at).toLocaleDateString()})<br>PDF documents must be printed separately from the Documents tab.</div>`;
+  if(claimDoc){
+    html+=embedDoc(claimDoc);
   }else{
     html+=`<div class="doc-note">⚠️ Claims Listing screenshot not yet uploaded.</div>`;
   }
@@ -2357,16 +2429,11 @@ async function printMonthlyPackage(mk){
   // Uploaded staff time distribution documents + T&A forms
   const staffDocs=mDocs.filter(d=>{const dt=d.doc_type||'';
     return dt.startsWith('time_distribution_fs')||dt.startsWith('time_distribution_admin')||dt.startsWith('batch_time_forms')||dt==='ta_form'||dt==='staff_package'||dt==='playground_staff_hours';});
-  if(staffDocs.length>0){
-    html+=`<h4>Uploaded Time & Attendance Documents</h4>`;
-    for(const sd of staffDocs){
-      const centerLabel=sd.metadata?.center?` (${cl(sd.metadata.center)})`:'';
-      if(docImages[sd.id])html+=`<p style="font-size:9px;color:#666;margin:4px 0">${sd.filename}${centerLabel}</p><div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
-      else html+=`<div class="doc-note">📄 ${sd.filename}${centerLabel} — ${sd.doc_type} — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}. Print this document separately from the Documents tab.</div>`;
-    }
-  }else{
-    html+=`<div class="doc-note">⚠️ No Time & Attendance documents uploaded for this month yet.</div>`;
-  }
+  html+=embedDocs(staffDocs,{
+    heading:staffDocs.length>0?'Uploaded Time & Attendance Documents':null,
+    centerFromMeta:true,
+    missingNote:'No Time & Attendance documents uploaded for this month yet.'
+  });
   // Staff cost totals from merged T&A data
   if(taStaffData.length>0){
     html+=`<h4>Staff Cost Summary</h4>
@@ -2408,8 +2475,12 @@ async function printMonthlyPackage(mk){
     if(attDocs.length>0){
       html+=`<h4>Uploaded Attendance Overview — ${cl(c)}</h4>`;
       for(const ad of attDocs){
-        if(docImages[ad.id])html+=`<p style="font-size:9px;color:#666">${ad.filename}</p><div class="doc-embed"><img src="${docImages[ad.id]}" alt="${ad.filename}"></div>`;
-        else html+=`<div class="doc-note">📄 ${ad.filename} — uploaded ${new Date(ad.uploaded_at).toLocaleDateString()}. This is a CSV file — the extracted data is shown below. Original file available for download from the Documents tab.</div>`;
+        if(docPages[ad.id]){
+          html+=embedDoc(ad);
+        }else{
+          // CSV: data is already shown as extracted tables below; just note the source file.
+          html+=`<div class="doc-note">📄 <strong>${ad.filename}</strong> — uploaded ${new Date(ad.uploaded_at).toLocaleDateString()}. Source CSV — the extracted data is shown in tables below.</div>`;
+        }
       }
     }else{
       html+=`<div class="doc-note">⚠️ No Attendance Overview uploaded for ${cl(c)} yet.</div>`;
@@ -2466,8 +2537,11 @@ async function printMonthlyPackage(mk){
     if(mealDocs.length>0){
       html+=`<h4>Uploaded CACFP Detailed Report — ${cl(c)}</h4>`;
       for(const md of mealDocs){
-        if(docImages[md.id])html+=`<p style="font-size:9px;color:#666">${md.filename}</p><div class="doc-embed"><img src="${docImages[md.id]}" alt="${md.filename}"></div>`;
-        else html+=`<div class="doc-note">📄 ${md.filename} — uploaded ${new Date(md.uploaded_at).toLocaleDateString()}. This is a CSV file — the adjusted daily meal counts extracted from this report are shown below. Original file available for download from the Documents tab.</div>`;
+        if(docPages[md.id]){
+          html+=embedDoc(md);
+        }else{
+          html+=`<div class="doc-note">📄 <strong>${md.filename}</strong> — uploaded ${new Date(md.uploaded_at).toLocaleDateString()}. Source CSV — the adjusted daily meal counts extracted from this report are shown in the table below.</div>`;
+        }
       }
     }else{
       html+=`<div class="doc-note">⚠️ No CACFP Detailed report uploaded for ${cl(c)} yet.</div>`;
@@ -2562,8 +2636,7 @@ async function printMonthlyPackage(mk){
     if(cdcDocs.length>0){
       html+=`<h4>Uploaded CDC Statement(s) — ${cl(c)} (${cdcDocs.length} document${cdcDocs.length>1?'s':''})</h4>`;
       for(const sd of cdcDocs){
-        if(docImages[sd.id])html+=`<p style="font-size:9px;color:#666">${sd.filename}</p><div class="doc-embed"><img src="${docImages[sd.id]}" alt="${sd.filename}"></div>`;
-        else html+=`<div class="doc-note">📄 ${sd.filename} — uploaded ${new Date(sd.uploaded_at).toLocaleDateString()}. This is a PDF — the eligibility data extracted from this document is shown below. Original file available for download from the Documents tab.</div>`;
+        html+=embedDoc(sd);
       }
     }else{
       html+=`<div class="doc-note">⚠️ No CDC Statement uploaded for ${cl(c)} yet.</div>`;
@@ -2596,25 +2669,76 @@ async function printMonthlyPackage(mk){
       ${fc.receipts.map(r=>`<tr><td>${r.filename}</td><td>${r.vendor||''}</td><td style="text-align:right">${fmt(r.amount||0)}</td></tr>`).join('')}
       <tr class="grand-row"><td colspan="2">Total Food Costs</td><td style="text-align:right">${fmt(fc.total||0)}</td></tr></table>`;
   }
-  // Uploaded receipt images
-  const receiptDocs=mDocs.filter(d=>d.doc_type==='food_receipt');
+  // Uploaded receipt images AND invoice PDFs
+  const receiptDocs=mDocs.filter(d=>d.doc_type==='food_receipt'||d.doc_type==='food_receipts');
   if(receiptDocs.length>0){
-    html+=`<h4>Uploaded Receipts</h4>`;
+    html+=`<h4>Uploaded Receipts & Invoices (${receiptDocs.length})</h4>`;
     for(const rd of receiptDocs){
-      if(docImages[rd.id])html+=`<div class="doc-embed"><img src="${docImages[rd.id]}" alt="${rd.filename}" style="max-height:400px"></div>`;
-      else html+=`<div class="doc-note">📄 ${rd.filename} — print separately from Documents tab</div>`;
+      html+=embedDoc(rd);
     }
+  }
+
+  // Rasterization failures summary (so user can see if something didn't embed inline)
+  if(rasterFailures.length>0){
+    html+=`<div style="margin-top:20px;padding:10px;border:1px solid #E65100;background:#FFF8E1;border-radius:4px;font-size:10px">
+      <strong style="color:#E65100">⚠️ ${rasterFailures.length} document(s) could not be embedded inline:</strong>
+      <ul style="margin:6px 0 0 20px;padding:0">
+        ${rasterFailures.map(f=>`<li>${f.filename} — ${f.reason}</li>`).join('')}
+      </ul>
+      <p style="margin-top:6px;color:#666">These files are still available in the Documents tab for individual download.</p>
+    </div>`;
   }
 
   html+=`<div style="margin-top:30px;text-align:center;color:#718096;font-size:9px;border-top:1px solid #ccc;padding-top:8px">
     Complete CACFP Documentation Package — The Children's Center, Inc. — Sponsor #990004457<br>
     ${ML[mk]} ${fyYear(mk)} — Generated ${new Date().toLocaleString()}<br>
     This document contains uploaded source materials and system-generated analytical reports.
-  </div></body></html>`;
+  </div>
+  <script>
+    async function cacfpArchive(){
+      const tb=document.getElementById('cacfpToolbar');
+      const btn=document.getElementById('cacfpArchiveBtn');
+      const fy=tb.dataset.fy, mk=tb.dataset.mk, pin=tb.dataset.pin;
+      const origLabel=btn.textContent;
+      btn.disabled=true; btn.textContent='⏳ Saving...';
+      try{
+        // Clone the document but strip the toolbar so archived copies don't contain it
+        const clone=document.documentElement.cloneNode(true);
+        const clonedTb=clone.querySelector('#cacfpToolbar');
+        if(clonedTb)clonedTb.remove();
+        const clonedScripts=clone.querySelectorAll('script');
+        clonedScripts.forEach(s=>s.remove());
+        const htmlContent='<!DOCTYPE html>\\n'+clone.outerHTML;
+
+        const now=new Date();
+        const ts=now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+'_'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
+        const filename='CACFP_Package_'+mk+'_'+ts+'.html';
+
+        const resp=await fetch('/api/archive-package',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','x-access-pin':pin},
+          body:JSON.stringify({
+            fiscal_year_id:parseInt(fy), month_key:mk, html:htmlContent, filename:filename,
+            metadata:{generated_at:now.toISOString(),byte_size:htmlContent.length}
+          })
+        });
+        if(!resp.ok){
+          const err=await resp.json().catch(()=>({error:'HTTP '+resp.status}));
+          throw new Error(err.error||'Archive failed');
+        }
+        const saved=await resp.json();
+        btn.textContent='✅ Archived (#'+saved.id+')';
+        btn.style.background='#2D7D46'; btn.style.color='#fff';
+      }catch(e){
+        btn.disabled=false; btn.textContent=origLabel;
+        alert('Could not archive: '+e.message);
+      }
+    }
+  <\/script>
+  </body></html>`;
 
   w.document.write(html);w.document.close();
-  showToast('✅ Complete documentation package ready!','ok');
-  setTimeout(()=>w.print(),1000);
+  showToast('✅ Complete documentation package ready! Use the toolbar to Print or Archive.','ok');
 }
 
 function printMealAttendanceSheet(mk,center){
