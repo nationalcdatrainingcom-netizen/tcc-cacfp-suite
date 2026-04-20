@@ -665,12 +665,16 @@ function navTo(page){
   if(page==='monitoring'){loadMonitoringList();loadScheduleView();loadTrainingList();initCAFYSelect();loadCorrectiveActions();loadReviewPrepDashboard();}
 }
 
-function monthSubTab(tab){
+async function monthSubTab(tab){
   currentSubTab=tab;
   document.querySelectorAll('.sub-tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.sub-panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.sub-tab').forEach(t=>{if(t.onclick?.toString().includes("'"+tab+"'"))t.classList.add('active');});
   document.getElementById('sp-'+tab)?.classList.add('active');
+  // Refresh documents list on the Documents sub-tab so newly-archived packages appear
+  if(tab==='monthdocs'&&activeFY){
+    try{documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);}catch(e){}
+  }
   renderSubPanel();
 }
 
@@ -2055,7 +2059,8 @@ function renderMonthDocs(){
 
   // Categorize docs for display
   const taForms=mDocs.filter(d=>d.doc_type==='ta_form');
-  const otherDocs=mDocs.filter(d=>d.doc_type!=='ta_form'&&!d.doc_type?.startsWith('generated_'));
+  const archivedPackages=mDocs.filter(d=>d.doc_type==='archived_monthly_package');
+  const otherDocs=mDocs.filter(d=>d.doc_type!=='ta_form'&&d.doc_type!=='archived_monthly_package'&&!d.doc_type?.startsWith('generated_'));
 
   document.getElementById('sp-monthdocs').innerHTML=`
     <div class="card"><div class="card-hdr"><h3>✅ Month Completion — ${ML[m]} ${fyYear(m)}</h3>
@@ -2090,6 +2095,19 @@ function renderMonthDocs(){
         <span class="doc-date">${new Date(d.uploaded_at).toLocaleDateString()}</span>
         <div class="doc-actions"><a href="/api/documents/${d.id}/download?pin=${PIN}" class="btn btn-sm btn-outline" target="_blank">⬇️</a>
         <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`).join('')}</ul>
+    </div></div>`:''}
+
+    ${archivedPackages.length>0?`<div class="card"><div class="card-hdr"><h3>📦 Archived CACFP Packages (${archivedPackages.length})</h3></div><div class="card-body">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Saved copies of the Complete CACFP Documentation for this month. Each archive is a self-contained HTML file — open it any time to reprint exactly as it was when saved.</p>
+      <ul class="doc-list">${archivedPackages.map(d=>{
+        const sz=d.metadata?.byte_size?Math.round(d.metadata.byte_size/1024)+' KB':'';
+        const ts=d.metadata?.generated_at?new Date(d.metadata.generated_at).toLocaleString():new Date(d.uploaded_at).toLocaleString();
+        return `<li><span style="font-size:1.2rem">📦</span><span class="doc-name">${d.filename}</span>
+          <span style="font-size:.75rem;color:#fff;background:#2D7D46;padding:2px 8px;border-radius:10px">Archive</span>
+          <span class="doc-date" title="Saved ${ts}">${ts}${sz?' · '+sz:''}</span>
+          <div class="doc-actions"><a href="/api/archived-packages/${d.id}/view?pin=${PIN}" class="btn btn-sm btn-primary" target="_blank">📂 Open</a>
+          <button class="btn btn-sm btn-danger" onclick="deleteArchive(${d.id})" style="padding:4px 8px">🗑️</button></div></li>`;
+      }).join('')}</ul>
     </div></div>`:''}
       <div style="margin-top:12px"><div class="upload-zone"><input type="file" onchange="uploadMonthDoc('${m}','other',this)"><div class="uz-icon">📎</div><div class="uz-label">Upload additional document</div></div></div>
     </div></div>
@@ -2950,6 +2968,18 @@ function deleteDoc(id){
       <p style="margin-top:8px;font-size:.85rem">This action cannot be undone. You will need to re-upload and re-enter data.</p>`
     :'<strong>⚠️ This action cannot be undone.</strong> The document will be permanently removed.';
   openModal('deleteConfirmModal');
+}
+
+async function deleteArchive(id){
+  const doc=documents.find(d=>d.id===id);
+  if(!doc)return;
+  if(!confirm(`Delete this archived package?\n\n${doc.filename}\n\nThis only removes the saved copy — data in the system is not affected. You can generate a new archive at any time.`))return;
+  try{
+    await api(`/api/documents/${id}`,{method:'DELETE'});
+    documents=documents.filter(d=>d.id!==id);
+    renderMonthDocs();
+    showToast('🗑️ Archive deleted','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
 }
 
 function deleteProgDocConfirm(id){
