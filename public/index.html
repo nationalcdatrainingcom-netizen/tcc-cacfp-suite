@@ -2226,8 +2226,41 @@ function viewGeneratedReport(type,mk){
 }
 
 async function printMonthlyPackage(mk){
+  // Open the preview window IMMEDIATELY, before any awaits — otherwise the popup blocker
+  // will block us because the user's click gesture expired during rasterization.
+  const w=window.open('','_blank','width=1000,height=800');
+  if(!w){
+    showToast('❌ Popup blocked. Please allow popups for this site and try again.','err');
+    alert('The preview window was blocked by your browser.\n\nAllow popups for this site (usually a popup-blocker icon appears in the address bar), then click "Complete CACFP Documentation" again.');
+    return;
+  }
+  // Show a loading page immediately so user knows something is happening
+  w.document.write(`<!DOCTYPE html><html><head><title>Preparing CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</title>
+    <style>
+      body{font-family:Arial,sans-serif;background:#F4F6F9;color:#1A202C;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}
+      .loader{background:#fff;padding:32px 40px;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.1);max-width:480px;text-align:center}
+      .loader h1{color:#1B2A4A;font-size:20px;margin:0 0 8px}
+      .loader .sub{color:#718096;font-size:13px;margin-bottom:20px}
+      .loader .spinner{border:4px solid #E2E8F0;border-top:4px solid #C5972C;border-radius:50%;width:40px;height:40px;margin:0 auto 16px;animation:spin 1s linear infinite}
+      @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+      .loader .progress{font-size:14px;color:#1B2A4A;font-weight:600;margin-top:12px;min-height:20px}
+    </style></head><body>
+    <div class="loader">
+      <div class="spinner"></div>
+      <h1>Preparing Complete CACFP Documentation</h1>
+      <div class="sub">${ML[mk]} ${fyYear(mk)} · Please keep this window open while we build your report.</div>
+      <div class="progress" id="cacfpProgress">Starting...</div>
+    </div>
+    </body></html>`);
+  w.document.close();
+
   showToast('Building complete CACFP documentation package...','');
   cleanupAttendanceData(mk);
+
+  // Helper to update the loading screen's progress text
+  const setProgress=(msg)=>{
+    try{const el=w.document.getElementById('cacfpProgress'); if(el)el.textContent=msg;}catch(e){}
+  };
 
   // Fetch uploaded documents (PDFs + images) via the rasterize endpoint.
   // Each entry becomes an array of page data URLs so PDFs embed page-by-page
@@ -2243,12 +2276,16 @@ async function printMonthlyPackage(mk){
   }).length;
 
   for(const doc of mDocs){
+    // Bail if user closed the preview window
+    if(w.closed){showToast('Preview window closed — report cancelled','err');return;}
     const mt=(doc.mime_type||'').toLowerCase();
     const fn=(doc.filename||'').toLowerCase();
     const isEmbeddable=mt==='application/pdf'||fn.endsWith('.pdf')||mt.startsWith('image/');
     if(!isEmbeddable)continue;
     doneCount++;
-    if(totalToRasterize>1)showToast(`Rasterizing document ${doneCount} of ${totalToRasterize}...`,'');
+    const progressMsg=totalToRasterize>1?`Rasterizing document ${doneCount} of ${totalToRasterize}...`:'Rasterizing document...';
+    setProgress(progressMsg);
+    if(totalToRasterize>1)showToast(progressMsg,'');
     try{
       const resp=await fetch(`/api/documents/${doc.id}/rasterize?pin=${PIN}`);
       if(!resp.ok){
@@ -2262,6 +2299,8 @@ async function printMonthlyPackage(mk){
       rasterFailures.push({id:doc.id,filename:doc.filename,reason:e.message});
     }
   }
+
+  setProgress('Assembling report...');
 
   // Helper: render all pages of a document inline as <img> tags.
   // Returns HTML string. If pages weren't loaded, returns a "missing" note.
@@ -2297,8 +2336,6 @@ async function printMonthlyPackage(mk){
     }
     return h;
   };
-
-  const w=window.open('','_blank','width=1000,height=800');
   let html=`<!DOCTYPE html><html><head><title>Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</title>
     <style>
       *{margin:0;padding:0;box-sizing:border-box}
@@ -2755,7 +2792,10 @@ async function printMonthlyPackage(mk){
   <\/script>
   </body></html>`;
 
-  w.document.write(html);w.document.close();
+  if(w.closed){showToast('Preview window was closed — report not shown','err');return;}
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
   showToast('✅ Complete documentation package ready! Use the toolbar to Print or Archive.','ok');
 }
 
