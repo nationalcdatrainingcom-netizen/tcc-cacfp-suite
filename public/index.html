@@ -2438,6 +2438,24 @@ async function printMonthlyPackage(mk){
     fsCost=parseFloat(stData?.food_service_cost)||0;
     admCost=parseFloat(stData?.admin_cost)||0;
   }
+
+  // Fetch per-staff DAILY T&A detail — only for staff with CACFP activity (FS or Admin > 0).
+  // These will be rendered as full MDE T&A forms inline in Section 3.
+  const staffDailyData={}; // staffId → { staff, days: [...] }
+  const cacfpStaff=taStaffData.filter(s=>(s.totalFS>0)||(s.totalAdm>0));
+  let staffDone=0;
+  for(const s of cacfpStaff){
+    if(w.closed){showToast('Preview window closed — report cancelled','err');return;}
+    staffDone++;
+    setProgress(`Loading T&A detail: ${s.name} (${staffDone} of ${cacfpStaff.length})...`);
+    try{
+      const detail=await api(`/api/merged-time/${s.id}?fiscal_year_id=${activeFY.id}&month_key=${mk}`);
+      staffDailyData[s.id]={staff:detail.staff||s,days:detail.days||[],signature:detail.signature};
+    }catch(e){
+      console.warn(`Could not fetch T&A detail for ${s.name}:`,e);
+      staffDailyData[s.id]=null;
+    }
+  }
   const benefits=fsCost*BEN_RATE;
   const foodCost=parseFloat(fc.total)||0;
   const totalExp=foodCost+fsCost+benefits+admCost;
@@ -2481,14 +2499,28 @@ async function printMonthlyPackage(mk){
   // 3. STAFF COSTS
   // ══════════════════════════════════════════════════
   html+=`<h2 class="page-break">3. Staff Costs</h2>`;
-  // Uploaded staff time distribution documents + T&A forms
-  const staffDocs=mDocs.filter(d=>{const dt=d.doc_type||'';
-    return dt.startsWith('time_distribution_fs')||dt.startsWith('time_distribution_admin')||dt.startsWith('batch_time_forms')||dt==='ta_form'||dt==='staff_package'||dt==='playground_staff_hours';});
-  html+=embedDocs(staffDocs,{
-    heading:staffDocs.length>0?'Uploaded Time & Attendance Documents':null,
-    centerFromMeta:true,
-    missingNote:'No Time & Attendance documents uploaded for this month yet.'
+  // Uploaded staff documents we want to EMBED:
+  //   - PDFs/images of scanned time cards or signed forms
+  //   - NOT Word docs (ta_form, staff_package) — we render those inline below as HTML tables
+  //   - NOT raw data CSVs (playground_staff_hours, batch_time_forms) — data is already in the tables below
+  const staffDocs=mDocs.filter(d=>{
+    const dt=d.doc_type||'';
+    const fn=(d.filename||'').toLowerCase();
+    // Only keep docs matching staff categories
+    const isStaffCategory=dt.startsWith('time_distribution_fs')||dt.startsWith('time_distribution_admin')||dt==='ta_form'||dt==='staff_package'||dt==='playground_staff_hours'||dt.startsWith('batch_time_forms');
+    if(!isStaffCategory)return false;
+    // Exclude raw CSVs (data already summarized in tables below)
+    if(fn.endsWith('.csv'))return false;
+    // Exclude generated Word docs (we render the same data inline as HTML tables below)
+    if(fn.endsWith('.docx')||dt==='ta_form'||dt==='staff_package')return false;
+    return true;
   });
+  if(staffDocs.length>0){
+    html+=embedDocs(staffDocs,{
+      heading:'Uploaded Time & Attendance Source Documents',
+      centerFromMeta:true
+    });
+  }
   // Staff cost totals from merged T&A data
   if(taStaffData.length>0){
     html+=`<h4>Staff Cost Summary</h4>
@@ -2514,6 +2546,122 @@ async function printMonthlyPackage(mk){
       }
       html+=`<tr class="total-row"><td colspan="3">Total ${cl(center)}</td><td>${fmt(cFS)}</td><td></td><td>${fmt(cAdm)}</td></tr></table>`;
     }
+
+    // ═══════════════════════════════════════════════════
+    // Inline MDE T&A Forms — one per staff member with CACFP activity
+    // ═══════════════════════════════════════════════════
+    if(cacfpStaff.length>0){
+      // Calculate number of days in target month for the form grid
+      const MN={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      const taYear=fyYear(mk);
+      const taMonthIdx=MN[mk];
+      const numDays=new Date(taYear,taMonthIdx+1,0).getDate();
+      const monthLabel=ML[mk]+' '+taYear;
+
+      html+=`<h4 class="page-break" style="margin-top:20px">Individual MDE Time & Attendance Forms (${cacfpStaff.length})</h4>
+        <p style="font-size:10px;color:#666;margin-bottom:10px">One form per staff member with CACFP hours (Food Service or Administrative). Matches the MDE CACFP Time and Attendance / Time Distribution format.</p>`;
+
+      // Sort: Niles first, then Peace, alphabetical within each
+      const sortedStaff=[...cacfpStaff].sort((a,b)=>{
+        if(a.center!==b.center)return a.center==='niles'?-1:1;
+        return a.name.localeCompare(b.name);
+      });
+
+      for(let si=0;si<sortedStaff.length;si++){
+        const s=sortedStaff[si];
+        const detail=staffDailyData[s.id];
+        const rate=parseFloat(s.hourly_rate)||0;
+
+        // Build day-of-month lookup from detail.days
+        const dayMap={};
+        if(detail&&detail.days){
+          for(const d of detail.days){dayMap[d.day]=d;}
+        }
+
+        const sig=detail?.signature||{};
+
+        // Page break before each form (except the first, which inherits from the section heading)
+        const pageBreakClass=si===0?'':'page-break';
+
+        html+=`<div class="${pageBreakClass}" style="margin-top:${si===0?'8px':'0'}">
+          <div style="text-align:center;font-size:10px;color:#666;margin-bottom:2px">Michigan Department of Education</div>
+          <div style="text-align:center;font-size:10px;color:#666;margin-bottom:2px">Child and Adult Care Food Program</div>
+          <div style="text-align:center;font-size:14px;font-weight:bold;color:#1B2A4A;margin-bottom:12px">Time and Attendance / Time Distribution</div>
+          <div style="margin-bottom:8px;font-size:11px">
+            <strong>Name:</strong> <span style="border-bottom:1px solid #333;padding:0 40px 0 4px">${s.name}</span>
+            &nbsp;&nbsp;&nbsp;
+            <strong>Month/Year:</strong> <span style="border-bottom:1px solid #333;padding:0 40px 0 4px">${monthLabel}</span>
+            &nbsp;&nbsp;&nbsp;
+            <strong>Center:</strong> ${cl(s.center)}
+          </div>
+          <table style="width:100%;font-size:8px;border-collapse:collapse">
+            <thead><tr>
+              <th style="background:#1B2A4A;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:5%">Date</th>
+              <th style="background:#1B2A4A;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:11%">Starting<br>Time</th>
+              <th style="background:#1B2A4A;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:11%">Ending<br>Time</th>
+              <th style="background:#1B2A4A;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:13%">Total Hrs<br>Worked</th>
+              <th style="background:#1B2A4A;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:13%">Total Hrs<br>Absent</th>
+              <th style="background:#1B2A4A;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:15%">Non-CACFP<br>Hours</th>
+              <th style="background:#1a4a7a;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:15%">CACFP Hrs<br>(Food Svc)</th>
+              <th style="background:#1B2A4A;color:#fff;padding:4px 2px;border:1px solid #1B2A4A;text-align:center;width:17%">CACFP Hrs<br>(Admin)</th>
+            </tr></thead><tbody>`;
+
+        let tW=0,tA=0,tNC=0,tFS=0,tAd=0;
+        for(let d=1;d<=numDays;d++){
+          const dd=dayMap[d];
+          const worked=parseFloat(dd?.total_worked)||0;
+          const absent=parseFloat(dd?.total_absent)||0;
+          const fsH=parseFloat(dd?.food_service_hours)||0;
+          const admH=parseFloat(dd?.admin_hours)||0;
+          const nonCACFP=Math.max(0,worked-fsH-admH);
+          tW+=worked;tA+=absent;tNC+=nonCACFP;tFS+=fsH;tAd+=admH;
+          const bg=(dd)?'':'background:#F8F8F8';
+          const fsBg=fsH>0?'background:#E6F1FB':bg;
+          const admBg=admH>0?'background:#E6F1FB':bg;
+          const fmtN=n=>n>0?n.toFixed(2):'';
+          html+=`<tr>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;font-weight:bold;${bg}">${d}</td>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;${bg}">${dd?.start_time||''}</td>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;${bg}">${dd?.end_time||''}</td>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;${bg}">${fmtN(worked)}</td>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;${bg}">${fmtN(absent)}</td>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;${bg}">${fmtN(nonCACFP)}</td>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;${fsBg}">${fmtN(fsH)}</td>
+            <td style="border:1px solid #ccc;padding:2px;text-align:center;${admBg}">${fmtN(admH)}</td>
+          </tr>`;
+        }
+
+        html+=`<tr style="background:#E0E0E0;font-weight:bold">
+          <td style="border:1px solid #999;padding:3px" colspan="2">Totals</td>
+          <td style="border:1px solid #999;padding:3px"></td>
+          <td style="border:1px solid #999;padding:3px;text-align:center">${tW.toFixed(2)}</td>
+          <td style="border:1px solid #999;padding:3px;text-align:center">${tA.toFixed(2)}</td>
+          <td style="border:1px solid #999;padding:3px;text-align:center">${tNC.toFixed(2)}</td>
+          <td style="border:1px solid #999;padding:3px;text-align:center;background:#D4E8FB">${tFS.toFixed(2)}</td>
+          <td style="border:1px solid #999;padding:3px;text-align:center">${tAd.toFixed(2)}</td>
+        </tr></tbody></table>
+
+        <div style="margin-top:10px;font-size:10px">
+          <div style="margin-bottom:4px">Total CACFP Administrative Time: <strong>${tAd.toFixed(2)}</strong> hrs × Hourly Rate <strong>$${rate.toFixed(2)}</strong> = Administrative Costs <strong>${fmt(tAd*rate)}</strong></div>
+          <div style="margin-bottom:12px">Total CACFP Food Service Labor Time: <strong>${tFS.toFixed(2)}</strong> hrs × Hourly Rate <strong>$${rate.toFixed(2)}</strong> = Food Service Costs <strong>${fmt(tFS*rate)}</strong></div>
+        </div>
+
+        <div style="font-size:10px;margin-top:16px">
+          <div style="margin-bottom:8px"><strong>Employee Signature:</strong>
+            <span style="border-bottom:1px solid #333;padding:0 80px 0 4px;font-style:${sig.employee_signature?'italic':'normal'}">${sig.employee_signature||''}</span>
+            &nbsp;&nbsp;<strong>Date:</strong>
+            <span style="border-bottom:1px solid #333;padding:0 30px 0 4px">${sig.employee_signed_at?new Date(sig.employee_signed_at).toLocaleDateString():''}</span>
+          </div>
+          <div><strong>Supervisor Signature (certification):</strong>
+            <span style="border-bottom:1px solid #333;padding:0 80px 0 4px;font-style:${sig.supervisor_signature?'italic':'normal'}">${sig.supervisor_signature||''}</span>
+            &nbsp;&nbsp;<strong>Date:</strong>
+            <span style="border-bottom:1px solid #333;padding:0 30px 0 4px">${sig.supervisor_signed_at?new Date(sig.supervisor_signed_at).toLocaleDateString():''}</span>
+          </div>
+        </div>
+        <div style="text-align:right;font-size:8px;color:#999;margin-top:8px">Rev. 3/08</div>
+        </div>`;
+      }
+    }
   }else{
     html+=`<div class="doc-note">⚠️ No staff time data for this month. Staff enter hours in the Time Entry app.</div>`;
   }
@@ -2525,10 +2673,14 @@ async function printMonthlyPackage(mk){
   for(const c of ['niles','peace']){
     const a=att[c];
     html+=`<h2 class="page-break">${sectionNum}. Attendance & ADA — ${cl(c)}</h2>`;
-    // ALL uploaded attendance documents for this center
-    const attDocs=mDocs.filter(d=>d.doc_type===('attendance_csv_'+c));
+    // ALL uploaded attendance documents for this center (both the monthly overview
+    // AND the daily sign-in/out CSV from Playground count as attendance source files)
+    const attDocs=mDocs.filter(d=>
+      d.doc_type===('attendance_csv_'+c) ||
+      d.doc_type===('child_attendance_daily_'+c)
+    );
     if(attDocs.length>0){
-      html+=`<h4>Uploaded Attendance Overview — ${cl(c)}</h4>`;
+      html+=`<h4>Uploaded Attendance Documents — ${cl(c)}</h4>`;
       for(const ad of attDocs){
         if(docPages[ad.id]){
           html+=embedDoc(ad);
@@ -2538,7 +2690,7 @@ async function printMonthlyPackage(mk){
         }
       }
     }else{
-      html+=`<div class="doc-note">⚠️ No Attendance Overview uploaded for ${cl(c)} yet.</div>`;
+      html+=`<div class="doc-note">⚠️ No attendance documents uploaded for ${cl(c)} yet.</div>`;
     }
     if(a){
       html+=`<h4>ADA Calculation</h4>
