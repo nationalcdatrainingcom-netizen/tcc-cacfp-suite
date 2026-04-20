@@ -242,6 +242,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <div class="nav-item" onclick="navTo('children')"><span class="icon">👶</span> Children</div>
     <div class="nav-item" onclick="navTo('revenue')"><span class="icon">💰</span> Revenue</div>
     <div class="nav-item" onclick="navTo('documents')"><span class="icon">🗂️</span> Docs</div>
+    <div class="nav-item" onclick="navTo('archives')"><span class="icon">📦</span> Archives</div>
     <div class="nav-item" onclick="navTo('yer')"><span class="icon">📊</span> YER</div>
     <div class="nav-item" onclick="navTo('monitoring')"><span class="icon">🔍</span> Monitoring</div>
   </div>
@@ -250,6 +251,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <nav class="sidebar">
       <div class="nav-item active" onclick="navTo('dashboard')"><span class="icon">🏠</span> Dashboard</div>
       <div class="nav-item" onclick="navTo('monthly')"><span class="icon">📅</span> Monthly Reporting</div>
+      <div class="nav-item" onclick="navTo('archives')"><span class="icon">📦</span> Archived Packages</div>
       <div class="nav-item" onclick="navTo('children')"><span class="icon">👶</span> Children</div>
       <div class="nav-divider"></div>
       <div class="nav-item" onclick="navTo('revenue')"><span class="icon">💰</span> Revenue Tracking</div>
@@ -293,6 +295,16 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div class="sub-panel" id="sp-foodcosts"></div>
         <div class="sub-panel" id="sp-claims"></div>
         <div class="sub-panel" id="sp-monthdocs"></div>
+      </div>
+
+      <!-- ARCHIVED PACKAGES -->
+      <div class="page" id="page-archives">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+          <h2 style="margin:0">📦 Archived CACFP Packages</h2>
+          <button class="btn btn-sm btn-outline" onclick="loadArchivesPage()">🔄 Refresh</button>
+        </div>
+        <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">Saved copies of the Complete CACFP Documentation for each month. Each archive is a self-contained HTML file frozen at the moment it was saved — open it any time to reprint exactly as it was when generated.</p>
+        <div id="archivesBody"><p style="color:var(--muted);text-align:center;padding:20px">Loading archived packages...</p></div>
       </div>
 
       <!-- CHILDREN -->
@@ -764,6 +776,7 @@ function navTo(page){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>{if(n.onclick?.toString().includes("'"+page+"'"))n.classList.add('active');});
   if(page==='monthly')renderMonthlyPage();
+  if(page==='archives')loadArchivesPage();
   if(page==='children')loadChildrenPage();
   if(page==='revenue')renderRevenuePage();
   if(page==='documents')renderProgramDocs();
@@ -793,6 +806,97 @@ async function refreshDocuments(){
     renderSubPanel();
     showToast('🔄 Documents refreshed','ok');
   }catch(e){showToast('Refresh failed: '+e.message,'err');}
+}
+
+// Load and render the dedicated Archives page — all saved Complete CACFP Documentation
+// packages across all months, newest first.
+async function loadArchivesPage(){
+  if(!activeFY)return;
+  const body=document.getElementById('archivesBody');
+  body.innerHTML='<p style="color:var(--muted);text-align:center;padding:20px">Loading archived packages...</p>';
+  try{
+    // Refresh the documents cache so we have the latest
+    documents=await api(`/api/documents?fiscal_year_id=${activeFY.id}`);
+    const archives=documents.filter(d=>d.doc_type==='archived_monthly_package');
+    if(!archives.length){
+      body.innerHTML=`<div class="alert alert-warn" style="margin:0"><span>ℹ️</span><div>
+        <strong>No archived packages yet.</strong><br>
+        <span style="font-size:.9rem">To create one: open Monthly Reporting → select a month → Documents tab → click "🖨️ Complete CACFP Documentation" → in the preview window, click "📦 Save to Archive".</span>
+      </div></div>`;
+      return;
+    }
+    // Group by month_key, sort months newest first (by fiscal year order: Oct..Sep)
+    const MO_ORDER=MO.reduce((o,m,i)=>(o[m]=i,o),{});
+    const byMonth={};
+    for(const d of archives){
+      const mk=d.month_key||'unknown';
+      if(!byMonth[mk])byMonth[mk]=[];
+      byMonth[mk].push(d);
+    }
+    // Sort each month's archives newest first
+    for(const mk in byMonth){
+      byMonth[mk].sort((a,b)=>new Date(b.uploaded_at)-new Date(a.uploaded_at));
+    }
+    // Sort months by fiscal order, newest month first (reverse MO order so Sep shows above Oct within a given FY)
+    const sortedMonths=Object.keys(byMonth).sort((a,b)=>{
+      const ai=MO_ORDER[a]??99;
+      const bi=MO_ORDER[b]??99;
+      // We want newest month first — the most recently-dated archives bubble up
+      const aDate=new Date(byMonth[a][0].uploaded_at);
+      const bDate=new Date(byMonth[b][0].uploaded_at);
+      return bDate-aDate;
+    });
+
+    let html=`<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="padding:10px 14px;background:#e8f5e9;border-radius:8px;text-align:center;min-width:120px">
+        <div style="font-size:1.3rem;font-weight:700;color:var(--success)">${archives.length}</div>
+        <div style="font-size:.75rem;color:var(--muted)">Archives</div>
+      </div>
+      <div style="padding:10px 14px;background:var(--bg);border-radius:8px;text-align:center;min-width:120px">
+        <div style="font-size:1.3rem;font-weight:700">${sortedMonths.length}</div>
+        <div style="font-size:.75rem;color:var(--muted)">Months Covered</div>
+      </div>
+    </div>`;
+
+    for(const mk of sortedMonths){
+      const list=byMonth[mk];
+      const label=mk==='unknown'?'(no month)':ML[mk]+' '+fyYear(mk);
+      html+=`<div class="card" style="margin-bottom:12px"><div class="card-hdr">
+        <h3>📅 ${label}</h3>
+        <span class="badge">${list.length} archive${list.length>1?'s':''}</span>
+      </div><div class="card-body" style="padding:8px 16px"><ul class="doc-list">`;
+      for(const d of list){
+        const sz=d.metadata?.byte_size?Math.round(d.metadata.byte_size/1024)+' KB':'';
+        const ts=d.metadata?.generated_at?new Date(d.metadata.generated_at).toLocaleString():new Date(d.uploaded_at).toLocaleString();
+        html+=`<li>
+          <span style="font-size:1.3rem">📦</span>
+          <span class="doc-name">${d.filename}</span>
+          <span class="doc-date" title="Saved ${ts}">${ts}${sz?' · '+sz:''}</span>
+          <div class="doc-actions">
+            <a href="/api/archived-packages/${d.id}/view?pin=${PIN}" class="btn btn-sm btn-primary" target="_blank">📂 Open</a>
+            <button class="btn btn-sm btn-danger" onclick="deleteArchiveFromPage(${d.id})" style="padding:4px 8px">🗑️</button>
+          </div>
+        </li>`;
+      }
+      html+=`</ul></div></div>`;
+    }
+    body.innerHTML=html;
+  }catch(e){
+    body.innerHTML=`<div class="alert alert-err"><span>❌</span><div>Error: ${e.message}</div></div>`;
+  }
+}
+
+// Delete archive from the dedicated archives page (reloads the page after)
+async function deleteArchiveFromPage(id){
+  const doc=documents.find(d=>d.id===id);
+  if(!doc)return;
+  if(!confirm(`Delete this archived package?\n\n${doc.filename}\n\nThis only removes the saved copy — data in the system is not affected.`))return;
+  try{
+    await api(`/api/documents/${id}`,{method:'DELETE'});
+    documents=documents.filter(d=>d.id!==id);
+    loadArchivesPage();
+    showToast('🗑️ Archive deleted','ok');
+  }catch(e){showToast('Error: '+e.message,'err');}
 }
 
 // Auto-refresh documents whenever the main window regains focus
@@ -2496,6 +2600,17 @@ async function printMonthlyPackage(mk){
     const mt=(doc.mime_type||'').toLowerCase();
     const fn=(doc.filename||'').toLowerCase();
     const isEmbeddable=mt==='application/pdf'||fn.endsWith('.pdf')||mt.startsWith('image/');
+
+    // Word documents can't be embedded inline. Flag them loudly so the user knows
+    // they need to save-as-PDF and re-upload if they want the content in the report.
+    if(!isEmbeddable&&(fn.endsWith('.docx')||fn.endsWith('.doc'))){
+      rasterFailures.push({
+        id:doc.id,
+        filename:doc.filename,
+        reason:'Word document — cannot embed inline. Tip: In Word, use File → Save As → PDF, then re-upload the PDF to this slot (you can delete the .docx version after).'
+      });
+    }
+
     if(!isEmbeddable)continue;
     doneCount++;
     const progressMsg=totalToRasterize>1?`Rasterizing document ${doneCount} of ${totalToRasterize}...`:'Rasterizing document...';
@@ -2560,8 +2675,12 @@ async function printMonthlyPackage(mk){
       }
       return h;
     }
-    // Fell through rasterization — still show what was uploaded
+    // Fell through rasterization — still show what was uploaded, with a specific hint for .docx
     const upDate=new Date(doc.uploaded_at).toLocaleDateString();
+    const fn2=(doc.filename||'').toLowerCase();
+    if(fn2.endsWith('.docx')||fn2.endsWith('.doc')){
+      return `<div class="doc-note">📄 <strong>${label}</strong> — uploaded ${upDate}. <strong style="color:#8D6E00">Word document — cannot embed inline.</strong> Tip: In Word, use File → Save As → PDF, then re-upload the PDF to this slot.</div>`;
+    }
     return `<div class="doc-note">📄 <strong>${label}</strong> — uploaded ${upDate}. (Could not embed inline — available for download from the Documents tab.)</div>`;
   };
 
