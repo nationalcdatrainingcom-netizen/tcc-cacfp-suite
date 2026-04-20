@@ -3130,10 +3130,10 @@ async function printMonthlyPackage(mk){
       const docs=getMenuDocs(center,meal.key);
       if(docs.length>0){
         anyMenus=true;
-        html+=`<h4>${meal.label} Menu</h4>`;
+        html+=`<h4>${cl(center)} — ${meal.label} Menu</h4>`;
         for(const d of docs){
           const isShared=d.doc_type===`menu_${meal.key}`;
-          const note=isShared?' <span style="font-size:9px;color:#666">(shared menu for both centers)</span>':'';
+          const note=isShared?` — ${cl(center)} (shared menu used at both centers)`:` — ${cl(center)}`;
           html+=embedDoc(d,note);
         }
       }else{
