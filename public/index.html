@@ -2501,25 +2501,47 @@ async function printMonthlyPackage(mk){
     const progressMsg=totalToRasterize>1?`Rasterizing document ${doneCount} of ${totalToRasterize}...`:'Rasterizing document...';
     setProgress(progressMsg);
     if(totalToRasterize>1)showToast(progressMsg,'');
-    try{
-      const resp=await fetch(`/api/documents/${doc.id}/rasterize?pin=${PIN}`);
-      if(!resp.ok){
-        // Pull the detailed error message from the response body if available
-        let errDetail=`HTTP ${resp.status}`;
-        try{
-          const errBody=await resp.json();
-          if(errBody.detail)errDetail=`HTTP ${resp.status} — ${errBody.detail}`;
-          else if(errBody.error)errDetail=`HTTP ${resp.status} — ${errBody.error}`;
-        }catch(_){}
-        rasterFailures.push({id:doc.id,filename:doc.filename,reason:errDetail});
-        continue;
+
+    // Try up to 2 times: the server may be momentarily under memory pressure
+    // and fail on the first attempt but succeed after a GC cycle.
+    let succeeded=false;
+    let lastErrDetail='';
+    for(let attempt=1;attempt<=2;attempt++){
+      try{
+        const resp=await fetch(`/api/documents/${doc.id}/rasterize?pin=${PIN}`);
+        if(!resp.ok){
+          let errDetail=`HTTP ${resp.status}`;
+          try{
+            const errBody=await resp.json();
+            if(errBody.detail)errDetail=`HTTP ${resp.status} — ${errBody.detail}`;
+            else if(errBody.error)errDetail=`HTTP ${resp.status} — ${errBody.error}`;
+          }catch(_){}
+          lastErrDetail=errDetail;
+          if(attempt<2){
+            setProgress(`Retry ${doneCount} of ${totalToRasterize}...`);
+            await new Promise(r=>setTimeout(r,1500));
+            continue;
+          }
+          break;
+        }
+        const data=await resp.json();
+        if(data.pages&&data.pages.length>0){
+          docPages[doc.id]=data.pages;
+          succeeded=true;
+          break;
+        }else{
+          lastErrDetail='no pages returned';
+        }
+      }catch(e){
+        lastErrDetail=e.message;
+        if(attempt<2){await new Promise(r=>setTimeout(r,1500));}
       }
-      const data=await resp.json();
-      if(data.pages&&data.pages.length>0)docPages[doc.id]=data.pages;
-      else rasterFailures.push({id:doc.id,filename:doc.filename,reason:'no pages returned'});
-    }catch(e){
-      rasterFailures.push({id:doc.id,filename:doc.filename,reason:e.message});
     }
+    if(!succeeded){
+      rasterFailures.push({id:doc.id,filename:doc.filename,reason:lastErrDetail||'unknown error'});
+    }
+    // Brief pause between docs to allow server-side GC and prevent piling up
+    await new Promise(r=>setTimeout(r,100));
   }
 
   setProgress('Assembling report...');
