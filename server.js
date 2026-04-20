@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-        AlignmentType, BorderStyle, WidthType, ShadingType, HeadingLevel } = require('docx');
+        AlignmentType, BorderStyle, WidthType, ShadingType, HeadingLevel,
+        ImageRun, PageBreak } = require('docx');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2521,6 +2522,67 @@ async function initMonitoringTables() {
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     );
+    -- ── CHILD ROSTER ───────────────────────────────────────
+    -- Auto-populated from attendance/meal uploads, one row per unique child per center.
+    -- normalized_key = lowercase, trimmed, single-space, used for dedup.
+    CREATE TABLE IF NOT EXISTS children (
+      id SERIAL PRIMARY KEY,
+      center VARCHAR(50) NOT NULL,
+      child_first VARCHAR(120) NOT NULL,
+      child_last VARCHAR(120) NOT NULL,
+      normalized_key VARCHAR(300) NOT NULL,
+      classroom VARCHAR(120),
+      category VARCHAR(5),
+      first_seen_month VARCHAR(10),
+      last_seen_month VARCHAR(10),
+      last_seen_date DATE,
+      is_active BOOLEAN DEFAULT true,
+      notes TEXT,
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(center, normalized_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_children_last_seen ON children(last_seen_date);
+    CREATE INDEX IF NOT EXISTS idx_children_active ON children(center, is_active);
+
+    -- Per-child documents: HIES, medical exception, infant food sign-off.
+    -- Multiple files can belong to the same logical document (child + doc_type + cacfp_year_label).
+    -- Group them in queries by (child_id, doc_type, cacfp_year_label).
+    CREATE TABLE IF NOT EXISTS child_documents (
+      id SERIAL PRIMARY KEY,
+      child_id INTEGER REFERENCES children(id) ON DELETE CASCADE,
+      doc_type VARCHAR(50) NOT NULL,
+      cacfp_year_label VARCHAR(20),
+      signing_date DATE,
+      approval_date DATE,
+      annual_review_reminder_date DATE,
+      filename VARCHAR(255) NOT NULL,
+      mime_type VARCHAR(100),
+      file_data BYTEA NOT NULL,
+      page_count INTEGER DEFAULT 1,
+      file_sort_order INTEGER DEFAULT 0,
+      notes TEXT,
+      metadata JSONB DEFAULT '{}',
+      uploaded_at TIMESTAMP DEFAULT NOW(),
+      uploaded_by VARCHAR(120)
+    );
+    CREATE INDEX IF NOT EXISTS idx_child_docs_child ON child_documents(child_id, doc_type);
+    CREATE INDEX IF NOT EXISTS idx_child_docs_year ON child_documents(cacfp_year_label);
+
+    -- Roster merge-request queue: holds near-duplicate child pairs awaiting manual review
+    CREATE TABLE IF NOT EXISTS roster_merge_requests (
+      id SERIAL PRIMARY KEY,
+      proposed_child_id INTEGER REFERENCES children(id) ON DELETE CASCADE,
+      existing_child_id INTEGER REFERENCES children(id) ON DELETE CASCADE,
+      similarity_score NUMERIC(4,2),
+      reason TEXT,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT NOW(),
+      resolved_at TIMESTAMP,
+      resolved_by VARCHAR(120)
+    );
+    CREATE INDEX IF NOT EXISTS idx_merge_requests_status ON roster_merge_requests(status);
   `);
   console.log('✅ Monitoring tables ready');
 }
@@ -2814,6 +2876,250 @@ app.post('/api/monitoring/:id/generate-docx', authCheck, async (req, res) => {
       findingsBlocks.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: fRows }));
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // FAMILY RECORDS APPENDIX
+    // Children who attended this center in the 3 months prior to
+    // review_date, with their HIES / medical / infant sign-off docs.
+    // ═══════════════════════════════════════════════════════════
+    const appendixBlocks = [];
+    try {
+      if (rev.review_date) {
+        const reviewDate = new Date(rev.review_date);
+        const windowStart = new Date(reviewDate);
+        windowStart.setMonth(windowStart.getMonth() - 3);
+
+        // Collect month_keys within the 3-month window.
+        // Include the review_date month AND the two preceding months.
+        // E.g. review 2026-06-15 → window May/Apr/Mar; we pull mar/apr/may/jun attendance.
+        const windowMonthKeys = [];
+        for (let i = 0; i < 4; i++) {
+          const d = new Date(reviewDate);
+          d.setMonth(d.getMonth() - i);
+          const mIdx = d.getMonth(); // 0=Jan
+          const mkArr = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+          windowMonthKeys.push(mkArr[mIdx]);
+        }
+
+        // Query monthly_data attendance within the review's fiscal year
+        const attRes = await pool.query(
+          `SELECT month_key, data FROM monthly_data
+           WHERE fiscal_year_id = $1 AND data_type = 'attendance' AND month_key = ANY($2)`,
+          [rev.fiscal_year_id, windowMonthKeys]
+        );
+
+        // Collect attended child names for this center
+        const attendedNames = new Set(); // normalized_key
+        function normForMatch(first, last) {
+          const clean = s => (s || '').toString().toLowerCase().trim().replace(/\s+/g,' ').replace(/[^a-z0-9' -]/g,'');
+          return `${clean(last)}|${clean(first)}`;
+        }
+
+        for (const row of attRes.rows) {
+          const centerData = (row.data || {})[rev.center];
+          if (!centerData || !centerData.childData) continue;
+          for (const ch of centerData.childData) {
+            const raw = (ch.name || '').trim();
+            if (!raw) continue;
+            let first, last;
+            if (raw.includes(',')) {
+              const p = raw.split(',').map(s => s.trim());
+              last = p[0]; first = p[1];
+            } else {
+              const parts = raw.split(/\s+/);
+              first = parts[0]; last = parts.slice(1).join(' ');
+            }
+            if (!first || !last) continue;
+            attendedNames.add(normForMatch(first, last));
+          }
+        }
+
+        if (attendedNames.size > 0) {
+          // Load matching children from roster
+          const childRes = await pool.query(
+            `SELECT * FROM children WHERE center = $1 AND normalized_key = ANY($2) ORDER BY child_last, child_first`,
+            [rev.center, [...attendedNames]]
+          );
+          const attendedChildren = childRes.rows;
+
+          // Load all their documents at once
+          const childIds = attendedChildren.map(c => c.id);
+          let allDocs = [];
+          if (childIds.length) {
+            const { rows } = await pool.query(
+              `SELECT * FROM child_documents WHERE child_id = ANY($1) ORDER BY child_id, doc_type, cacfp_year_label DESC NULLS LAST, file_sort_order`,
+              [childIds]
+            );
+            allDocs = rows;
+          }
+
+          // Group docs by (child_id, doc_type)
+          const docsByChild = new Map(); // child_id → {hies:[], medical_exception:[], infant_food_signoff:[]}
+          for (const d of allDocs) {
+            if (!docsByChild.has(d.child_id)) docsByChild.set(d.child_id, { hies: [], medical_exception: [], infant_food_signoff: [] });
+            const bucket = docsByChild.get(d.child_id);
+            if (bucket[d.doc_type]) bucket[d.doc_type].push(d);
+          }
+
+          // Determine current CACFP year label from review date
+          const rd = new Date(rev.review_date);
+          const rdY = rd.getFullYear(), rdM = rd.getMonth();
+          const currentCacfpYear = rdM >= 9 ? `${rdY}-${rdY+1}` : `${rdY-1}-${rdY}`;
+
+          const INFANT_CLASSROOMS_SET = new Set(['Tiny Treasures','Koalas','Montessori Infants','Butterflies','Caterpillars']);
+
+          // Build three groups of (child, docs-to-embed)
+          const hiesGroup = []; // [{child, files:[docs]}]
+          const medicalGroup = [];
+          const infantGroup = [];
+
+          for (const child of attendedChildren) {
+            const bucket = docsByChild.get(child.id) || { hies: [], medical_exception: [], infant_food_signoff: [] };
+
+            // HIES: only for Cat A or B, latest CACFP year group
+            if (child.category === 'A' || child.category === 'B') {
+              const yearDocs = bucket.hies.filter(d => d.cacfp_year_label === currentCacfpYear);
+              if (yearDocs.length) hiesGroup.push({ child, files: yearDocs });
+            }
+
+            // Medical: any exists → include (latest group)
+            if (bucket.medical_exception.length) {
+              medicalGroup.push({ child, files: bucket.medical_exception });
+            }
+
+            // Infant sign-off: child currently in an infant classroom
+            if (child.classroom && INFANT_CLASSROOMS_SET.has(child.classroom) && bucket.infant_food_signoff.length) {
+              infantGroup.push({ child, files: bucket.infant_food_signoff });
+            }
+          }
+
+          // Helper: rasterize a doc's PDF/image into PNG buffers for ImageRun
+          async function docToImageBuffers(doc) {
+            const mt = (doc.mime_type || '').toLowerCase();
+            const fn = (doc.filename || '').toLowerCase();
+            const buffers = [];
+            if (mt === 'application/pdf' || fn.endsWith('.pdf')) {
+              try {
+                const { pdf } = await import('pdf-to-img');
+                const pages = await pdf(doc.file_data, { scale: 2 });
+                for await (const pageBuf of pages) buffers.push(pageBuf);
+              } catch (e) {
+                console.warn(`rasterize failed for ${doc.filename}: ${e.message}`);
+              }
+            } else if (mt.startsWith('image/')) {
+              buffers.push(Buffer.from(doc.file_data));
+            }
+            return buffers;
+          }
+
+          // Build the appendix only if any group has entries
+          if (hiesGroup.length || medicalGroup.length || infantGroup.length) {
+            // Appendix cover
+            appendixBlocks.push(new Paragraph({
+              children: [new PageBreak()]
+            }));
+            appendixBlocks.push(new Paragraph({
+              alignment: AlignmentType.CENTER, spacing: { before: 200, after: 120 },
+              children: [new TextRun({ text: 'APPENDIX — Family Records', bold: true, size: 32, font: 'Calibri', color: navy })]
+            }));
+            appendixBlocks.push(new Paragraph({
+              alignment: AlignmentType.CENTER, spacing: { after: 80 },
+              children: [new TextRun({ text: `${centerLabel} | Review Date ${dateStr}`, size: 20, font: 'Calibri', color: '666666' })]
+            }));
+            appendixBlocks.push(new Paragraph({
+              alignment: AlignmentType.CENTER, spacing: { after: 300 },
+              children: [new TextRun({ text: `Includes children who attended in the 3 months prior to the review.`, size: 18, font: 'Calibri', color: '999999', italics: true })]
+            }));
+            // Appendix TOC
+            appendixBlocks.push(new Paragraph({
+              spacing: { before: 100, after: 60 },
+              children: [new TextRun({ text: 'Contents', bold: true, size: 22, font: 'Calibri', color: navy })]
+            }));
+            appendixBlocks.push(new Paragraph({
+              spacing: { after: 40 },
+              children: [new TextRun({ text: `A. Household Income Eligibility Statements — ${hiesGroup.length} child${hiesGroup.length===1?'':'ren'} (Cat A/B only)`, size: 18, font: 'Calibri' })]
+            }));
+            appendixBlocks.push(new Paragraph({
+              spacing: { after: 40 },
+              children: [new TextRun({ text: `B. Medical Exception / Physician Statements — ${medicalGroup.length} child${medicalGroup.length===1?'':'ren'}`, size: 18, font: 'Calibri' })]
+            }));
+            appendixBlocks.push(new Paragraph({
+              spacing: { after: 200 },
+              children: [new TextRun({ text: `C. Infant Food Sign-Off Forms — ${infantGroup.length} child${infantGroup.length===1?'':'ren'} (currently in infant classrooms)`, size: 18, font: 'Calibri' })]
+            }));
+
+            // Helper: render one section (title + entries)
+            async function renderSection(sectionLetter, sectionTitle, group) {
+              appendixBlocks.push(new Paragraph({ children: [new PageBreak()] }));
+              appendixBlocks.push(new Paragraph({
+                spacing: { before: 100, after: 80 },
+                children: [new TextRun({ text: `${sectionLetter}. ${sectionTitle}`, bold: true, size: 26, font: 'Calibri', color: navy })]
+              }));
+              if (!group.length) {
+                appendixBlocks.push(new Paragraph({
+                  spacing: { after: 120 },
+                  children: [new TextRun({ text: 'No matching records for this section.', size: 18, font: 'Calibri', color: '999999', italics: true })]
+                }));
+                return;
+              }
+              for (const entry of group) {
+                const { child, files } = entry;
+                appendixBlocks.push(new Paragraph({
+                  spacing: { before: 200, after: 40 },
+                  children: [new TextRun({
+                    text: `${child.child_last}, ${child.child_first}`,
+                    bold: true, size: 22, font: 'Calibri', color: navy
+                  })]
+                }));
+                const metaParts = [];
+                if (child.classroom) metaParts.push(child.classroom);
+                if (child.category) metaParts.push(`Category ${child.category}`);
+                if (metaParts.length) {
+                  appendixBlocks.push(new Paragraph({
+                    spacing: { after: 40 },
+                    children: [new TextRun({ text: metaParts.join(' · '), size: 16, font: 'Calibri', color: '666666' })]
+                  }));
+                }
+                // Render each file's pages
+                for (const f of files) {
+                  const imgBuffers = await docToImageBuffers(f);
+                  if (imgBuffers.length === 0) {
+                    appendixBlocks.push(new Paragraph({
+                      spacing: { after: 40 },
+                      children: [new TextRun({ text: `⚠️ ${f.filename} could not be embedded (unsupported format).`, size: 16, font: 'Calibri', color: 'C0392B', italics: true })]
+                    }));
+                    continue;
+                  }
+                  for (let pi = 0; pi < imgBuffers.length; pi++) {
+                    appendixBlocks.push(new Paragraph({
+                      alignment: AlignmentType.CENTER,
+                      spacing: { before: 80, after: 40 },
+                      children: [new ImageRun({
+                        data: imgBuffers[pi],
+                        transformation: { width: 540, height: 700 }
+                      })]
+                    }));
+                    if (imgBuffers.length > 1) {
+                      appendixBlocks.push(new Paragraph({
+                        alignment: AlignmentType.CENTER, spacing: { after: 80 },
+                        children: [new TextRun({ text: `${f.filename} — page ${pi+1} of ${imgBuffers.length}`, size: 12, font: 'Calibri', color: '999999' })]
+                      }));
+                    }
+                  }
+                }
+              }
+            }
+
+            await renderSection('A', 'Household Income Eligibility Statements (HIES)', hiesGroup);
+            await renderSection('B', 'Medical Exception / Physician Statements', medicalGroup);
+            await renderSection('C', 'Infant Food Sign-Off Forms', infantGroup);
+          }
+        }
+      }
+    } catch (appendixErr) {
+      console.warn('Family records appendix error:', appendixErr);
+      // Don't fail the whole doc — appendix is best-effort
+    }
+
     // Assemble document
     const dateStr = rev.review_date
       ? new Date(rev.review_date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
@@ -2855,7 +3161,9 @@ app.post('/api/monitoring/:id/generate-docx', authCheck, async (req, res) => {
 
           new Paragraph({ spacing: { before: 300 }, alignment: AlignmentType.RIGHT, children: [
             new TextRun({ text: `Generated ${new Date().toLocaleDateString('en-US')} | Review ID: ${rev.id}`, size: 14, font: 'Calibri', color: '999999' })
-          ]})
+          ]}),
+
+          ...appendixBlocks
         ]
       }]
     });
@@ -3400,6 +3708,636 @@ app.post('/api/staff/merge', authCheck, async (req, res) => {
       await pool.query('UPDATE staff SET is_active=false WHERE id=$1', [mid]);
     }
     res.json({ ok: true, merged: merge_ids.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// CHILD ROSTER API
+// ═══════════════════════════════════════════════════════════
+
+// Normalize a child name for dedup: lowercase, trim, collapse whitespace
+function normalizeChildName(first, last) {
+  const clean = s => (s || '').toString().toLowerCase().trim().replace(/\s+/g, ' ').replace(/[^a-z0-9' -]/g, '');
+  return `${clean(last)}|${clean(first)}`;
+}
+
+// Levenshtein distance — used for fuzzy name matching
+function levenshtein(a, b) {
+  if (!a || !b) return Math.max((a||'').length, (b||'').length);
+  const m = a.length, n = b.length;
+  const dp = Array.from({length: m+1}, () => new Array(n+1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i-1] === b[j-1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost);
+    }
+  }
+  return dp[m][n];
+}
+
+// Is child A in center X "active" right now? Rolling 3-month rule.
+// Compares last_seen_date against (today - 90 days).
+function computeActiveFlag(lastSeenDate) {
+  if (!lastSeenDate) return false;
+  const d = lastSeenDate instanceof Date ? lastSeenDate : new Date(lastSeenDate);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 90);
+  return d >= cutoff;
+}
+
+// ── CHILDREN CRUD ─────────────────────────────────────────
+app.get('/api/children', authCheck, async (req, res) => {
+  try {
+    const { center, classroom, category, active, search, missing_doc } = req.query;
+    let q = 'SELECT * FROM children WHERE 1=1';
+    const p = [];
+    if (center) { p.push(center); q += ` AND center = $${p.length}`; }
+    if (classroom) { p.push(classroom); q += ` AND classroom = $${p.length}`; }
+    if (category) { p.push(category); q += ` AND category = $${p.length}`; }
+    if (search) {
+      p.push('%' + search.toLowerCase() + '%');
+      q += ` AND (LOWER(child_first) LIKE $${p.length} OR LOWER(child_last) LIKE $${p.length})`;
+    }
+    q += ' ORDER BY center, child_last, child_first';
+    const { rows } = await pool.query(q, p);
+
+    // Compute "is_active" on read using last_seen_date + 90 days
+    let out = rows.map(r => ({ ...r, is_active: computeActiveFlag(r.last_seen_date) }));
+    if (active === 'true')  out = out.filter(r => r.is_active);
+    if (active === 'false') out = out.filter(r => !r.is_active);
+
+    // Optional "missing doc" filter
+    if (missing_doc) {
+      const ids = out.map(r => r.id);
+      if (ids.length) {
+        const { rows: docRows } = await pool.query(
+          `SELECT child_id, doc_type FROM child_documents WHERE child_id = ANY($1)`,
+          [ids]
+        );
+        const haveDoc = new Set(docRows.filter(d => d.doc_type === missing_doc).map(d => d.child_id));
+        out = out.filter(r => !haveDoc.has(r.id));
+      }
+    }
+    res.json(out);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/children/:id', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM children WHERE id = $1', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    const child = rows[0];
+    child.is_active = computeActiveFlag(child.last_seen_date);
+    // Attach their documents (minus binary data)
+    const { rows: docRows } = await pool.query(
+      `SELECT id, child_id, doc_type, cacfp_year_label, signing_date, approval_date,
+              annual_review_reminder_date, filename, mime_type, page_count, file_sort_order,
+              notes, metadata, uploaded_at, uploaded_by
+       FROM child_documents WHERE child_id = $1
+       ORDER BY doc_type, cacfp_year_label DESC NULLS LAST, file_sort_order, uploaded_at`,
+      [child.id]
+    );
+    child.documents = docRows;
+    res.json(child);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/children', authCheck, async (req, res) => {
+  try {
+    const { center, child_first, child_last, classroom, category, notes } = req.body;
+    if (!center || !child_first || !child_last) {
+      return res.status(400).json({ error: 'center, child_first, and child_last required' });
+    }
+    const nk = normalizeChildName(child_first, child_last);
+    const { rows } = await pool.query(
+      `INSERT INTO children (center, child_first, child_last, normalized_key, classroom, category, notes, last_seen_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_DATE)
+       ON CONFLICT (center, normalized_key) DO UPDATE SET
+         classroom = COALESCE($5, children.classroom),
+         category = COALESCE($6, children.category),
+         notes = COALESCE($7, children.notes),
+         updated_at = NOW()
+       RETURNING *`,
+      [center, child_first, child_last, nk, classroom, category, notes || null]
+    );
+    const child = rows[0];
+    child.is_active = computeActiveFlag(child.last_seen_date);
+    res.json(child);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/children/:id', authCheck, async (req, res) => {
+  try {
+    const { child_first, child_last, classroom, category, notes, is_active } = req.body;
+    const sets = []; const vals = []; let n = 0;
+    if (child_first !== undefined) { n++; sets.push(`child_first=$${n}`); vals.push(child_first); }
+    if (child_last !== undefined)  { n++; sets.push(`child_last=$${n}`);  vals.push(child_last); }
+    // If either name changed, also recompute normalized_key
+    if (child_first !== undefined || child_last !== undefined) {
+      const cur = await pool.query('SELECT child_first, child_last FROM children WHERE id=$1', [req.params.id]);
+      if (cur.rows[0]) {
+        const newFirst = child_first !== undefined ? child_first : cur.rows[0].child_first;
+        const newLast  = child_last  !== undefined ? child_last  : cur.rows[0].child_last;
+        n++; sets.push(`normalized_key=$${n}`); vals.push(normalizeChildName(newFirst, newLast));
+      }
+    }
+    if (classroom !== undefined) { n++; sets.push(`classroom=$${n}`); vals.push(classroom); }
+    if (category !== undefined)  { n++; sets.push(`category=$${n}`);  vals.push(category); }
+    if (notes !== undefined)     { n++; sets.push(`notes=$${n}`);     vals.push(notes); }
+    // Manual is_active override — stored as a flag; `computeActiveFlag` still wins on read
+    // unless we explicitly set last_seen_date. For manual deactivation, set last_seen_date far in past.
+    if (is_active === false) { sets.push('last_seen_date = CURRENT_DATE - INTERVAL \'1 year\''); }
+    sets.push('updated_at = NOW()');
+    n++; vals.push(req.params.id);
+    const { rows } = await pool.query(
+      `UPDATE children SET ${sets.join(', ')} WHERE id=$${n} RETURNING *`, vals
+    );
+    const child = rows[0];
+    if (child) child.is_active = computeActiveFlag(child.last_seen_date);
+    res.json(child);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/children/:id', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM children WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Search similar children by name (for manual-add fuzzy warnings)
+app.get('/api/children/search-similar', authCheck, async (req, res) => {
+  try {
+    const { first, last, center } = req.query;
+    if (!first && !last) return res.json([]);
+    let q = 'SELECT id, center, child_first, child_last, classroom, category, last_seen_date FROM children WHERE 1=1';
+    const p = [];
+    if (center) { p.push(center); q += ` AND center = $${p.length}`; }
+    const { rows } = await pool.query(q, p);
+    const target = normalizeChildName(first || '', last || '');
+    const results = rows.map(r => {
+      const nk = normalizeChildName(r.child_first, r.child_last);
+      const distance = levenshtein(target, nk);
+      const maxLen = Math.max(target.length, nk.length) || 1;
+      const similarity = 1 - distance / maxLen;
+      return { ...r, similarity };
+    }).filter(r => r.similarity >= 0.7).sort((a, b) => b.similarity - a.similarity).slice(0, 10);
+    res.json(results);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
+// ── SYNC CHILDREN FROM UPLOADS ────────────────────────────
+// Scans meal uploads, attendance summaries, and attendance-time rows across
+// all months; creates/updates children rows. Meal uploads are authoritative
+// for classroom + category. Fuzzy-matching similar names queues merge requests.
+app.post('/api/children/sync-from-uploads', authCheck, async (req, res) => {
+  try {
+    // Preload current roster
+    const { rows: rosterRows } = await pool.query('SELECT id, center, child_first, child_last, normalized_key, last_seen_date, classroom FROM children');
+    const rosterByKey = new Map();
+    for (const r of rosterRows) rosterByKey.set(`${r.center}::${r.normalized_key}`, r);
+
+    // Collect every child reference from all sources
+    // seen[`${center}::${normKey}`] = { first, last, center, classroom, category, lastMonth, lastDate }
+    const seen = new Map();
+    const bumpSeen = (center, first, last, classroom, category, monthKey, date) => {
+      if (!first || !last || !center) return;
+      const nk = normalizeChildName(first, last);
+      const key = `${center}::${nk}`;
+      const existing = seen.get(key);
+      if (!existing) {
+        seen.set(key, {
+          first: first.trim(), last: last.trim(), center, nk,
+          classroom: classroom || null,
+          category: category || null,
+          lastMonth: monthKey || null,
+          lastDate: date || null,
+          firstMonth: monthKey || null,
+          mealSourced: !!classroom
+        });
+      } else {
+        // Meal uploads are authoritative for classroom/category — latest meal wins
+        if (classroom) {
+          existing.classroom = classroom;
+          existing.mealSourced = true;
+        }
+        if (category) existing.category = category;
+        // Track newest occurrence
+        if (monthKey && (!existing.lastMonth || monthKey > existing.lastMonth)) existing.lastMonth = monthKey;
+        if (date && (!existing.lastDate || date > existing.lastDate)) existing.lastDate = date;
+        // Track oldest
+        if (monthKey && (!existing.firstMonth || monthKey < existing.firstMonth)) existing.firstMonth = monthKey;
+      }
+    };
+
+    // 1) Scan meal uploads
+    const { rows: mealRows } = await pool.query(
+      `SELECT md.month_key, md.data, fy.start_year, fy.end_year
+       FROM monthly_data md JOIN fiscal_years fy ON fy.id = md.fiscal_year_id
+       WHERE md.data_type = 'meals'`
+    );
+    for (const r of mealRows) {
+      const d = r.data || {};
+      for (const center of ['niles', 'peace']) {
+        const cd = d[center];
+        if (!cd || !cd.children) continue;
+        for (const ch of cd.children) {
+          // Meal CSV names are "First Last"; split on last space
+          const name = (ch.name || '').trim();
+          if (!name) continue;
+          const parts = name.split(/\s+/);
+          const first = parts[0];
+          const last = parts.slice(1).join(' ');
+          if (!last) continue;
+          bumpSeen(center, first, last, ch.classroom, ch.cat, r.month_key, null);
+        }
+      }
+    }
+
+    // 2) Scan monthly_data attendance (classroom info sometimes present; names "Last, First" style)
+    const { rows: attRows } = await pool.query(
+      `SELECT md.month_key, md.data FROM monthly_data md WHERE md.data_type = 'attendance'`
+    );
+    for (const r of attRows) {
+      const d = r.data || {};
+      for (const center of ['niles', 'peace']) {
+        const cd = d[center];
+        if (!cd || !cd.childData) continue;
+        for (const ch of cd.childData) {
+          // Attendance names can be "Last First", "First Last", or "Last, First"
+          const raw = (ch.name || '').trim();
+          if (!raw) continue;
+          let first, last;
+          if (raw.includes(',')) {
+            const p = raw.split(',').map(s => s.trim());
+            last = p[0]; first = p[1];
+          } else {
+            const parts = raw.split(/\s+/);
+            // Guess: if "Last First" style — heuristically treat single 2-part name with meal-upload data already present.
+            // Default to "First Last"
+            first = parts[0]; last = parts.slice(1).join(' ');
+          }
+          if (!first || !last) continue;
+          bumpSeen(center, first, last, ch.classroom || null, null, r.month_key, null);
+        }
+      }
+    }
+
+    // 3) Scan child_attendance_times (last_seen_date source)
+    const { rows: catRows } = await pool.query(
+      `SELECT center, child_first, child_last, month_key, MAX(attend_date) as last_date
+       FROM child_attendance_times WHERE status = 'present'
+       GROUP BY center, child_first, child_last, month_key`
+    );
+    for (const r of catRows) {
+      const dateISO = r.last_date instanceof Date ? r.last_date.toISOString().slice(0,10) : r.last_date;
+      bumpSeen(r.center, r.child_first, r.child_last, null, null, r.month_key, dateISO);
+    }
+
+    // 4) Reconcile into children table
+    let created = 0, updated = 0;
+    const mergeCandidates = []; // fuzzy matches → queue manually
+    const existingByCenter = new Map(); // center → list of {id, nk} for fuzzy lookup
+    for (const [k, v] of rosterByKey) {
+      if (!existingByCenter.has(v.center)) existingByCenter.set(v.center, []);
+      existingByCenter.get(v.center).push({ id: v.id, nk: v.normalized_key });
+    }
+
+    for (const [key, s] of seen) {
+      const rosterKey = `${s.center}::${s.nk}`;
+      const existing = rosterByKey.get(rosterKey);
+      if (existing) {
+        // Update — meal uploads always win for classroom
+        const setParts = ['updated_at = NOW()'];
+        const vals = [existing.id];
+        let n = 1;
+        if (s.mealSourced && s.classroom) {
+          n++; setParts.push(`classroom = $${n}`); vals.push(s.classroom);
+        }
+        if (s.category) {
+          n++; setParts.push(`category = $${n}`); vals.push(s.category);
+        }
+        if (s.lastMonth) {
+          n++; setParts.push(`last_seen_month = CASE WHEN last_seen_month IS NULL OR $${n} > last_seen_month THEN $${n} ELSE last_seen_month END`); vals.push(s.lastMonth);
+        }
+        if (s.lastDate) {
+          n++; setParts.push(`last_seen_date = CASE WHEN last_seen_date IS NULL OR $${n}::date > last_seen_date THEN $${n}::date ELSE last_seen_date END`); vals.push(s.lastDate);
+        }
+        if (s.firstMonth) {
+          n++; setParts.push(`first_seen_month = CASE WHEN first_seen_month IS NULL OR $${n} < first_seen_month THEN $${n} ELSE first_seen_month END`); vals.push(s.firstMonth);
+        }
+        await pool.query(`UPDATE children SET ${setParts.join(', ')} WHERE id = $1`, vals);
+        updated++;
+      } else {
+        // Fuzzy check — do we have a near-duplicate in the same center?
+        let fuzzyMatchId = null, fuzzyScore = 0;
+        const candidates = existingByCenter.get(s.center) || [];
+        for (const cand of candidates) {
+          const distance = levenshtein(s.nk, cand.nk);
+          const maxLen = Math.max(s.nk.length, cand.nk.length) || 1;
+          const sim = 1 - distance / maxLen;
+          if (sim >= 0.85 && sim > fuzzyScore) {
+            fuzzyMatchId = cand.id;
+            fuzzyScore = sim;
+          }
+        }
+        // Create the new child row (even if fuzzy match — queue merge request for review)
+        const { rows: inserted } = await pool.query(
+          `INSERT INTO children (center, child_first, child_last, normalized_key, classroom, category, first_seen_month, last_seen_month, last_seen_date)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+          [s.center, s.first, s.last, s.nk, s.classroom, s.category, s.firstMonth, s.lastMonth, s.lastDate]
+        );
+        const newId = inserted[0].id;
+        created++;
+        if (fuzzyMatchId) {
+          mergeCandidates.push({ proposed: newId, existing: fuzzyMatchId, score: fuzzyScore });
+        }
+        // Add to existing-by-center for subsequent fuzzy checks
+        if (!existingByCenter.has(s.center)) existingByCenter.set(s.center, []);
+        existingByCenter.get(s.center).push({ id: newId, nk: s.nk });
+      }
+    }
+
+    // 5) Create merge requests for fuzzy matches (skip duplicates)
+    let mergeRequests = 0;
+    for (const m of mergeCandidates) {
+      const exists = await pool.query(
+        `SELECT id FROM roster_merge_requests
+         WHERE proposed_child_id = $1 AND existing_child_id = $2 AND status = 'pending'`,
+        [m.proposed, m.existing]
+      );
+      if (exists.rows.length === 0) {
+        await pool.query(
+          `INSERT INTO roster_merge_requests (proposed_child_id, existing_child_id, similarity_score, reason)
+           VALUES ($1, $2, $3, $4)`,
+          [m.proposed, m.existing, m.score.toFixed(2), `Auto-detected during sync (${(m.score*100).toFixed(0)}% name similarity)`]
+        );
+        mergeRequests++;
+      }
+    }
+
+    res.json({
+      ok: true,
+      scanned_children: seen.size,
+      created,
+      updated,
+      merge_requests_created: mergeRequests
+    });
+  } catch (e) {
+    console.error('children sync error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── ROSTER MERGE REQUESTS ─────────────────────────────────
+app.get('/api/roster-merge-requests', authCheck, async (req, res) => {
+  try {
+    const { status } = req.query;
+    let q = `SELECT rmr.*,
+               c1.child_first AS p_first, c1.child_last AS p_last, c1.center AS p_center,
+               c1.classroom AS p_classroom, c1.category AS p_category, c1.last_seen_date AS p_last_seen,
+               c2.child_first AS e_first, c2.child_last AS e_last, c2.center AS e_center,
+               c2.classroom AS e_classroom, c2.category AS e_category, c2.last_seen_date AS e_last_seen
+             FROM roster_merge_requests rmr
+             JOIN children c1 ON c1.id = rmr.proposed_child_id
+             JOIN children c2 ON c2.id = rmr.existing_child_id
+             WHERE 1=1`;
+    const p = [];
+    if (status) { p.push(status); q += ` AND rmr.status = $${p.length}`; }
+    q += ' ORDER BY rmr.created_at DESC';
+    const { rows } = await pool.query(q, p);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Approve a merge: keep existing_child_id, move documents from proposed to existing, delete proposed
+app.post('/api/roster-merge-requests/:id/approve', authCheck, async (req, res) => {
+  try {
+    const { rows: mrRows } = await pool.query(
+      `SELECT * FROM roster_merge_requests WHERE id = $1 AND status = 'pending'`,
+      [req.params.id]
+    );
+    const mr = mrRows[0];
+    if (!mr) return res.status(404).json({ error: 'Request not found or already resolved' });
+
+    // Transfer documents, then delete proposed child
+    await pool.query(
+      `UPDATE child_documents SET child_id = $1 WHERE child_id = $2`,
+      [mr.existing_child_id, mr.proposed_child_id]
+    );
+    // Also re-point any other pending merge requests
+    await pool.query(
+      `UPDATE roster_merge_requests SET existing_child_id = $1 WHERE existing_child_id = $2 AND id != $3`,
+      [mr.existing_child_id, mr.proposed_child_id, mr.id]
+    );
+    await pool.query('DELETE FROM children WHERE id = $1', [mr.proposed_child_id]);
+    await pool.query(
+      `UPDATE roster_merge_requests SET status = 'approved', resolved_at = NOW(), resolved_by = $1 WHERE id = $2`,
+      [req.body?.resolved_by || 'Mary Wardlaw', mr.id]
+    );
+    res.json({ ok: true, kept_child_id: mr.existing_child_id });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Reject a merge: keep both children separate
+app.post('/api/roster-merge-requests/:id/reject', authCheck, async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE roster_merge_requests SET status = 'rejected', resolved_at = NOW(), resolved_by = $1 WHERE id = $2`,
+      [req.body?.resolved_by || 'Mary Wardlaw', req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// CHILD DOCUMENTS API (HIES, medical exception, infant sign-off)
+// ═══════════════════════════════════════════════════════════
+const VALID_CHILD_DOC_TYPES = new Set(['hies', 'medical_exception', 'infant_food_signoff']);
+
+// Rough PDF page count (counts "/Type /Page" entries; good enough for the `page_count` field)
+function countPdfPages(buffer) {
+  try {
+    const s = buffer.toString('latin1');
+    const matches = s.match(/\/Type\s*\/Page(?![a-zA-Z])/g);
+    return matches ? matches.length : 1;
+  } catch { return 1; }
+}
+
+// Upload a file to a child's document set
+// Multiple files with same (child_id, doc_type, cacfp_year_label) group into one logical document
+app.post('/api/children/:id/documents', authCheck, upload.single('file'), async (req, res) => {
+  try {
+    const childId = req.params.id;
+    const { doc_type, cacfp_year_label, signing_date, approval_date, notes, file_sort_order } = req.body;
+    if (!doc_type || !VALID_CHILD_DOC_TYPES.has(doc_type)) {
+      return res.status(400).json({ error: 'doc_type must be one of: ' + [...VALID_CHILD_DOC_TYPES].join(', ') });
+    }
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    // Verify child exists
+    const childRes = await pool.query('SELECT id FROM children WHERE id = $1', [childId]);
+    if (!childRes.rows[0]) return res.status(404).json({ error: 'Child not found' });
+
+    // Compute annual_review_reminder_date for medical (1 year from today)
+    let reviewDate = null;
+    if (doc_type === 'medical_exception') {
+      const d = new Date();
+      d.setFullYear(d.getFullYear() + 1);
+      reviewDate = d.toISOString().slice(0, 10);
+    }
+
+    // Page count estimate
+    const pageCount = (req.file.mimetype === 'application/pdf') ? countPdfPages(req.file.buffer) : 1;
+
+    const { rows } = await pool.query(
+      `INSERT INTO child_documents (child_id, doc_type, cacfp_year_label, signing_date, approval_date,
+          annual_review_reminder_date, filename, mime_type, file_data, page_count, file_sort_order, notes, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       RETURNING id, child_id, doc_type, cacfp_year_label, signing_date, approval_date,
+                 annual_review_reminder_date, filename, mime_type, page_count, file_sort_order, notes, uploaded_at, uploaded_by`,
+      [childId, doc_type, cacfp_year_label || null,
+       signing_date || null, approval_date || null, reviewDate,
+       req.file.originalname, req.file.mimetype, req.file.buffer, pageCount,
+       parseInt(file_sort_order) || 0, notes || null, req.body.uploaded_by || 'Mary Wardlaw']
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('child doc upload error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List all documents for a child
+app.get('/api/children/:id/documents', authCheck, async (req, res) => {
+  try {
+    const { doc_type } = req.query;
+    let q = `SELECT id, child_id, doc_type, cacfp_year_label, signing_date, approval_date,
+                    annual_review_reminder_date, filename, mime_type, page_count, file_sort_order,
+                    notes, uploaded_at, uploaded_by
+             FROM child_documents WHERE child_id = $1`;
+    const p = [req.params.id];
+    if (doc_type) { p.push(doc_type); q += ` AND doc_type = $${p.length}`; }
+    q += ' ORDER BY doc_type, cacfp_year_label DESC NULLS LAST, file_sort_order, uploaded_at';
+    const { rows } = await pool.query(q, p);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Download one child document
+app.get('/api/children/:childId/documents/:docId/download', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT filename, mime_type, file_data FROM child_documents WHERE id = $1 AND child_id = $2`,
+      [req.params.docId, req.params.childId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.setHeader('Content-Disposition', `attachment; filename="${rows[0].filename}"`);
+    res.setHeader('Content-Type', rows[0].mime_type || 'application/octet-stream');
+    res.send(rows[0].file_data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Rasterize one child document (same behavior as /api/documents/:id/rasterize)
+app.get('/api/children/:childId/documents/:docId/rasterize', authCheck, async (req, res) => {
+  try {
+    const cacheKey = 'child:' + req.params.docId;
+    if (rasterizeCache.has(cacheKey)) {
+      const hit = rasterizeCache.get(cacheKey);
+      rasterizeCache.delete(cacheKey);
+      rasterizeCache.set(cacheKey, hit);
+      return res.json({ pages: hit.pages, pageCount: hit.pageCount, filename: hit.filename, cached: true });
+    }
+    const { rows } = await pool.query(
+      `SELECT filename, mime_type, file_data FROM child_documents WHERE id = $1 AND child_id = $2`,
+      [req.params.docId, req.params.childId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    const { filename, mime_type, file_data } = rows[0];
+    const mt = (mime_type || '').toLowerCase();
+    let pages = [];
+    if (mt === 'application/pdf' || filename.toLowerCase().endsWith('.pdf')) {
+      const { pdf } = await import('pdf-to-img');
+      try {
+        const doc = await pdf(file_data, { scale: 2 });
+        for await (const pageBuf of doc) pages.push('data:image/png;base64,' + pageBuf.toString('base64'));
+      } catch (pdfErr) {
+        return res.status(422).json({ error: 'Could not rasterize PDF', detail: pdfErr.message, filename });
+      }
+    } else if (mt.startsWith('image/')) {
+      pages.push(`data:${mt};base64,` + Buffer.from(file_data).toString('base64'));
+    } else {
+      return res.status(415).json({ error: 'Unsupported file type', mime_type: mt, filename });
+    }
+    const result = { pages, pageCount: pages.length, filename, cachedAt: Date.now() };
+    if (rasterizeCache.size >= RASTERIZE_CACHE_MAX) {
+      const oldestKey = rasterizeCache.keys().next().value;
+      if (oldestKey) rasterizeCache.delete(oldestKey);
+    }
+    rasterizeCache.set(cacheKey, result);
+    res.json({ pages: result.pages, pageCount: result.pageCount, filename: result.filename, cached: false });
+  } catch (e) {
+    console.error('child rasterize error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update a child document's metadata (dates, notes, sort order)
+app.put('/api/children/:childId/documents/:docId', authCheck, async (req, res) => {
+  try {
+    const { signing_date, approval_date, cacfp_year_label, notes, file_sort_order, annual_review_reminder_date } = req.body;
+    const sets = []; const vals = []; let n = 0;
+    if (signing_date !== undefined)   { n++; sets.push(`signing_date=$${n}`); vals.push(signing_date || null); }
+    if (approval_date !== undefined)  { n++; sets.push(`approval_date=$${n}`); vals.push(approval_date || null); }
+    if (cacfp_year_label !== undefined) { n++; sets.push(`cacfp_year_label=$${n}`); vals.push(cacfp_year_label || null); }
+    if (notes !== undefined)          { n++; sets.push(`notes=$${n}`); vals.push(notes || null); }
+    if (file_sort_order !== undefined){ n++; sets.push(`file_sort_order=$${n}`); vals.push(parseInt(file_sort_order) || 0); }
+    if (annual_review_reminder_date !== undefined) { n++; sets.push(`annual_review_reminder_date=$${n}`); vals.push(annual_review_reminder_date || null); }
+    if (!sets.length) return res.json({ ok: true, noChange: true });
+    n++; vals.push(req.params.docId);
+    n++; vals.push(req.params.childId);
+    const { rows } = await pool.query(
+      `UPDATE child_documents SET ${sets.join(', ')} WHERE id = $${n-1} AND child_id = $${n} RETURNING *`,
+      vals
+    );
+    // Invalidate rasterize cache for this doc
+    const cacheKey = 'child:' + req.params.docId;
+    if (rasterizeCache.has(cacheKey)) rasterizeCache.delete(cacheKey);
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete one child document
+app.delete('/api/children/:childId/documents/:docId', authCheck, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM child_documents WHERE id = $1 AND child_id = $2', [req.params.docId, req.params.childId]);
+    const cacheKey = 'child:' + req.params.docId;
+    if (rasterizeCache.has(cacheKey)) rasterizeCache.delete(cacheKey);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// List ALL child documents (for the documents library view)
+app.get('/api/child-documents/all', authCheck, async (req, res) => {
+  try {
+    const { doc_type, cacfp_year_label } = req.query;
+    let q = `SELECT cd.id, cd.child_id, cd.doc_type, cd.cacfp_year_label, cd.signing_date, cd.approval_date,
+                    cd.annual_review_reminder_date, cd.filename, cd.mime_type, cd.page_count,
+                    cd.notes, cd.uploaded_at, cd.uploaded_by,
+                    c.center, c.child_first, c.child_last, c.classroom, c.category
+             FROM child_documents cd JOIN children c ON c.id = cd.child_id WHERE 1=1`;
+    const p = [];
+    if (doc_type) { p.push(doc_type); q += ` AND cd.doc_type = $${p.length}`; }
+    if (cacfp_year_label) { p.push(cacfp_year_label); q += ` AND cd.cacfp_year_label = $${p.length}`; }
+    q += ' ORDER BY c.center, c.child_last, c.child_first, cd.doc_type, cd.uploaded_at DESC';
+    const { rows } = await pool.query(q, p);
+    res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
