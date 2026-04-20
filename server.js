@@ -2,6 +2,10 @@ const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
+const { promisify } = require('util');
+const gzipAsync = promisify(zlib.gzip);
+const gunzipAsync = promisify(zlib.gunzip);
 const { Pool } = require('pg');
 const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
         AlignmentType, BorderStyle, WidthType, ShadingType, HeadingLevel,
@@ -14,7 +18,20 @@ const ACCESS_PIN = process.env.ACCESS_PIN || 'tcc2026';
 // ── DATABASE ──────────────────────────────────────────────
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+  // Tuning for stability under large payload inserts (archive saves can be 20+ MB)
+  max: 10,                         // modest pool size — Standard DB allows ~97 connections
+  idleTimeoutMillis: 30000,        // close idle connections after 30s (default 10s is too aggressive)
+  connectionTimeoutMillis: 10000,  // wait up to 10s for a connection before giving up
+  statement_timeout: 60000,        // kill queries that run longer than 60s (prevents stuck archive inserts)
+  query_timeout: 60000,
+  keepAlive: true,                 // TCP keepalives prevent idle connection drops by Render network
+  keepAliveInitialDelayMillis: 10000
+});
+
+// Swallow pool-level errors so an idle-connection drop doesn't crash the process
+pool.on('error', (err) => {
+  console.error('⚠️ Unexpected Postgres pool error (non-fatal):', err.message);
 });
 
 app.use(express.json({ limit: '200mb' }));
@@ -527,27 +544,68 @@ app.delete('/api/documents/:id', authCheck, async (req, res) => {
 
 // ── MONTHLY PACKAGE ARCHIVE ───────────────────────────────
 // Save a rendered HTML version of the Complete CACFP Documentation for a month.
-// Stored as a regular `documents` row with doc_type = 'archived_monthly_package'
-// so it appears in the Documents tab and can be re-downloaded on demand.
+// Stored as a regular `documents` row with doc_type = 'archived_monthly_package'.
+// Payloads can be 60-80MB uncompressed (base64 images dominate). We gzip before
+// insert — base64-heavy HTML typically compresses 4-5x, making 80MB → ~15-20MB.
+// The gzip-compressed bytes are stored in file_data with mime_type='text/html+gzip'
+// so the view endpoint knows to decompress before serving.
 app.post('/api/archive-package', authCheck, async (req, res) => {
+  const startMs = Date.now();
   try {
     const { fiscal_year_id, month_key, html, filename, metadata } = req.body;
     if (!fiscal_year_id || !month_key || !html) {
       return res.status(400).json({ error: 'Missing fiscal_year_id, month_key, or html' });
     }
-    const htmlBuffer = Buffer.from(html, 'utf8');
+    const rawBuffer = Buffer.from(html, 'utf8');
+    const rawSize = rawBuffer.length;
+
+    // Compress with gzip — level 6 is the sweet spot (default, good ratio, fast)
+    let storeBuffer, storeMime;
+    try {
+      storeBuffer = await gzipAsync(rawBuffer, { level: 6 });
+      storeMime = 'text/html+gzip';
+      console.log(`archive-package: compressed ${(rawSize/1024/1024).toFixed(1)}MB → ${(storeBuffer.length/1024/1024).toFixed(1)}MB (${Math.round(100 - storeBuffer.length*100/rawSize)}% reduction) in ${Date.now()-startMs}ms`);
+    } catch (gzErr) {
+      // If gzip fails for any reason, fall back to uncompressed (better to save big than not at all)
+      console.warn('archive-package: gzip failed, falling back to uncompressed:', gzErr.message);
+      storeBuffer = rawBuffer;
+      storeMime = 'text/html';
+    }
+
     const safeName = filename || `CACFP_Package_${month_key}_${Date.now()}.html`;
     const meta = metadata || {};
     meta.generated_at = meta.generated_at || new Date().toISOString();
-    meta.byte_size = htmlBuffer.length;
+    meta.byte_size = rawSize;              // original HTML size for display
+    meta.stored_bytes = storeBuffer.length; // what's actually in the DB
+    meta.compressed = storeMime === 'text/html+gzip';
 
-    const { rows } = await pool.query(
-      `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
-       VALUES ($1, $2, 'archived_monthly_package', $3, 'text/html', $4, $5)
-       RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
-      [fiscal_year_id, month_key, safeName, htmlBuffer, JSON.stringify(meta)]
-    );
-    res.json(rows[0]);
+    // Retry the DB write up to 3 times with increasing backoff.
+    // Handles transient ECONNRESET/ECONNREFUSED/"terminated unexpectedly" from pool.
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const { rows } = await pool.query(
+          `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+           VALUES ($1, $2, 'archived_monthly_package', $3, $4, $5, $6)
+           RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
+          [fiscal_year_id, month_key, safeName, storeMime, storeBuffer, JSON.stringify(meta)]
+        );
+        const totalMs = Date.now() - startMs;
+        console.log(`archive-package: saved id=${rows[0].id} in ${totalMs}ms (attempt ${attempt})`);
+        return res.json(rows[0]);
+      } catch (e) {
+        lastErr = e;
+        const transient = /ECONNRESET|ECONNREFUSED|terminated unexpectedly|timeout|Connection terminated/i.test(e.message);
+        console.warn(`archive-package: insert attempt ${attempt} failed (${transient?'transient':'permanent'}): ${e.message}`);
+        if (!transient) break; // don't retry on logic errors (bad data, constraint violation, etc.)
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, attempt * 1500)); // 1.5s, 3s
+        }
+      }
+    }
+    // All retries exhausted
+    console.error('archive-package: all retries failed:', lastErr);
+    res.status(500).json({ error: lastErr ? lastErr.message : 'Archive save failed after retries' });
   } catch (e) {
     console.error('archive-package error:', e);
     res.status(500).json({ error: e.message });
@@ -569,7 +627,8 @@ app.get('/api/archived-packages', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// View an archived package in-browser (serves the HTML inline, not as attachment)
+// View an archived package in-browser (serves the HTML inline, not as attachment).
+// Handles both legacy uncompressed and new gzip-compressed archives transparently.
 app.get('/api/archived-packages/:id/view', authCheck, async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -578,10 +637,19 @@ app.get('/api/archived-packages/:id/view', authCheck, async (req, res) => {
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).send('Archive not found');
+    let body = rows[0].file_data;
+    // Decompress if stored as gzip
+    if (rows[0].mime_type === 'text/html+gzip') {
+      try {
+        body = await gunzipAsync(body);
+      } catch (gzErr) {
+        console.error('archive view: gunzip failed:', gzErr);
+        return res.status(500).send('Error decompressing archive: ' + gzErr.message);
+      }
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    // Inline (not attachment) so it opens in the browser ready to print
     res.setHeader('Content-Disposition', `inline; filename="${rows[0].filename}"`);
-    res.send(rows[0].file_data);
+    res.send(body);
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
