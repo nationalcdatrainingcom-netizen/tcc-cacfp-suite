@@ -382,11 +382,28 @@ app.get('/api/documents/:id/download', authCheck, async (req, res) => {
 // Rasterize an uploaded PDF to PNG page images for inline embedding in print packages.
 // Returns { pages: [base64PNG, ...], pageCount, filename }.
 // Non-PDF images pass through as a single-page array.
-// Cached in memory per document ID (up to 40 docs) so repeated prints are instant.
+// Cached in memory per document ID so repeated prints are instant.
 const rasterizeCache = new Map(); // id → { pages, pageCount, filename, cachedAt, byteSize }
-const RASTERIZE_CACHE_MAX = 3; // reduced from 40 to prevent OOM on 512MB Render tier
-const RASTERIZE_CACHE_MAX_BYTES = 50 * 1024 * 1024; // 50MB total ceiling for cache
+const RASTERIZE_CACHE_MAX = 10; // number of docs cached
+const RASTERIZE_CACHE_MAX_BYTES = 200 * 1024 * 1024; // 200MB total ceiling
 let rasterizeCacheBytes = 0;
+
+// Serialization lock: only one PDF is being rasterized at any moment.
+// This prevents pdfjs from loading two PDFs simultaneously (each can take ~100MB),
+// which would almost certainly OOM the server on a 512MB tier.
+let rasterizeInProgress = null;
+async function acquireRasterizeLock() {
+  while (rasterizeInProgress) {
+    await rasterizeInProgress;
+  }
+  let release;
+  rasterizeInProgress = new Promise(r => { release = r; });
+  return () => {
+    const wasInProgress = rasterizeInProgress;
+    rasterizeInProgress = null;
+    release();
+  };
+}
 
 function evictRasterizeOldest() {
   const oldestKey = rasterizeCache.keys().next().value;
@@ -407,17 +424,19 @@ function sumRasterizeSize(pages) {
 }
 
 app.get('/api/documents/:id/rasterize', authCheck, async (req, res) => {
-  try {
-    const id = req.params.id;
+  const id = req.params.id;
 
-    // Cache hit?
-    if (rasterizeCache.has(id)) {
-      const hit = rasterizeCache.get(id);
-      // Bump to end (most-recently-used)
-      rasterizeCache.delete(id);
-      rasterizeCache.set(id, hit);
-      return res.json({ pages: hit.pages, pageCount: hit.pageCount, filename: hit.filename, cached: true });
-    }
+  // Cache hit? Handle BEFORE acquiring lock (no heavy work)
+  if (rasterizeCache.has(id)) {
+    const hit = rasterizeCache.get(id);
+    rasterizeCache.delete(id);
+    rasterizeCache.set(id, hit);
+    return res.json({ pages: hit.pages, pageCount: hit.pageCount, filename: hit.filename, cached: true });
+  }
+
+  // Serialize rasterize work — only one PDF parsed at a time to avoid OOM
+  const releaseLock = await acquireRasterizeLock();
+  try {
 
     const { rows } = await pool.query(
       'SELECT filename, mime_type, file_data FROM documents WHERE id = $1', [id]);
@@ -481,6 +500,8 @@ app.get('/api/documents/:id/rasterize', authCheck, async (req, res) => {
   } catch (e) {
     console.error('rasterize error:', e);
     res.status(500).json({ error: e.message });
+  } finally {
+    releaseLock();
   }
 });
 
@@ -4287,14 +4308,16 @@ app.get('/api/children/:childId/documents/:docId/download', authCheck, async (re
 
 // Rasterize one child document (same behavior as /api/documents/:id/rasterize)
 app.get('/api/children/:childId/documents/:docId/rasterize', authCheck, async (req, res) => {
+  const cacheKey = 'child:' + req.params.docId;
+  // Cache hit? Handle before acquiring lock
+  if (rasterizeCache.has(cacheKey)) {
+    const hit = rasterizeCache.get(cacheKey);
+    rasterizeCache.delete(cacheKey);
+    rasterizeCache.set(cacheKey, hit);
+    return res.json({ pages: hit.pages, pageCount: hit.pageCount, filename: hit.filename, cached: true });
+  }
+  const releaseLock = await acquireRasterizeLock();
   try {
-    const cacheKey = 'child:' + req.params.docId;
-    if (rasterizeCache.has(cacheKey)) {
-      const hit = rasterizeCache.get(cacheKey);
-      rasterizeCache.delete(cacheKey);
-      rasterizeCache.set(cacheKey, hit);
-      return res.json({ pages: hit.pages, pageCount: hit.pageCount, filename: hit.filename, cached: true });
-    }
     const { rows } = await pool.query(
       `SELECT filename, mime_type, file_data FROM child_documents WHERE id = $1 AND child_id = $2`,
       [req.params.docId, req.params.childId]
@@ -4334,6 +4357,8 @@ app.get('/api/children/:childId/documents/:docId/rasterize', authCheck, async (r
   } catch (e) {
     console.error('child rasterize error:', e);
     res.status(500).json({ error: e.message });
+  } finally {
+    releaseLock();
   }
 });
 
