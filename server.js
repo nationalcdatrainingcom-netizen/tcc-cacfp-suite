@@ -383,8 +383,28 @@ app.get('/api/documents/:id/download', authCheck, async (req, res) => {
 // Returns { pages: [base64PNG, ...], pageCount, filename }.
 // Non-PDF images pass through as a single-page array.
 // Cached in memory per document ID (up to 40 docs) so repeated prints are instant.
-const rasterizeCache = new Map(); // id → { pages, pageCount, filename, cachedAt }
-const RASTERIZE_CACHE_MAX = 40;
+const rasterizeCache = new Map(); // id → { pages, pageCount, filename, cachedAt, byteSize }
+const RASTERIZE_CACHE_MAX = 3; // reduced from 40 to prevent OOM on 512MB Render tier
+const RASTERIZE_CACHE_MAX_BYTES = 50 * 1024 * 1024; // 50MB total ceiling for cache
+let rasterizeCacheBytes = 0;
+
+function evictRasterizeOldest() {
+  const oldestKey = rasterizeCache.keys().next().value;
+  if (oldestKey !== undefined) {
+    const entry = rasterizeCache.get(oldestKey);
+    rasterizeCacheBytes -= (entry?.byteSize || 0);
+    if (rasterizeCacheBytes < 0) rasterizeCacheBytes = 0;
+    rasterizeCache.delete(oldestKey);
+  }
+}
+
+function sumRasterizeSize(pages) {
+  // Approximate byte cost: data URLs are base64-encoded, ~1.33x the raw byte size.
+  // Sum length of each page string.
+  let total = 0;
+  for (const p of pages) total += p.length;
+  return total;
+}
 
 app.get('/api/documents/:id/rasterize', authCheck, async (req, res) => {
   try {
@@ -434,16 +454,30 @@ app.get('/api/documents/:id/rasterize', authCheck, async (req, res) => {
       });
     }
 
-    const result = { pages, pageCount: pages.length, filename, cachedAt: Date.now() };
+    const byteSize = sumRasterizeSize(pages);
+    const result = { pages, pageCount: pages.length, filename, cachedAt: Date.now(), byteSize };
 
-    // LRU evict if over capacity
-    if (rasterizeCache.size >= RASTERIZE_CACHE_MAX) {
-      const oldestKey = rasterizeCache.keys().next().value;
-      if (oldestKey) rasterizeCache.delete(oldestKey);
+    // Decide whether to cache at all — skip caching of huge docs to preserve headroom
+    const LARGE_DOC_THRESHOLD = 15 * 1024 * 1024; // 15MB
+    const shouldCache = byteSize < LARGE_DOC_THRESHOLD;
+
+    if (shouldCache) {
+      // Evict by count
+      while (rasterizeCache.size >= RASTERIZE_CACHE_MAX) evictRasterizeOldest();
+      // Evict by bytes
+      while (rasterizeCacheBytes + byteSize > RASTERIZE_CACHE_MAX_BYTES && rasterizeCache.size > 0) {
+        evictRasterizeOldest();
+      }
+      rasterizeCache.set(id, result);
+      rasterizeCacheBytes += byteSize;
     }
-    rasterizeCache.set(id, result);
 
     res.json({ pages: result.pages, pageCount: result.pageCount, filename: result.filename, cached: false });
+
+    // Hint to GC after large rasterization (only effective with --expose-gc flag, but harmless otherwise)
+    if (global.gc && byteSize > 5 * 1024 * 1024) {
+      setImmediate(() => { try { global.gc(); } catch(e){} });
+    }
   } catch (e) {
     console.error('rasterize error:', e);
     res.status(500).json({ error: e.message });
@@ -452,7 +486,13 @@ app.get('/api/documents/:id/rasterize', authCheck, async (req, res) => {
 
 // Clear the rasterize cache (call when a document is re-uploaded/replaced)
 function invalidateRasterizeCache(docId) {
-  if (docId && rasterizeCache.has(String(docId))) rasterizeCache.delete(String(docId));
+  const k = String(docId);
+  if (k && rasterizeCache.has(k)) {
+    const e = rasterizeCache.get(k);
+    rasterizeCacheBytes -= (e?.byteSize || 0);
+    if (rasterizeCacheBytes < 0) rasterizeCacheBytes = 0;
+    rasterizeCache.delete(k);
+  }
 }
 
 app.delete('/api/documents/:id', authCheck, async (req, res) => {
@@ -3784,6 +3824,28 @@ app.get('/api/children', authCheck, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
+// Search similar children by name (for manual-add fuzzy warnings)
+// MUST come before /api/children/:id to avoid being shadowed
+app.get('/api/children/search-similar', authCheck, async (req, res) => {
+  try {
+    const { first, last, center } = req.query;
+    if (!first && !last) return res.json([]);
+    let q = 'SELECT id, center, child_first, child_last, classroom, category, last_seen_date FROM children WHERE 1=1';
+    const p = [];
+    if (center) { p.push(center); q += ` AND center = $${p.length}`; }
+    const { rows } = await pool.query(q, p);
+    const target = normalizeChildName(first || '', last || '');
+    const results = rows.map(r => {
+      const nk = normalizeChildName(r.child_first, r.child_last);
+      const distance = levenshtein(target, nk);
+      const maxLen = Math.max(target.length, nk.length) || 1;
+      const similarity = 1 - distance / maxLen;
+      return { ...r, similarity };
+    }).filter(r => r.similarity >= 0.7).sort((a, b) => b.similarity - a.similarity).slice(0, 10);
+    res.json(results);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/children/:id', authCheck, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM children WHERE id = $1', [req.params.id]);
@@ -3864,27 +3926,6 @@ app.delete('/api/children/:id', authCheck, async (req, res) => {
   try {
     await pool.query('DELETE FROM children WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Search similar children by name (for manual-add fuzzy warnings)
-app.get('/api/children/search-similar', authCheck, async (req, res) => {
-  try {
-    const { first, last, center } = req.query;
-    if (!first && !last) return res.json([]);
-    let q = 'SELECT id, center, child_first, child_last, classroom, category, last_seen_date FROM children WHERE 1=1';
-    const p = [];
-    if (center) { p.push(center); q += ` AND center = $${p.length}`; }
-    const { rows } = await pool.query(q, p);
-    const target = normalizeChildName(first || '', last || '');
-    const results = rows.map(r => {
-      const nk = normalizeChildName(r.child_first, r.child_last);
-      const distance = levenshtein(target, nk);
-      const maxLen = Math.max(target.length, nk.length) || 1;
-      const similarity = 1 - distance / maxLen;
-      return { ...r, similarity };
-    }).filter(r => r.similarity >= 0.7).sort((a, b) => b.similarity - a.similarity).slice(0, 10);
-    res.json(results);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -4275,13 +4316,21 @@ app.get('/api/children/:childId/documents/:docId/rasterize', authCheck, async (r
     } else {
       return res.status(415).json({ error: 'Unsupported file type', mime_type: mt, filename });
     }
-    const result = { pages, pageCount: pages.length, filename, cachedAt: Date.now() };
-    if (rasterizeCache.size >= RASTERIZE_CACHE_MAX) {
-      const oldestKey = rasterizeCache.keys().next().value;
-      if (oldestKey) rasterizeCache.delete(oldestKey);
+    const byteSize = sumRasterizeSize(pages);
+    const result = { pages, pageCount: pages.length, filename, cachedAt: Date.now(), byteSize };
+    const LARGE_DOC_THRESHOLD = 15 * 1024 * 1024;
+    if (byteSize < LARGE_DOC_THRESHOLD) {
+      while (rasterizeCache.size >= RASTERIZE_CACHE_MAX) evictRasterizeOldest();
+      while (rasterizeCacheBytes + byteSize > RASTERIZE_CACHE_MAX_BYTES && rasterizeCache.size > 0) {
+        evictRasterizeOldest();
+      }
+      rasterizeCache.set(cacheKey, result);
+      rasterizeCacheBytes += byteSize;
     }
-    rasterizeCache.set(cacheKey, result);
     res.json({ pages: result.pages, pageCount: result.pageCount, filename: result.filename, cached: false });
+    if (global.gc && byteSize > 5 * 1024 * 1024) {
+      setImmediate(() => { try { global.gc(); } catch(e){} });
+    }
   } catch (e) {
     console.error('child rasterize error:', e);
     res.status(500).json({ error: e.message });
@@ -4307,8 +4356,7 @@ app.put('/api/children/:childId/documents/:docId', authCheck, async (req, res) =
       vals
     );
     // Invalidate rasterize cache for this doc
-    const cacheKey = 'child:' + req.params.docId;
-    if (rasterizeCache.has(cacheKey)) rasterizeCache.delete(cacheKey);
+    invalidateRasterizeCache('child:' + req.params.docId);
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -4317,8 +4365,7 @@ app.put('/api/children/:childId/documents/:docId', authCheck, async (req, res) =
 app.delete('/api/children/:childId/documents/:docId', authCheck, async (req, res) => {
   try {
     await pool.query('DELETE FROM child_documents WHERE id = $1 AND child_id = $2', [req.params.docId, req.params.childId]);
-    const cacheKey = 'child:' + req.params.docId;
-    if (rasterizeCache.has(cacheKey)) rasterizeCache.delete(cacheKey);
+    invalidateRasterizeCache('child:' + req.params.docId);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
