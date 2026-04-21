@@ -2448,8 +2448,10 @@ function renderMonthDocs(){
           <span>⏰</span><div><strong>Attendance Time Log (All Centers)</strong><br><span style="font-size:.8rem">${hasAttTimes?(hasAttTimeReport?'✅ Generated — click to regenerate':'Click to generate .docx with daily sign-in/out times'):'⬜ Upload Daily Attendance CSV first'}</span></div></div>
         ${hasAttTimeReport?`<div class="alert alert-ok" style="margin:0;cursor:pointer" onclick="downloadLatestAttTimeReport('${m}')">
           <span>📥</span><div><strong>Download Latest Attendance Time Log</strong><br><span style="font-size:.8rem">✅ Saved to Documents</span></div></div>`:''}
-        <div class="alert alert-ok" style="margin:0;cursor:pointer" onclick="printMonthlyPackage('${m}')">
-          <span>🖨️</span><div><strong>Complete CACFP Documentation for ${ML[m]}</strong><br><span style="font-size:.8rem">Print full reporting package for audit</span></div></div>
+        <div class="alert alert-ok" style="margin:0;cursor:pointer" onclick="printMonthlyPackage('${m}','main')">
+          <span>🖨️</span><div><strong>Complete CACFP Documentation — Part 1 of 2 (${ML[m]})</strong><br><span style="font-size:.8rem">Main package: claim, staff, meal counts, CDC, menus, food costs, substitutions</span></div></div>
+        <div class="alert alert-ok" style="margin:0;cursor:pointer" onclick="printMonthlyPackage('${m}','attendance')">
+          <span>📊</span><div><strong>Complete CACFP Documentation — Part 2 of 2 (${ML[m]})</strong><br><span style="font-size:.8rem">Attendance & ADA with daily sign-in/out times (large — archived separately)</span></div></div>
       </div>
     </div></div>
   `;
@@ -2544,7 +2546,16 @@ function viewGeneratedReport(type,mk){
   w.document.write(html);w.document.close();
 }
 
-async function printMonthlyPackage(mk){
+// Generate the Complete CACFP Documentation. The report is optionally split into two parts:
+//   part='main'       — Everything EXCEPT the per-center Attendance & ADA sections (sections 4-5).
+//                       This is the bulk of the documentation: claim, staff, meal counts, CDC, menus, etc.
+//   part='attendance' — ONLY the per-center Attendance & ADA sections (sections 4-5, with the big
+//                       Daily Sign-In/Out Time Logs that blow up the payload size).
+//   part='all'        — Full report in one file (original behavior). Good for preview/print but may
+//                       be too large to archive for months with lots of attendance data.
+// Splitting lets us archive each part separately so total compressed payload stays under the
+// memory/DB budget of the 2GB Render instance.
+async function printMonthlyPackage(mk, part='all'){
   // Open the preview window IMMEDIATELY, before any awaits — otherwise the popup blocker
   // will block us because the user's click gesture expired during rasterization.
   const w=window.open('','_blank','width=1000,height=800');
@@ -2554,7 +2565,10 @@ async function printMonthlyPackage(mk){
     return;
   }
   // Show a loading page immediately so user knows something is happening
-  w.document.write(`<!DOCTYPE html><html><head><title>Preparing CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</title>
+  const partLabel = part==='attendance' ? 'Attendance & ADA (Part 2)'
+                  : part==='main'       ? 'Main Documentation (Part 1)'
+                  :                       'Complete CACFP Documentation';
+  w.document.write(`<!DOCTYPE html><html><head><title>Preparing ${partLabel} — ${ML[mk]} ${fyYear(mk)}</title>
     <style>
       body{font-family:Arial,sans-serif;background:#F4F6F9;color:#1A202C;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}
       .loader{background:#fff;padding:32px 40px;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.1);max-width:480px;text-align:center}
@@ -2566,7 +2580,7 @@ async function printMonthlyPackage(mk){
     </style></head><body>
     <div class="loader">
       <div class="spinner"></div>
-      <h1>Preparing Complete CACFP Documentation</h1>
+      <h1>Preparing ${partLabel}</h1>
       <div class="sub">${ML[mk]} ${fyYear(mk)} · Please keep this window open while we build your report.</div>
       <div class="progress" id="cacfpProgress">Starting...</div>
     </div>
@@ -2747,8 +2761,8 @@ async function printMonthlyPackage(mk){
       .cacfp-toolbar .btn-close{background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.4)}
       .cacfp-toolbar .btn-close:hover{background:rgba(255,255,255,0.1)}
     </style></head><body>
-    <div class="cacfp-toolbar" id="cacfpToolbar" data-fy="${activeFY.id}" data-mk="${mk}" data-pin="${PIN}">
-      <div class="tb-title">📦 Complete CACFP Documentation — ${ML[mk]} ${fyYear(mk)}</div>
+    <div class="cacfp-toolbar" id="cacfpToolbar" data-fy="${activeFY.id}" data-mk="${mk}" data-pin="${PIN}" data-part="${part}">
+      <div class="tb-title">📦 ${partLabel} — ${ML[mk]} ${fyYear(mk)}</div>
       <div class="tb-actions">
         <button class="btn-print" onclick="window.print()">🖨️ Print</button>
         <button class="btn-archive" id="cacfpArchiveBtn" onclick="cacfpArchive()">📦 Save to Archive</button>
@@ -2757,31 +2771,60 @@ async function printMonthlyPackage(mk){
     </div>`;
 
   // ── COVER PAGE ──
+  const coverTitle = part==='attendance' ? 'Attendance & ADA (Part 2 of 2)'
+                   : part==='main'       ? 'Main Documentation (Part 1 of 2)'
+                   :                       'Complete CACFP Documentation Package';
   html+=`<h1>The Children's Center, Inc.</h1>
-    <div class="subtitle">Complete CACFP Documentation Package<br>${ML[mk]} ${fyYear(mk)} | Sponsor #990004457 | Generated ${new Date().toLocaleDateString()}</div>`;
+    <div class="subtitle">${coverTitle}<br>${ML[mk]} ${fyYear(mk)} | Sponsor #990004457 | Generated ${new Date().toLocaleDateString()}</div>`;
 
   // ── TABLE OF CONTENTS ──
-  html+=`<div class="toc"><h4>Table of Contents</h4>
-    <div class="toc-item"><span>1. CACFP Claim Submission</span></div>
-    <div class="toc-item"><span>2. Claim Preparation Summary</span></div>
-    <div class="toc-item"><span>3. Staff Costs — Niles & Peace Boulevard</span></div>
-    <div class="toc-item"><span>4. Attendance & ADA — Niles (with Daily Sign-In/Out Times)</span></div>
-    <div class="toc-item"><span>5. Attendance & ADA — Peace Boulevard (with Daily Sign-In/Out Times)</span></div>
-    <div class="toc-item"><span>6. Adjusted Daily Meal Counts — Niles</span></div>
-    <div class="toc-item"><span>7. Adjusted Daily Meal Counts — Peace Boulevard</span></div>
-    <div class="toc-item"><span>8. Meal Count Summary</span></div>
-    <div class="toc-item"><span>9. CDC Eligibility — Niles</span></div>
-    <div class="toc-item"><span>10. CDC Eligibility — Peace Boulevard</span></div>
-    <div class="toc-item"><span>11. Food Costs & Receipts</span></div>
-    <div class="toc-item"><span>12. Monthly Menus — Niles</span></div>
-    <div class="toc-item"><span>13. Monthly Menus — Peace Boulevard</span></div>
-    <div class="toc-item"><span>14. Substitution Log — Niles</span></div>
-    <div class="toc-item"><span>15. Substitution Log — Peace Boulevard</span></div>
-  </div>`;
+  if(part==='attendance'){
+    html+=`<div class="toc"><h4>Table of Contents — Attendance & ADA</h4>
+      <div class="toc-item"><span>4. Attendance & ADA — Niles (with Daily Sign-In/Out Times)</span></div>
+      <div class="toc-item"><span>5. Attendance & ADA — Peace Boulevard (with Daily Sign-In/Out Times)</span></div>
+    </div>
+    <div class="doc-note" style="margin-top:12px">ℹ️ This is <strong>Part 2 of 2</strong> of the CACFP documentation package for ${ML[mk]} ${fyYear(mk)}. The Main Documentation (Part 1) containing claim submission, staff costs, meal counts, CDC eligibility, food costs, menus, and substitution logs is archived separately.</div>`;
+  }else if(part==='main'){
+    html+=`<div class="toc"><h4>Table of Contents — Main Documentation</h4>
+      <div class="toc-item"><span>1. CACFP Claim Submission</span></div>
+      <div class="toc-item"><span>2. Claim Preparation Summary</span></div>
+      <div class="toc-item"><span>3. Staff Costs — Niles & Peace Boulevard</span></div>
+      <div class="toc-item"><span>4. Adjusted Daily Meal Counts — Niles</span></div>
+      <div class="toc-item"><span>5. Adjusted Daily Meal Counts — Peace Boulevard</span></div>
+      <div class="toc-item"><span>6. Meal Count Summary</span></div>
+      <div class="toc-item"><span>7. CDC Eligibility — Niles</span></div>
+      <div class="toc-item"><span>8. CDC Eligibility — Peace Boulevard</span></div>
+      <div class="toc-item"><span>9. Food Costs & Receipts</span></div>
+      <div class="toc-item"><span>10. Monthly Menus — Niles</span></div>
+      <div class="toc-item"><span>11. Monthly Menus — Peace Boulevard</span></div>
+      <div class="toc-item"><span>12. Substitution Log — Niles</span></div>
+      <div class="toc-item"><span>13. Substitution Log — Peace Boulevard</span></div>
+    </div>
+    <div class="doc-note" style="margin-top:12px">ℹ️ This is <strong>Part 1 of 2</strong> of the CACFP documentation package for ${ML[mk]} ${fyYear(mk)}. The Attendance & ADA report with daily sign-in/out times (Part 2) is archived separately due to its size.</div>`;
+  }else{
+    html+=`<div class="toc"><h4>Table of Contents</h4>
+      <div class="toc-item"><span>1. CACFP Claim Submission</span></div>
+      <div class="toc-item"><span>2. Claim Preparation Summary</span></div>
+      <div class="toc-item"><span>3. Staff Costs — Niles & Peace Boulevard</span></div>
+      <div class="toc-item"><span>4. Attendance & ADA — Niles (with Daily Sign-In/Out Times)</span></div>
+      <div class="toc-item"><span>5. Attendance & ADA — Peace Boulevard (with Daily Sign-In/Out Times)</span></div>
+      <div class="toc-item"><span>6. Adjusted Daily Meal Counts — Niles</span></div>
+      <div class="toc-item"><span>7. Adjusted Daily Meal Counts — Peace Boulevard</span></div>
+      <div class="toc-item"><span>8. Meal Count Summary</span></div>
+      <div class="toc-item"><span>9. CDC Eligibility — Niles</span></div>
+      <div class="toc-item"><span>10. CDC Eligibility — Peace Boulevard</span></div>
+      <div class="toc-item"><span>11. Food Costs & Receipts</span></div>
+      <div class="toc-item"><span>12. Monthly Menus — Niles</span></div>
+      <div class="toc-item"><span>13. Monthly Menus — Peace Boulevard</span></div>
+      <div class="toc-item"><span>14. Substitution Log — Niles</span></div>
+      <div class="toc-item"><span>15. Substitution Log — Peace Boulevard</span></div>
+    </div>`;
+  }
 
   // ══════════════════════════════════════════════════
-  // 1. CACFP CLAIM SCREENSHOT
+  // 1. CACFP CLAIM SCREENSHOT  (skipped in attendance-only part)
   // ══════════════════════════════════════════════════
+  if(part!=='attendance'){
   html+=`<h2 class="page-break">1. CACFP Claim Submission</h2>`;
   const claimDoc=mDocs.find(d=>d.doc_type==='claims_listing');
   if(claimDoc){
@@ -2789,15 +2832,20 @@ async function printMonthlyPackage(mk){
   }else{
     html+=`<div class="doc-note">⚠️ Claims Listing screenshot not yet uploaded.</div>`;
   }
+  }
 
-  // ══════════════════════════════════════════════════
-  // 2. CLAIM PREPARATION
-  // ══════════════════════════════════════════════════
-  html+=`<h2 class="page-break">2. Claim Preparation Summary</h2>`;
+  // Shared data used by both Main and Attendance parts — pull out of section 2 so
+  // the attendance-only part can still render ADA calculations.
   const att=monthlyDataCache[mk+'_attendance']||{};
   const meals=monthlyDataCache[mk+'_meals']||{};
   const cdc=monthlyDataCache[mk+'_cdc']||{};
   const fc=monthlyDataCache[mk+'_foodcosts']||{};
+
+  // ══════════════════════════════════════════════════
+  // 2. CLAIM PREPARATION  (skipped in attendance-only part)
+  // ══════════════════════════════════════════════════
+  if(part!=='attendance'){
+  html+=`<h2 class="page-break">2. Claim Preparation Summary</h2>`;
 
   // Pull fresh salary data from merged T&A (same as claim prep)
   // RETRY logic: under memory pressure the API can intermittently fail.
@@ -3085,11 +3133,18 @@ async function printMonthlyPackage(mk){
   }else{
     html+=`<div class="doc-note">⚠️ No staff time data for this month. Staff enter hours in the Time Entry app.</div>`;
   }
+  } // end of if(part!=='attendance') wrapping sections 2 & 3
 
   // ══════════════════════════════════════════════════
-  // 4–5. ATTENDANCE PER CENTER
+  // 4–5. ATTENDANCE PER CENTER  (the big ones — skipped in 'main' part)
   // ══════════════════════════════════════════════════
-  let sectionNum=4;
+  // Section numbering adjusts to the part:
+  //   part='all'        — 1,2,3 (claim/prep/staff), 4,5 (attendance), 6,7 (meals), 8 (meal summary), 9,10 (CDC), 11 (food), 12,13 (menus), 14,15 (subs)
+  //   part='main'       — 1,2,3 (claim/prep/staff), then skip attendance → 4,5 (meals), 6 (meal summary), 7,8 (CDC), 9 (food), 10,11 (menus), 12,13 (subs)
+  //   part='attendance' — 1,2 (niles/peace attendance only)
+  // Start the attendance loop at 4 when showing all, or 1 when attendance-only.
+  let sectionNum = part==='attendance' ? 1 : 4;
+  if(part!=='main'){
   for(const c of ['niles','peace']){
     const a=att[c];
     html+=`<h2 class="page-break">${sectionNum}. Attendance & ADA — ${cl(c)}</h2>`;
@@ -3152,10 +3207,16 @@ async function printMonthlyPackage(mk){
     }else{html+=`<div class="doc-note">⚠️ No attendance data processed for ${cl(c)}.</div>`;}
     sectionNum++;
   }
+  } // end of if(part!=='main') — attendance sections 4-5 only included in 'all' and 'attendance' parts
+
+  // If this is the 'main' part, the attendance sections were skipped entirely, so renumber
+  // the remaining sections to start at 4 (contiguous numbering: 1, 2, 3, 4, 5, ...)
+  if(part==='main') sectionNum = 4;
 
   // ══════════════════════════════════════════════════
   // 6–7. ADJUSTED DAILY MEAL COUNTS PER CENTER
   // ══════════════════════════════════════════════════
+  if(part!=='attendance'){
   for(const c of ['niles','peace']){
     const d=meals[c];
     html+=`<h2 class="page-break">${sectionNum}. Adjusted Daily Meal Counts — ${cl(c)}</h2>`;
@@ -3362,6 +3423,7 @@ async function printMonthlyPackage(mk){
     }
     sectionNum++;
   }
+  } // end of if(part!=='attendance') wrapping sections 6 onwards (meals, CDC, food, menus, subs)
 
   // Rasterization failures summary (so user can see if something didn't embed inline)
   if(rasterFailures.length>0){
