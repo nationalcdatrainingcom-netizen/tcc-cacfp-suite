@@ -543,18 +543,100 @@ app.delete('/api/documents/:id', authCheck, async (req, res) => {
 });
 
 // ── MONTHLY PACKAGE ARCHIVE ───────────────────────────────
+// ARCHITECTURE NOTE (April 2026 rewrite):
+// Archives used to be stored as `bytea` blobs in the `documents` table, but 30-40MB INSERTs
+// were crashing the Postgres connection ("terminated unexpectedly", ECONNREFUSED) on Render's
+// shared DB. The fix: keep only metadata in Postgres, store the actual compressed HTML file on
+// the persistent disk mounted at ARCHIVES_DIR. Tiny rows, fast saves, no connection drops.
+//
+// DISK LAYOUT: /opt/render/project/src/archives/{fiscal_year_id}/{month_key}/{filename}.gz
+//   - Each file is gzip-compressed HTML (same as what the browser sends)
+//   - Decompressed on the fly by the view endpoint
+
+const ARCHIVES_DIR = process.env.ARCHIVES_DIR || '/opt/render/project/src/archives';
+
+// Ensure archives dir exists at startup (fail loudly if not — it means the disk isn't mounted)
+function ensureArchivesDir() {
+  try {
+    fs.mkdirSync(ARCHIVES_DIR, { recursive: true });
+    // Test write to confirm the disk is actually mounted and writable
+    const probe = path.join(ARCHIVES_DIR, '.write-probe');
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+    console.log(`✅ Archives directory ready: ${ARCHIVES_DIR}`);
+  } catch (e) {
+    console.error(`❌ CRITICAL: Archives directory not writable at ${ARCHIVES_DIR}`);
+    console.error('   Most likely the persistent disk is not attached to this service.');
+    console.error('   Attach a disk in Render: Service → Disk → Add Disk');
+    console.error('     Name: archives, Mount Path: /opt/render/project/src/archives, Size: 5GB');
+    console.error('   Error:', e.message);
+  }
+}
+ensureArchivesDir();
+
+// Build the on-disk path for an archive based on its metadata
+function archivePathFor(fyId, monthKey, fileName) {
+  // Sanitize filename hard — no path traversal, no funky chars
+  const safe = String(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const dir = path.join(ARCHIVES_DIR, String(fyId), String(monthKey));
+  return { dir, full: path.join(dir, safe + '.gz') };
+}
+
+// One-time migration: move any existing archive blobs from Postgres `bytea` to disk.
+// Called at startup. Idempotent — skips rows that have already been migrated.
+async function migrateArchivesToDisk() {
+  try {
+    // Find legacy archive rows that still have file_data bytes
+    const { rows } = await pool.query(
+      `SELECT id, fiscal_year_id, month_key, filename, mime_type, octet_length(file_data) as sz
+       FROM documents
+       WHERE doc_type = 'archived_monthly_package'
+         AND file_data IS NOT NULL
+         AND octet_length(file_data) > 0`
+    );
+    if (!rows.length) {
+      console.log('archive migration: nothing to migrate (or already migrated)');
+      return;
+    }
+    console.log(`archive migration: ${rows.length} legacy archive(s) to move to disk...`);
+    for (const row of rows) {
+      try {
+        // Pull the blob separately so the listing query stays light
+        const { rows: blobRows } = await pool.query(
+          `SELECT file_data, mime_type FROM documents WHERE id = $1`,
+          [row.id]
+        );
+        if (!blobRows[0] || !blobRows[0].file_data) continue;
+        let bytes = blobRows[0].file_data;
+        // If it was stored uncompressed, gzip it now for consistency on disk
+        if (blobRows[0].mime_type !== 'text/html+gzip') {
+          bytes = await gzipAsync(bytes, { level: 6 });
+        }
+        const { dir, full } = archivePathFor(row.fiscal_year_id, row.month_key, row.filename);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(full, bytes);
+        // Clear the bytea to free the DB space, but KEEP the row so Archives page still lists it.
+        // Update mime_type to 'text/html+gzip' since the on-disk copy is always gzipped now.
+        await pool.query(
+          `UPDATE documents SET file_data = NULL, mime_type = 'text/html+gzip' WHERE id = $1`,
+          [row.id]
+        );
+        console.log(`archive migration: moved id=${row.id} (${(row.sz/1024/1024).toFixed(1)}MB) → ${full}`);
+      } catch (rowErr) {
+        console.error(`archive migration: failed id=${row.id}:`, rowErr.message);
+      }
+    }
+    console.log('archive migration: done');
+  } catch (e) {
+    console.error('archive migration: skipped due to error:', e.message);
+  }
+}
+// Run migration after a short delay to let DB pool stabilize after startup
+setTimeout(migrateArchivesToDisk, 5000);
+
 // Save a rendered HTML version of the Complete CACFP Documentation for a month.
-// Stored as a regular `documents` row with doc_type = 'archived_monthly_package'.
-//
-// IMPORTANT: This endpoint accepts the payload as a RAW binary body (application/octet-stream),
-// NOT JSON. The client is expected to gzip-compress the HTML in the browser using the native
-// CompressionStream API before POSTing. This avoids:
-//   - express.json()'s massive memory overhead (full string + parsed object + buffer copy)
-//   - pg's extra buffer copy for JSON-string-parameter serialization
-//   - 2+ GB of transient memory usage that was OOM-killing the Node process on the 2GB instance
-//
-// Query params carry the metadata (fiscal_year_id, month_key, filename, etc) since the body
-// is the raw compressed bytes.
+// Receives the ALREADY-gzipped bytes as the raw body (application/octet-stream).
+// Writes them to the persistent disk and stores only metadata in Postgres.
 app.post(
   '/api/archive-package',
   authCheck,
@@ -567,52 +649,63 @@ app.post(
         return res.status(400).json({ error: 'Missing fiscal_year_id or month_key query params' });
       }
       if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-        return res.status(400).json({ error: 'Missing or empty request body (expect gzipped HTML as binary)' });
+        return res.status(400).json({ error: 'Missing or empty request body' });
       }
 
-      // Body is the gzipped bytes, ready to write straight to Postgres.
-      // No decompression on this path — saves memory AND stores compressed in DB.
-      const storeBuffer = req.body;
-      const storeMime = encoding === 'gzip' ? 'text/html+gzip' : 'text/html';
+      // If client sent uncompressed, compress it now — on disk we always store gzipped
+      let bytesToStore = req.body;
+      if (encoding !== 'gzip') {
+        bytesToStore = await gzipAsync(bytesToStore, { level: 6 });
+      }
 
-      const originalSize = raw_bytes ? parseInt(raw_bytes, 10) : storeBuffer.length;
+      const originalSize = raw_bytes ? parseInt(raw_bytes, 10) : req.body.length;
       const safeName = filename || `CACFP_Package_${month_key}_${Date.now()}.html`;
+
+      // Write to disk FIRST (the expensive part). If disk write fails, don't pollute DB with orphan rows.
+      const { dir, full } = archivePathFor(fiscal_year_id, month_key, safeName);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(full, bytesToStore);
+      } catch (diskErr) {
+        console.error('archive-package: disk write failed:', diskErr);
+        return res.status(500).json({
+          error: 'Disk write failed: ' + diskErr.message +
+                 '. Is the persistent disk attached at ' + ARCHIVES_DIR + '?'
+        });
+      }
+      const diskMs = Date.now() - startMs;
+
       const meta = {
         generated_at: new Date().toISOString(),
         byte_size: originalSize,
-        stored_bytes: storeBuffer.length,
-        compressed: storeMime === 'text/html+gzip'
+        stored_bytes: bytesToStore.length,
+        compressed: true,
+        storage: 'disk',
+        disk_path: full
       };
 
-      console.log(
-        `archive-package: received ${(storeBuffer.length/1024/1024).toFixed(1)}MB ` +
-        `(${encoding||'raw'}, original ${(originalSize/1024/1024).toFixed(1)}MB) in ${Date.now()-startMs}ms`
-      );
-
-      // Retry the DB write up to 3 times with increasing backoff.
-      // Handles transient ECONNRESET/ECONNREFUSED/"terminated unexpectedly".
-      let lastErr;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const { rows } = await pool.query(
-            `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
-             VALUES ($1, $2, 'archived_monthly_package', $3, $4, $5, $6)
-             RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
-            [fiscal_year_id, month_key, safeName, storeMime, storeBuffer, JSON.stringify(meta)]
-          );
-          const totalMs = Date.now() - startMs;
-          console.log(`archive-package: saved id=${rows[0].id} in ${totalMs}ms (attempt ${attempt})`);
-          return res.json(rows[0]);
-        } catch (e) {
-          lastErr = e;
-          const transient = /ECONNRESET|ECONNREFUSED|terminated unexpectedly|timeout|Connection terminated/i.test(e.message);
-          console.warn(`archive-package: insert attempt ${attempt} failed (${transient?'transient':'permanent'}): ${e.message}`);
-          if (!transient) break;
-          if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 1500));
-        }
+      // Now insert a tiny metadata-only row (no file_data). This is ~1KB and never chokes Postgres.
+      try {
+        const { rows } = await pool.query(
+          `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+           VALUES ($1, $2, 'archived_monthly_package', $3, 'text/html+gzip', NULL, $4)
+           RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
+          [fiscal_year_id, month_key, safeName, JSON.stringify(meta)]
+        );
+        const totalMs = Date.now() - startMs;
+        console.log(
+          `archive-package: saved id=${rows[0].id} ` +
+          `(${(bytesToStore.length/1024/1024).toFixed(1)}MB gzipped, ` +
+          `${(originalSize/1024/1024).toFixed(1)}MB original) ` +
+          `disk=${diskMs}ms total=${totalMs}ms`
+        );
+        return res.json(rows[0]);
+      } catch (dbErr) {
+        // DB insert failed after disk write succeeded. Try to clean up the orphan file.
+        try { fs.unlinkSync(full); } catch(_){}
+        console.error('archive-package: metadata insert failed:', dbErr);
+        return res.status(500).json({ error: 'Metadata insert failed: ' + dbErr.message });
       }
-      console.error('archive-package: all retries failed:', lastErr);
-      res.status(500).json({ error: lastErr ? lastErr.message : 'Archive save failed after retries' });
     } catch (e) {
       console.error('archive-package error:', e);
       res.status(500).json({ error: e.message });
@@ -620,7 +713,7 @@ app.post(
   }
 );
 
-// List archived packages (convenience wrapper — same as /api/documents?doc_type=archived_monthly_package)
+// List archived packages — metadata only, never loads blobs
 app.get('/api/archived-packages', authCheck, async (req, res) => {
   try {
     const { fiscal_year_id, month_key } = req.query;
@@ -635,30 +728,86 @@ app.get('/api/archived-packages', authCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// View an archived package in-browser (serves the HTML inline, not as attachment).
-// Handles both legacy uncompressed and new gzip-compressed archives transparently.
+// View an archived package in-browser. Reads the gzip file from disk, decompresses, streams.
+// Back-compat: if (by some chance) an old row still has file_data bytes, falls back to those.
 app.get('/api/archived-packages/:id/view', authCheck, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT filename, mime_type, file_data FROM documents
+      `SELECT filename, mime_type, file_data, metadata, fiscal_year_id, month_key
+       FROM documents
        WHERE id = $1 AND doc_type = 'archived_monthly_package'`,
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).send('Archive not found');
-    let body = rows[0].file_data;
-    // Decompress if stored as gzip
-    if (rows[0].mime_type === 'text/html+gzip') {
-      try {
-        body = await gunzipAsync(body);
-      } catch (gzErr) {
+    const row = rows[0];
+
+    let gzipBytes;
+    // Path 1: on-disk (the new way)
+    const { full } = archivePathFor(row.fiscal_year_id, row.month_key, row.filename);
+    if (fs.existsSync(full)) {
+      gzipBytes = fs.readFileSync(full);
+    }
+    // Path 2: metadata has an explicit disk_path (for custom locations)
+    else if (row.metadata && row.metadata.disk_path && fs.existsSync(row.metadata.disk_path)) {
+      gzipBytes = fs.readFileSync(row.metadata.disk_path);
+    }
+    // Path 3: legacy — bytes still in Postgres (migration hasn't run or failed for this row)
+    else if (row.file_data) {
+      gzipBytes = row.file_data;
+    }
+    else {
+      return res.status(404).send(
+        'Archive file missing on disk. ' +
+        'This can happen if the persistent disk was detached or the file was deleted.'
+      );
+    }
+
+    // If it was stored uncompressed (legacy only), send as-is
+    let body;
+    if (row.mime_type === 'text/html+gzip') {
+      try { body = await gunzipAsync(gzipBytes); }
+      catch (gzErr) {
         console.error('archive view: gunzip failed:', gzErr);
         return res.status(500).send('Error decompressing archive: ' + gzErr.message);
       }
+    } else {
+      body = gzipBytes;
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Content-Disposition', `inline; filename="${rows[0].filename}"`);
+    res.setHeader('Content-Disposition', `inline; filename="${row.filename}"`);
     res.send(body);
-  } catch (e) { res.status(500).send('Error: ' + e.message); }
+  } catch (e) {
+    console.error('archive view error:', e);
+    res.status(500).send('Error: ' + e.message);
+  }
+});
+
+// Delete archive — removes both the disk file and the Postgres metadata row.
+// (The generic /api/documents/:id DELETE endpoint also works but doesn't clean up the file,
+//  so archives have their own delete endpoint. Falls through to that for legacy disk-less rows.)
+app.delete('/api/archived-packages/:id', authCheck, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT filename, fiscal_year_id, month_key, metadata FROM documents
+       WHERE id = $1 AND doc_type = 'archived_monthly_package'`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    const row = rows[0];
+    // Remove on-disk file (best-effort)
+    const { full } = archivePathFor(row.fiscal_year_id, row.month_key, row.filename);
+    try { if (fs.existsSync(full)) fs.unlinkSync(full); } catch (e) {
+      console.warn(`archive delete: could not unlink ${full}: ${e.message}`);
+    }
+    if (row.metadata && row.metadata.disk_path && row.metadata.disk_path !== full) {
+      try { if (fs.existsSync(row.metadata.disk_path)) fs.unlinkSync(row.metadata.disk_path); } catch(_){}
+    }
+    await pool.query(`DELETE FROM documents WHERE id = $1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('archive delete error:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── MONTHLY DATA ──────────────────────────────────────────
