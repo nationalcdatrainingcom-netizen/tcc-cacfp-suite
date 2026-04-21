@@ -3456,7 +3456,7 @@ async function printMonthlyPackage(mk, part='all'){
     async function cacfpArchive(){
       const tb=document.getElementById('cacfpToolbar');
       const btn=document.getElementById('cacfpArchiveBtn');
-      const fy=tb.dataset.fy, mk=tb.dataset.mk, pin=tb.dataset.pin;
+      const fy=tb.dataset.fy, mk=tb.dataset.mk, pin=tb.dataset.pin, part=tb.dataset.part||'all';
       const origLabel=btn.textContent;
       btn.disabled=true; btn.textContent='⏳ Preparing...';
       try{
@@ -3469,9 +3469,24 @@ async function printMonthlyPackage(mk, part='all'){
         const htmlContent='<!DOCTYPE html>\\n'+clone.outerHTML;
         const rawSize=new Blob([htmlContent]).size;
 
-        const now=new Date();
-        const ts=now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+'_'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
-        const filename='CACFP_Package_'+mk+'_'+ts+'.html';
+        // Build a human-readable filename: "CACFP March 2026 - Documents.html"
+        // The fiscal-year convention: months Oct/Nov/Dec use the FY start year,
+        // all others use the FY end year. Example: FY 2025-2026 → Oct 2025, Mar 2026.
+        const MONTHS={oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
+        const monthName=MONTHS[mk]||mk;
+        // Pull the year directly from the page title which already renders e.g. "— March 2026"
+        // so we don't have to duplicate the fiscal-year math here.
+        let year='';
+        const titleEl=document.querySelector('title');
+        if(titleEl){
+          const m=titleEl.textContent.match(/\\b(20\\d{2})\\b/);
+          if(m)year=m[1];
+        }
+        if(!year) year=String(new Date().getFullYear()); // safe fallback
+        const partLabel = part==='attendance' ? 'Attendance'
+                        : part==='main'       ? 'Documents'
+                        :                       'Complete';
+        const filename='CACFP '+monthName+' '+year+' - '+partLabel+'.html';
 
         // Gzip client-side before upload. This drastically reduces:
         //   (1) bytes on the wire (60MB → ~10MB typical)
