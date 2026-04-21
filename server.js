@@ -2460,6 +2460,99 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
   } catch (e) { console.error('crosscheck error:', e); res.status(500).json({ error: e.message }); }
 });
 
+// ── DIAGNOSTIC: inspect raw attendance + computed intervals for one child/date ──
+// Example: /api/attendance-diag?fiscal_year_id=1&month_key=mar&center=niles&child=Joseph%20Abundio&date=2026-03-17
+// Returns raw rows from the DB and the collapsed intervals the cross-check would use.
+app.get('/api/attendance-diag', authCheck, async (req, res) => {
+  try {
+    const { fiscal_year_id, month_key, center, child, date } = req.query;
+    if (!fiscal_year_id || !month_key || !center || !child) {
+      return res.status(400).json({ error: 'Missing fiscal_year_id, month_key, center, or child' });
+    }
+
+    // Split name loosely — accepts "First Last", "Last, First", or just "Last"
+    const norm = s => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+    const childNorm = norm(child);
+
+    let q = `SELECT id, child_last, child_first, attend_date, check_in, check_out, status,
+                    hours_decimal, source, signer_in, signer_out, imported_at
+             FROM child_attendance_times
+             WHERE fiscal_year_id=$1 AND month_key=$2 AND center=$3`;
+    const params = [fiscal_year_id, month_key, center];
+    if (date) { params.push(date); q += ` AND attend_date=$${params.length}`; }
+    q += ` ORDER BY attend_date, check_in`;
+    const { rows } = await pool.query(q, params);
+
+    // Filter to ones whose name matches (fuzzy — any order of first/last)
+    const matching = rows.filter(r => {
+      const full1 = norm(`${r.child_first} ${r.child_last}`);
+      const full2 = norm(`${r.child_last} ${r.child_first}`);
+      return full1 === childNorm || full2 === childNorm
+          || full1.includes(childNorm) || full2.includes(childNorm)
+          || childNorm.includes(norm(r.child_first)) && childNorm.includes(norm(r.child_last));
+    });
+
+    // Simulate the cross-check's interval building for these rows
+    const BRIEF_GAP_MINUTES = 5;
+    const byDate = {};
+    for (const r of matching) {
+      if (r.status !== 'present') continue;
+      const dateISO = r.attend_date instanceof Date
+        ? r.attend_date.toISOString().split('T')[0]
+        : String(r.attend_date).split('T')[0];
+      const inMin = parseTimeToMinutes(r.check_in);
+      const outMin = parseTimeToMinutes(r.check_out);
+      if (inMin === null) continue;
+      if (!byDate[dateISO]) byDate[dateISO] = [];
+      byDate[dateISO].push({ inMin, outMin, check_in: r.check_in, check_out: r.check_out });
+    }
+
+    const simulated = {};
+    for (const d of Object.keys(byDate)) {
+      const raw = byDate[d].slice().sort((a, b) => a.inMin - b.inMin);
+      const collapsed = [];
+      for (const iv of raw) {
+        const last = collapsed[collapsed.length - 1];
+        if (last && last.outMin !== null && iv.inMin !== null
+            && iv.inMin - last.outMin <= BRIEF_GAP_MINUTES
+            && iv.inMin >= last.outMin) {
+          last.outMin = iv.outMin;
+          last.check_out = iv.check_out;
+          last.merged = (last.merged || 0) + 1;
+        } else {
+          collapsed.push({ ...iv });
+        }
+      }
+      simulated[d] = {
+        raw_count: raw.length,
+        raw_intervals: raw.map(r => ({ in: r.check_in, out: r.check_out, inMin: r.inMin, outMin: r.outMin })),
+        collapsed: collapsed.map(c => ({
+          in: minutesToTimeStr(c.inMin),
+          out: c.outMin !== null ? minutesToTimeStr(c.outMin) : null,
+          merged_count: c.merged || 0
+        })),
+        gaps: raw.slice(1).map((iv, i) => ({
+          prev_out: raw[i].check_out,
+          next_in: iv.check_in,
+          gap_min: raw[i].outMin !== null && iv.inMin !== null ? iv.inMin - raw[i].outMin : null
+        }))
+      };
+    }
+
+    res.json({
+      search: { fiscal_year_id, month_key, center, child, date: date || '(all)' },
+      total_rows_in_month: rows.length,
+      matching_rows: matching.length,
+      BRIEF_GAP_MINUTES,
+      by_date: simulated,
+      raw_db_rows: matching
+    });
+  } catch (e) {
+    console.error('attendance-diag error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── CROSS-CHECK RESOLUTIONS ──────────────────────────────
 app.post('/api/crosscheck-resolutions', authCheck, async (req, res) => {
   try {
