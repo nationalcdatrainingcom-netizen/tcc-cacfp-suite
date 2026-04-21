@@ -545,72 +545,80 @@ app.delete('/api/documents/:id', authCheck, async (req, res) => {
 // ── MONTHLY PACKAGE ARCHIVE ───────────────────────────────
 // Save a rendered HTML version of the Complete CACFP Documentation for a month.
 // Stored as a regular `documents` row with doc_type = 'archived_monthly_package'.
-// Payloads can be 60-80MB uncompressed (base64 images dominate). We gzip before
-// insert — base64-heavy HTML typically compresses 4-5x, making 80MB → ~15-20MB.
-// The gzip-compressed bytes are stored in file_data with mime_type='text/html+gzip'
-// so the view endpoint knows to decompress before serving.
-app.post('/api/archive-package', authCheck, async (req, res) => {
-  const startMs = Date.now();
-  try {
-    const { fiscal_year_id, month_key, html, filename, metadata } = req.body;
-    if (!fiscal_year_id || !month_key || !html) {
-      return res.status(400).json({ error: 'Missing fiscal_year_id, month_key, or html' });
-    }
-    const rawBuffer = Buffer.from(html, 'utf8');
-    const rawSize = rawBuffer.length;
-
-    // Compress with gzip — level 6 is the sweet spot (default, good ratio, fast)
-    let storeBuffer, storeMime;
+//
+// IMPORTANT: This endpoint accepts the payload as a RAW binary body (application/octet-stream),
+// NOT JSON. The client is expected to gzip-compress the HTML in the browser using the native
+// CompressionStream API before POSTing. This avoids:
+//   - express.json()'s massive memory overhead (full string + parsed object + buffer copy)
+//   - pg's extra buffer copy for JSON-string-parameter serialization
+//   - 2+ GB of transient memory usage that was OOM-killing the Node process on the 2GB instance
+//
+// Query params carry the metadata (fiscal_year_id, month_key, filename, etc) since the body
+// is the raw compressed bytes.
+app.post(
+  '/api/archive-package',
+  authCheck,
+  express.raw({ type: '*/*', limit: '200mb' }),
+  async (req, res) => {
+    const startMs = Date.now();
     try {
-      storeBuffer = await gzipAsync(rawBuffer, { level: 6 });
-      storeMime = 'text/html+gzip';
-      console.log(`archive-package: compressed ${(rawSize/1024/1024).toFixed(1)}MB → ${(storeBuffer.length/1024/1024).toFixed(1)}MB (${Math.round(100 - storeBuffer.length*100/rawSize)}% reduction) in ${Date.now()-startMs}ms`);
-    } catch (gzErr) {
-      // If gzip fails for any reason, fall back to uncompressed (better to save big than not at all)
-      console.warn('archive-package: gzip failed, falling back to uncompressed:', gzErr.message);
-      storeBuffer = rawBuffer;
-      storeMime = 'text/html';
-    }
+      const { fiscal_year_id, month_key, filename, raw_bytes, encoding } = req.query;
+      if (!fiscal_year_id || !month_key) {
+        return res.status(400).json({ error: 'Missing fiscal_year_id or month_key query params' });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'Missing or empty request body (expect gzipped HTML as binary)' });
+      }
 
-    const safeName = filename || `CACFP_Package_${month_key}_${Date.now()}.html`;
-    const meta = metadata || {};
-    meta.generated_at = meta.generated_at || new Date().toISOString();
-    meta.byte_size = rawSize;              // original HTML size for display
-    meta.stored_bytes = storeBuffer.length; // what's actually in the DB
-    meta.compressed = storeMime === 'text/html+gzip';
+      // Body is the gzipped bytes, ready to write straight to Postgres.
+      // No decompression on this path — saves memory AND stores compressed in DB.
+      const storeBuffer = req.body;
+      const storeMime = encoding === 'gzip' ? 'text/html+gzip' : 'text/html';
 
-    // Retry the DB write up to 3 times with increasing backoff.
-    // Handles transient ECONNRESET/ECONNREFUSED/"terminated unexpectedly" from pool.
-    let lastErr;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const { rows } = await pool.query(
-          `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
-           VALUES ($1, $2, 'archived_monthly_package', $3, $4, $5, $6)
-           RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
-          [fiscal_year_id, month_key, safeName, storeMime, storeBuffer, JSON.stringify(meta)]
-        );
-        const totalMs = Date.now() - startMs;
-        console.log(`archive-package: saved id=${rows[0].id} in ${totalMs}ms (attempt ${attempt})`);
-        return res.json(rows[0]);
-      } catch (e) {
-        lastErr = e;
-        const transient = /ECONNRESET|ECONNREFUSED|terminated unexpectedly|timeout|Connection terminated/i.test(e.message);
-        console.warn(`archive-package: insert attempt ${attempt} failed (${transient?'transient':'permanent'}): ${e.message}`);
-        if (!transient) break; // don't retry on logic errors (bad data, constraint violation, etc.)
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, attempt * 1500)); // 1.5s, 3s
+      const originalSize = raw_bytes ? parseInt(raw_bytes, 10) : storeBuffer.length;
+      const safeName = filename || `CACFP_Package_${month_key}_${Date.now()}.html`;
+      const meta = {
+        generated_at: new Date().toISOString(),
+        byte_size: originalSize,
+        stored_bytes: storeBuffer.length,
+        compressed: storeMime === 'text/html+gzip'
+      };
+
+      console.log(
+        `archive-package: received ${(storeBuffer.length/1024/1024).toFixed(1)}MB ` +
+        `(${encoding||'raw'}, original ${(originalSize/1024/1024).toFixed(1)}MB) in ${Date.now()-startMs}ms`
+      );
+
+      // Retry the DB write up to 3 times with increasing backoff.
+      // Handles transient ECONNRESET/ECONNREFUSED/"terminated unexpectedly".
+      let lastErr;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { rows } = await pool.query(
+            `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+             VALUES ($1, $2, 'archived_monthly_package', $3, $4, $5, $6)
+             RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
+            [fiscal_year_id, month_key, safeName, storeMime, storeBuffer, JSON.stringify(meta)]
+          );
+          const totalMs = Date.now() - startMs;
+          console.log(`archive-package: saved id=${rows[0].id} in ${totalMs}ms (attempt ${attempt})`);
+          return res.json(rows[0]);
+        } catch (e) {
+          lastErr = e;
+          const transient = /ECONNRESET|ECONNREFUSED|terminated unexpectedly|timeout|Connection terminated/i.test(e.message);
+          console.warn(`archive-package: insert attempt ${attempt} failed (${transient?'transient':'permanent'}): ${e.message}`);
+          if (!transient) break;
+          if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 1500));
         }
       }
+      console.error('archive-package: all retries failed:', lastErr);
+      res.status(500).json({ error: lastErr ? lastErr.message : 'Archive save failed after retries' });
+    } catch (e) {
+      console.error('archive-package error:', e);
+      res.status(500).json({ error: e.message });
     }
-    // All retries exhausted
-    console.error('archive-package: all retries failed:', lastErr);
-    res.status(500).json({ error: lastErr ? lastErr.message : 'Archive save failed after retries' });
-  } catch (e) {
-    console.error('archive-package error:', e);
-    res.status(500).json({ error: e.message });
   }
-});
+);
 
 // List archived packages (convenience wrapper — same as /api/documents?doc_type=archived_monthly_package)
 app.get('/api/archived-packages', authCheck, async (req, res) => {
