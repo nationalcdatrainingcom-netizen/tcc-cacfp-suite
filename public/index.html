@@ -3380,12 +3380,22 @@ async function printMonthlyPackage(mk){
     This document contains uploaded source materials and system-generated analytical reports.
   </div>
   <script>
+    // Compress a string to a gzipped Uint8Array using the browser's native CompressionStream.
+    // Supported in all modern browsers (Chrome 80+, Safari 16.4+, Firefox 113+).
+    async function gzipString(str){
+      if(typeof CompressionStream==='undefined'){return null;} // signal unsupported
+      const blob=new Blob([str]);
+      const stream=blob.stream().pipeThrough(new CompressionStream('gzip'));
+      const buf=await new Response(stream).arrayBuffer();
+      return new Uint8Array(buf);
+    }
+
     async function cacfpArchive(){
       const tb=document.getElementById('cacfpToolbar');
       const btn=document.getElementById('cacfpArchiveBtn');
       const fy=tb.dataset.fy, mk=tb.dataset.mk, pin=tb.dataset.pin;
       const origLabel=btn.textContent;
-      btn.disabled=true; btn.textContent='⏳ Saving...';
+      btn.disabled=true; btn.textContent='⏳ Preparing...';
       try{
         // Clone the document but strip the toolbar so archived copies don't contain it
         const clone=document.documentElement.cloneNode(true);
@@ -3394,18 +3404,38 @@ async function printMonthlyPackage(mk){
         const clonedScripts=clone.querySelectorAll('script');
         clonedScripts.forEach(s=>s.remove());
         const htmlContent='<!DOCTYPE html>\\n'+clone.outerHTML;
+        const rawSize=new Blob([htmlContent]).size;
 
         const now=new Date();
         const ts=now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+'_'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
         const filename='CACFP_Package_'+mk+'_'+ts+'.html';
 
-        const resp=await fetch('/api/archive-package',{
+        // Gzip client-side before upload. This drastically reduces:
+        //   (1) bytes on the wire (60MB → ~10MB typical)
+        //   (2) server memory (no JSON parse of 60MB string + buffer copies)
+        //   (3) Postgres storage (payload is already compressed when INSERTed)
+        btn.textContent='⏳ Compressing...';
+        let body, encoding;
+        const gz=await gzipString(htmlContent);
+        if(gz){
+          body=gz;
+          encoding='gzip';
+        }else{
+          // Fallback for ancient browsers — send uncompressed, server handles it
+          body=new Blob([htmlContent]);
+          encoding='raw';
+        }
+        const sentSize=body.byteLength||body.size;
+
+        btn.textContent='⏳ Uploading ('+(sentSize/1024/1024).toFixed(1)+' MB)...';
+        const qs=new URLSearchParams({
+          fiscal_year_id:fy, month_key:mk, filename:filename,
+          raw_bytes:String(rawSize), encoding:encoding
+        });
+        const resp=await fetch('/api/archive-package?'+qs.toString(),{
           method:'POST',
-          headers:{'Content-Type':'application/json','x-access-pin':pin},
-          body:JSON.stringify({
-            fiscal_year_id:parseInt(fy), month_key:mk, html:htmlContent, filename:filename,
-            metadata:{generated_at:now.toISOString(),byte_size:htmlContent.length}
-          })
+          headers:{'Content-Type':'application/octet-stream','x-access-pin':pin},
+          body:body
         });
         if(!resp.ok){
           const err=await resp.json().catch(()=>({error:'HTTP '+resp.status}));
