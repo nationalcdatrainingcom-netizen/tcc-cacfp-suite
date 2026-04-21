@@ -2314,9 +2314,28 @@ app.get('/api/audit-crosscheck', authCheck, async (req, res) => {
       if (!timeLookup[key]) timeLookup[key] = [];
       timeLookup[key].push({ inMin, outMin });
     }
-    // Sort each child's intervals by check-in time for display consistency
+    // Post-process each child's intervals:
+    //   1. Sort by check-in time for consistent display
+    //   2. Collapse "teacher error" patterns — a check-out immediately followed by a check-in
+    //      within BRIEF_GAP_MINUTES is almost always a staff member who accidentally scanned
+    //      the wrong child out and corrected it. Treat those as one continuous interval.
+    const BRIEF_GAP_MINUTES = 5;
     for (const k of Object.keys(timeLookup)) {
       timeLookup[k].sort((a, b) => a.inMin - b.inMin);
+      const ivs = timeLookup[k];
+      const collapsed = [];
+      for (const iv of ivs) {
+        const last = collapsed[collapsed.length - 1];
+        if (last && last.outMin !== null && iv.inMin !== null
+            && iv.inMin - last.outMin <= BRIEF_GAP_MINUTES
+            && iv.inMin >= last.outMin) {
+          // Merge: extend the previous interval's out-time to this one's out (or keep open if null)
+          last.outMin = iv.outMin;
+        } else {
+          collapsed.push({ inMin: iv.inMin, outMin: iv.outMin });
+        }
+      }
+      timeLookup[k] = collapsed;
     }
 
     const flags = [];
