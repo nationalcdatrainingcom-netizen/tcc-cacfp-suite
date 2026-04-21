@@ -685,13 +685,40 @@ app.post(
       };
 
       // Now insert a tiny metadata-only row (no file_data). This is ~1KB and never chokes Postgres.
+      // UPSERT: if an archive with the same (fiscal_year, month, filename) already exists,
+      // update it instead of creating a duplicate row. This matches natural user expectation —
+      // re-saving the same month/part REPLACES the previous copy rather than piling up duplicates.
       try {
-        const { rows } = await pool.query(
-          `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
-           VALUES ($1, $2, 'archived_monthly_package', $3, 'text/html+gzip', NULL, $4)
-           RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
-          [fiscal_year_id, month_key, safeName, JSON.stringify(meta)]
+        // Check for existing archive with the same filename (same fy + month + part)
+        const existing = await pool.query(
+          `SELECT id FROM documents
+           WHERE doc_type = 'archived_monthly_package'
+             AND fiscal_year_id = $1 AND month_key = $2 AND filename = $3
+           LIMIT 1`,
+          [fiscal_year_id, month_key, safeName]
         );
+
+        let rows;
+        if (existing.rows.length > 0) {
+          // Replace the existing archive (disk file was already overwritten above)
+          const r = await pool.query(
+            `UPDATE documents
+             SET mime_type = 'text/html+gzip', file_data = NULL, metadata = $2, uploaded_at = NOW()
+             WHERE id = $1
+             RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
+            [existing.rows[0].id, JSON.stringify(meta)]
+          );
+          rows = r.rows;
+          console.log(`archive-package: REPLACED id=${rows[0].id} (same fy/month/filename)`);
+        } else {
+          const r = await pool.query(
+            `INSERT INTO documents (fiscal_year_id, month_key, doc_type, filename, mime_type, file_data, metadata)
+             VALUES ($1, $2, 'archived_monthly_package', $3, 'text/html+gzip', NULL, $4)
+             RETURNING id, filename, doc_type, month_key, uploaded_at, metadata`,
+            [fiscal_year_id, month_key, safeName, JSON.stringify(meta)]
+          );
+          rows = r.rows;
+        }
         const totalMs = Date.now() - startMs;
         console.log(
           `archive-package: saved id=${rows[0].id} ` +
