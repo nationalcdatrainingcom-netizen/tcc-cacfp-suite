@@ -892,7 +892,8 @@ async function deleteArchiveFromPage(id){
   if(!doc)return;
   if(!confirm(`Delete this archived package?\n\n${doc.filename}\n\nThis only removes the saved copy — data in the system is not affected.`))return;
   try{
-    await api(`/api/documents/${id}`,{method:'DELETE'});
+    // Use dedicated archive endpoint (cleans up both the metadata row AND the disk file).
+    await api(`/api/archived-packages/${id}`,{method:'DELETE'});
     documents=documents.filter(d=>d.id!==id);
     loadArchivesPage();
     showToast('🗑️ Archive deleted','ok');
