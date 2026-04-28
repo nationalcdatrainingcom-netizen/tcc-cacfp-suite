@@ -2545,7 +2545,28 @@ app.get('/api/attendance-diag', authCheck, async (req, res) => {
       matching_rows: matching.length,
       BRIEF_GAP_MINUTES,
       by_date: simulated,
-      raw_db_rows: matching
+      raw_db_rows: matching,
+      csv_source_lines: await (async () => {
+        try {
+          const docRes = await pool.query(
+            `SELECT filename, file_data FROM documents
+             WHERE fiscal_year_id=$1 AND month_key=$2 AND doc_type=$3
+             ORDER BY uploaded_at DESC LIMIT 1`,
+            [fiscal_year_id, month_key, 'child_attendance_daily_' + center]
+          );
+          if (!docRes.rows[0] || !docRes.rows[0].file_data) return 'no source CSV found in documents';
+          const csv = docRes.rows[0].file_data.toString('utf8');
+          const lines = csv.split('\n');
+          const header = lines[0];
+          const lastKey = childNorm.split(' ').slice(-1)[0];  // grab the last-name-ish token
+          const firstKey = childNorm.split(' ')[0];
+          const matches = lines.filter(l => {
+            const ll = l.toLowerCase();
+            return ll.includes(lastKey) && ll.includes(firstKey) && (!date || ll.includes(date.replace(/-/g, '/')) || ll.includes(date));
+          });
+          return { filename: docRes.rows[0].filename, header, matching_csv_lines: matches };
+        } catch (e) { return 'csv_lookup_error: ' + e.message; }
+      })()
     });
   } catch (e) {
     console.error('attendance-diag error:', e);
@@ -3619,15 +3640,90 @@ app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
     // Pull classroom roster for this center
     const classrooms = CLASSROOMS[rev.center] || [];
 
-    // Pull most recent attendance for center (last available month)
-    const attRes = await pool.query(
-      `SELECT month_key, data FROM monthly_data
-       WHERE fiscal_year_id=$1 AND data_type='attendance'
-       ORDER BY updated_at DESC LIMIT 1`,
-      [rev.fiscal_year_id]
-    );
-    const latestAtt = attRes.rows[0] || null;
-    const centerAtt = latestAtt?.data?.[rev.center] || null;
+    // ── Five-Day Reconciliation prefill ──
+    // The Five-Day reconciliation pulls attendance + meal counts from a recent month so the
+    // monitor can compare them against what the center's records show. Strategy:
+    //   1. Compute current month and the previous fiscal month (using the FY ordering
+    //      Oct → Sep so March's "previous month" is February).
+    //   2. Try the previous month FIRST (most common review timing). If empty, try the
+    //      current month (in case they're reviewing this month's running data). If both
+    //      are empty, fall back to the most recent month with data.
+    //   3. Each candidate month is checked for both attendance AND meals data for THIS center.
+    //      We don't require them to be from the same month — better to surface partial data
+    //      than nothing at all.
+    const MO_ORDER = ['oct','nov','dec','jan','feb','mar','apr','may','jun','jul','aug','sep'];
+    const ML_NAMES = {oct:'October',nov:'November',dec:'December',jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September'};
+
+    // Determine current FY month from review_date (or fall back to today)
+    const reviewDate = rev.review_date ? new Date(rev.review_date) : new Date();
+    const fyRes = await pool.query('SELECT * FROM fiscal_years WHERE id=$1', [rev.fiscal_year_id]);
+    const fy = fyRes.rows[0];
+    const monthIdx = reviewDate.getMonth(); // 0-11 (Jan=0)
+    const monthKey = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][monthIdx];
+    const curIdx = MO_ORDER.indexOf(monthKey);
+    const prevMonthKey = curIdx > 0 ? MO_ORDER[curIdx - 1] : 'sep'; // wrap to Sep at start of FY
+
+    // Helper: pull a center's attendance data block for a given month_key
+    const fetchAttForMonth = async (mk) => {
+      const r = await pool.query(
+        `SELECT data FROM monthly_data
+         WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='attendance'
+         ORDER BY updated_at DESC LIMIT 1`,
+        [rev.fiscal_year_id, mk]
+      );
+      if (!r.rows[0] || !r.rows[0].data) return null;
+      return r.rows[0].data[rev.center] || null;
+    };
+    // Helper: pull a center's meals data block for a given month_key
+    const fetchMealsForMonth = async (mk) => {
+      const r = await pool.query(
+        `SELECT data FROM monthly_data
+         WHERE fiscal_year_id=$1 AND month_key=$2 AND data_type='meals'
+         ORDER BY updated_at DESC LIMIT 1`,
+        [rev.fiscal_year_id, mk]
+      );
+      if (!r.rows[0] || !r.rows[0].data) return null;
+      return r.rows[0].data[rev.center] || null;
+    };
+
+    // Try prev → current → most recent
+    const candidates = [prevMonthKey, monthKey];
+    const triedMonths = [];
+    let prefillAtt = null, prefillMeals = null, prefillFromMonth = null;
+    for (const mk of candidates) {
+      triedMonths.push(mk);
+      const a = await fetchAttForMonth(mk);
+      const m = await fetchMealsForMonth(mk);
+      if (a || m) {
+        prefillAtt = a;
+        prefillMeals = m;
+        prefillFromMonth = mk;
+        break;
+      }
+    }
+    // Fallback: most recent month with attendance for this center
+    if (!prefillAtt && !prefillMeals) {
+      const recentRes = await pool.query(
+        `SELECT month_key, data, data_type FROM monthly_data
+         WHERE fiscal_year_id=$1 AND data_type IN ('attendance','meals')
+         ORDER BY updated_at DESC LIMIT 20`,
+        [rev.fiscal_year_id]
+      );
+      for (const row of recentRes.rows) {
+        if (row.data && row.data[rev.center]) {
+          if (row.data_type === 'attendance' && !prefillAtt) prefillAtt = row.data[rev.center];
+          if (row.data_type === 'meals' && !prefillMeals) prefillMeals = row.data[rev.center];
+          if (!prefillFromMonth) prefillFromMonth = row.month_key;
+          if (prefillAtt && prefillMeals) break;
+        }
+        triedMonths.push(row.month_key);
+      }
+    }
+
+    // For the legacy `latestAttendance` summary tile, keep behavior for back-compat
+    const attTile = prefillAtt
+      ? { month: prefillFromMonth, enrolled: prefillAtt.enrolled, ada: prefillAtt.ada }
+      : null;
 
     // Pull any open corrective actions
     const caRes = await pool.query(
@@ -3652,12 +3748,31 @@ app.get('/api/monitoring/:id/prefill', authCheck, async (req, res) => {
     res.json({
       review: rev,
       classrooms,
-      latestAttendance: centerAtt ? { month: latestAtt.month_key, enrolled: centerAtt.enrolled, ada: centerAtt.ada } : null,
+      latestAttendance: attTile,
       openCorrectiveActions: caRes.rows,
       trainings: trRes.rows,
-      crossCheckFlags: ccRes.rows
+      crossCheckFlags: ccRes.rows,
+      // Five-Day Reconciliation prefill (used by autoPopulateFiveDay client-side)
+      attendance: prefillAtt || {},
+      meals: prefillMeals || {},
+      prevMonth: prefillFromMonth || prevMonthKey,
+      prevMonthName: ML_NAMES[prefillFromMonth || prevMonthKey] || (prefillFromMonth || prevMonthKey),
+      _debug: {
+        center: rev.center,
+        review_month: monthKey,
+        prev_month_key: prevMonthKey,
+        prefill_from_month: prefillFromMonth,
+        triedMonths,
+        hasAttendance: !!prefillAtt,
+        hasDailyTotals: !!(prefillAtt && prefillAtt.dailyTotals && prefillAtt.dailyTotals.length),
+        hasMeals: !!prefillMeals,
+        hasMealChildren: !!(prefillMeals && prefillMeals.children && prefillMeals.children.length)
+      }
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('monitoring prefill error:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── ADULT MEAL ENTRIES ────────────────────────────────────
