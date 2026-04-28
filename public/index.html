@@ -5327,7 +5327,11 @@ async function autoPopulateFiveDay(startDate){
 
   for(let i=0;i<5;i++){
     const dd=dates[i];
-    const dateStr=(dd.getMonth()+1)+'/'+dd.getDate()+'/'+dd.getFullYear();
+    // HTML <input type="date"> requires ISO yyyy-MM-dd. Anything else is silently rejected.
+    const yyyy=dd.getFullYear();
+    const mm=String(dd.getMonth()+1).padStart(2,'0');
+    const day=String(dd.getDate()).padStart(2,'0');
+    const dateStr=`${yyyy}-${mm}-${day}`;
     const dk='fiveday_'+(i+1);
     setField(dk+'_date',dateStr);
     const el=document.getElementById(dk+'_date');
